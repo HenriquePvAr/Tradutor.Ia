@@ -65,6 +65,7 @@ até que você decida publicá-las.
 | Continuar processando com o navegador fechado | ✅ Sim |
 | Biblioteca com os capítulos já traduzidos | ✅ Sim |
 | PDF do capítulo | ✅ Sim |
+| Pacote Professional/QC com imagens limpas, PSD editável, relatório e índice de revisão | ✅ Sim |
 | Tela de revisão de qualidade | ✅ Sim |
 | Publicar um PDF na comunidade | ✅ Sim (ação explícita, nunca automática) |
 | Instalador com um clique (Setup) | ⏳ **Em desenvolvimento** |

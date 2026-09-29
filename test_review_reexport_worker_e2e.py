@@ -137,6 +137,10 @@ def test_bridge_queues_worker_renders_png_and_recovers_in_new_process(tmp_path: 
         with __import__("PIL.Image", fromlist=["Image"]).open(files[0]) as image:
             image.verify()
         manifest = json.loads((final / "reconstruction_manifest.json").read_text(encoding="utf-8"))
+        review_manifest = json.loads((final / "qc" / "review_manifest.json").read_text(encoding="utf-8"))
+        assert review_manifest["summary"]["pages_represented"] == 1
+        effective_targets = {item["translated_text_effective"] for item in review_manifest["pages"][0]["review_items"]}
+        assert {"EU ESTOU AQUI", "ESTOU AQUI", "TRÊS DIAS DEPOIS"} <= effective_targets
         assert manifest["review_generation_id"] == queued["generation_id"]
         assert manifest["review_snapshot_id"] == queued["review_snapshot_id"]
         saved = json.loads((final / "review_snapshot.json").read_text(encoding="utf-8"))
@@ -159,6 +163,8 @@ def test_worker_validates_non_png_review_formats(tmp_path: Path, fmt: str):
         final_job = _wait_job(store, queued["job_id"], {JobStatus.FINISHED})
         assert final_job["status"] == JobStatus.FINISHED, final_job.get("error_message")
         final_dir = Path(final_job["output_dir"])
+        review_manifest = json.loads((final_dir / "qc" / "review_manifest.json").read_text(encoding="utf-8"))
+        assert review_manifest["summary"]["pages_represented"] == 1
         manifest = json.loads((final_dir / "reconstruction_manifest.json").read_text(encoding="utf-8"))
         artifact = final_dir / manifest["artifact"]
         assert artifact.exists()

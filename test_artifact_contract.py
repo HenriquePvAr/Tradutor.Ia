@@ -28,7 +28,7 @@ class ArtifactContractTests(unittest.TestCase):
         self.assertEqual(ac.capability_of(AT.FINAL_PDF), CAP.SUPPORTED)
         self.assertEqual(ac.capability_of(AT.TRANSLATED_IMAGE), CAP.SUPPORTED)
         self.assertEqual(ac.capability_of(AT.QUALITY_REPORT), CAP.SUPPORTED)
-        self.assertEqual(ac.capability_of(AT.REVIEW_MANIFEST), CAP.PLANNED)
+        self.assertEqual(ac.capability_of(AT.REVIEW_MANIFEST), CAP.SUPPORTED)
 
     # E) EDITABLE_PSD is SUPPORTED since Mission 6 and stays distinct from legacy raster PSD
     def test_editable_psd_supported_and_distinct_from_raster(self):
@@ -118,18 +118,16 @@ class ArtifactContractTests(unittest.TestCase):
         # a diagnostic type is not part of AUTOMATIC at all (unrequested != unavailable)
         self.assertNotIn(AT.OCR_PROVENANCE, m["requested_artifacts"])
 
-    def test_professional_reports_editable_psd_produced_and_review_manifest_unavailable(self):
-        # Since Mission 6 editable_psd is SUPPORTED: when produced it is PRODUCED; review_manifest
-        # is still PLANNED, so it remains the requested-but-unavailable one.
+    def test_professional_reports_editable_psd_and_review_manifest_as_produced(self):
         m = ac.build_artifact_manifest(output_profile=OP.PROFESSIONAL_QC, output_root="C:/out/run1",
                                        logical_page_count=208,
                                        produced={AT.FINAL_PDF: True, AT.TRANSLATED_IMAGE: True,
                                                  AT.CLEAN_IMAGE: True, AT.EDITABLE_PSD: True,
-                                                 AT.QUALITY_REPORT: True})
+                                                 AT.QUALITY_REPORT: True, AT.REVIEW_MANIFEST: True})
         self.assertIn(AT.EDITABLE_PSD, m["requested_artifacts"])
         self.assertIn(AT.EDITABLE_PSD, m["produced_artifacts"])
         self.assertEqual(m["artifact_status"][AT.EDITABLE_PSD], ac.ArtifactStatus.PRODUCED)
-        self.assertIn(AT.REVIEW_MANIFEST, m["unavailable_artifacts"])
+        self.assertEqual(m["artifact_status"][AT.REVIEW_MANIFEST], ac.ArtifactStatus.PRODUCED)
         # editable_psd requested but NOT produced this run -> REQUESTED, never faked
         m2 = ac.build_artifact_manifest(output_profile=OP.PROFESSIONAL_QC, output_root="C:/out/run1",
                                         logical_page_count=208, produced={AT.FINAL_PDF: True})

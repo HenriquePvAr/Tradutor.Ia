@@ -92,12 +92,15 @@ def build_review_snapshot(*, job: dict[str, Any], report: dict[str, Any], review
             "active": not bool(row.get("is_inactive")),
             "revision_version": int(row.get("revision_version") or 0),
             "region_control_version": int(row.get("region_control_version") or 0),
+            "review_status": str(row.get("state") or "pending"),
+            "preserved_original": bool(row.get("preserved_original")),
             "translation_stale": bool(row.get("translation_stale")),
             "translate_effective": str(row.get("translate_effective") or "ignore"),
         }
     body = {
         "schema_version": 1, "job_id": str(job["id"]),
-        "run_id": str(job.get("run_id") or ""), "pages": pages,
+        "run_id": str(job.get("run_id") or ""),
+        "job_outcome": str(job.get("status") or ""), "pages": pages,
         "regions": sorted(effective.values(), key=lambda r: (r["page_index"], r["region_id"])),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "provider_policy": {"allow_provider": False, "cache_only": True},
@@ -284,6 +287,59 @@ def render_review_snapshot(*, snapshot: dict[str, Any], output_root: str | Path,
             from professional_psd import export_professional_psd
             artifact = export_professional_psd(psd_pages, staging, chapter_name,
                                                typesetting_mode=typesetting_mode)
+        # Publish the same small QC index for the immutable re-export generation. PSD layer
+        # names are taken from the PSD exporter's own manifest, never reconstructed.
+        import review_manifest as review_manifest_writer
+        psd_provenance: dict[int, dict[str, Any]] = {}
+        if fmt == "psd":
+            exported = json.loads((Path(artifact) / "psd_manifest.json").read_text(encoding="utf-8"))
+            for page_record in exported.get("pages", []) or []:
+                page_index = int(page_record.get("page_index") or 0)
+                layers = [{"name": layer.get("name"), "region_id": layer.get("region_id"),
+                           "semantic_type": layer.get("region_type"), "bbox": layer.get("bbox"),
+                           "translation_status": "translated"}
+                          for layer in page_record.get("layers", []) or []
+                          if layer.get("role") == "translated_region"]
+                psd_file = Path(artifact) / str(page_record.get("file") or "")
+                psd_provenance[page_index] = {"path": str(psd_file), "text_layers": layers}
+        original_by_region = {}
+        for page_entry in snapshot.get("pages", []) or []:
+            page_data = page_entry.get("page_data", {})
+            for item in ((page_data.get("debug_data") or {}).get("items", []) or []):
+                if isinstance(item, dict):
+                    region_id = str(item.get("region_id") or item.get("id") or "")
+                    if region_id:
+                        original_by_region[(int(page_entry["page_index"]), region_id)] = item
+        effective_items = []
+        for region in snapshot.get("regions", []) or []:
+            original = original_by_region.get((int(region.get("page_index") or 0),
+                                              str(region.get("region_id") or "")), {})
+            effective_items.append({
+                "page_index": region.get("page_index"), "region_id": region.get("region_id"),
+                "source_text_original": original.get("clean_text") or original.get("text") or "",
+                "target_text_original": original.get("translation") or original.get("translation_candidate") or "",
+                "preserved_original": bool(original.get("preserved_original")),
+                "source_text_effective": region.get("effective_source_text"),
+                "target_text_effective": region.get("effective_target_text"),
+                "state": region.get("review_status"), "revision_version": region.get("revision_version"),
+                "classification": region.get("effective_region_type"),
+                "bounding_box_effective": region.get("effective_bounding_box"),
+            })
+        qc_report = {"pages": [entry.get("page_data", {}) for entry in snapshot.get("pages", [])]}
+        page_artifacts = {}
+        for offset, entry in enumerate(snapshot.get("pages", []) or []):
+            page_index = int(entry["page_index"])
+            record = {"translated_artifact": page_paths[offset].relative_to(staging).as_posix()}
+            if psd_provenance.get(page_index, {}).get("path"):
+                record["editable_psd_artifact"] = Path(psd_provenance[page_index]["path"]).relative_to(staging).as_posix()
+            page_artifacts[page_index] = record
+        review_body = review_manifest_writer.build_review_manifest(
+            quality_report=qc_report, logical_page_count=len(snapshot["pages"]),
+            job_outcome=str(snapshot.get("job_outcome") or "review_required"),
+            artifact_root=staging, psd_provenance=psd_provenance,
+            effective_review_items=effective_items, page_artifacts=page_artifacts,
+        )
+        review_manifest_writer.write_review_manifest(staging / "qc" / "review_manifest.json", review_body)
         lineage = {"schema_version": 1, "source_job_id": snapshot["job_id"],
                    "source_run_id": snapshot["run_id"], "review_snapshot_id": snapshot["snapshot_id"],
                    "output_generation": generation, "output_format": fmt,

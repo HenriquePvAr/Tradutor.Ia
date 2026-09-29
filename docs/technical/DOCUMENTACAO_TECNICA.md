@@ -2394,11 +2394,40 @@ Yomu não substitui Photoshop/Photopea.
 | `editable_psd` | **SUPPORTED** (Missão 6) | PSD com Type Layers nativas do Photoshop (`editable_psd_writer`), perfil `PROFESSIONAL_QC`; **não** confundir com o raster legado |
 | `legacy_raster_psd` | SUPPORTED | export raster existente, tipo distinto de `editable_psd` |
 | `quality_report` | SUPPORTED | `quality_report.json` |
-| `review_manifest` | PLANNED | Missão 10 |
+| `review_manifest` | **SUPPORTED** (Missão 10) | Índice QC V1 em `qc/review_manifest.json`, somente `PROFESSIONAL_QC` |
 
-A partir da Missão 6, um job `PROFESSIONAL_QC` **produz** `editable_psd` (uma Type Layer por
-região de texto); `review_manifest` continua `requested + unavailable` (PLANNED, Missão 10). O
-PSD raster legado jamais é declarado `editable_psd`.
+A partir da Missão 10, `PROFESSIONAL_QC` também produz `review_manifest`; AUTOMATIC não o solicita.
+O PSD raster legado jamais é declarado `editable_psd`.
+
+### 26.2 Review Manifest V1 (Missão 10)
+
+`review_manifest.py` escreve atomicamente `qc/review_manifest.json` (UTF-8) depois do Quality
+Report e dos PSDs. O documento declara `review_manifest_version=1` e
+`artifact_contract_version=2`, cobre cada página lógica (inclusive páginas sem findings) e
+mantém contagens separadas de itens pendentes/aprovados/resolvidos e do terminal do job
+(`finished`/`review_required`). A severidade de finding reaproveita o contrato M9: avisos são
+`INFO`/`REVIEW`; falha na produção/validação deste artefato profissional obrigatório é falha
+estrutural do artifact, não uma mudança de quality gate.
+
+Quality Report continua como diagnóstico detalhado. O writer seleciona as mesmas coleções e
+condições usadas pelo `UiBridge.quality_review`, normaliza cada item por
+`review_item.from_quality_review_item`, e grava somente o índice necessário: textos fonte,
+tradução disponível, texto efetivo, warning codes, bbox, estado humano e provenance curta.
+Não copia o relatório integral, não armazena revisões e não adiciona timestamp volátil.
+
+`region_id` é a ligação canônica item→PSD. Os nomes de camada vêm exclusivamente do retorno
+real do `editable_psd_writer`; uma camada só é citada se sua provenance tiver o mesmo
+`region_id`. Para legado sem ID, o índice usa ID opaco derivado de página/ordem/bbox e tenta
+ligação somente por bbox+tipo em correspondência única; nunca inventa um `region_id` canônico.
+`typography_sources` contém apenas os nomes de origem leves (renderer/fallback), sem TySh ou
+EngineData. Texto efetivo editado e status são sobrepostos a partir do snapshot persistido de
+Review no re-export; provider translation só é preenchido quando distinguível no dado original.
+
+Paths são POSIX relativos ao output/generation root. Absolutos, traversal, UNC, paths Windows e
+artefatos inexistentes são rejeitados. O payload é validado antes e depois da gravação temporária
+e publicado por `os.replace`; o Artifact Contract V2 só marca `PRODUCED` depois disso. O worker
+de re-export valida novamente o schema/coverage antes de publicar a geração. A integração não
+chama provider, OCR ou wallet: re-export mantém provider calls=0 e YK adicional=0.
 
 ## 26.3 PSD Profissional editável v2 — Type Layers nativas (Missão 6)
 

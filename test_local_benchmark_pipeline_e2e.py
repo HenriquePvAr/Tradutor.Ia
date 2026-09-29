@@ -371,6 +371,7 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
         self.assertEqual(page.read_bytes(), canonical_translated.read_bytes())
         self.assertFalse((self.output / "images" / "clean").exists())  # clean is PROFESSIONAL_QC only
         self.assertFalse((self.output / "psd").exists())  # editable PSD is PROFESSIONAL_QC only (§55)
+        self.assertFalse((self.output / "qc" / "review_manifest.json").exists())
         manifest = json.loads((self.output / "artifact_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["contract_version"], 2)
         self.assertEqual(manifest["output_profile"], ac.OutputProfile.AUTOMATIC)
@@ -405,6 +406,14 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
         self.assertEqual(cov[ac.ArtifactType.CLEAN_IMAGE]["produced"], [1])
         self.assertEqual(cov[ac.ArtifactType.CLEAN_IMAGE]["missing"], [])
         self.assertEqual(cov[ac.ArtifactType.CLEAN_IMAGE]["failed"], [])
+        review_path = self.output / "qc" / "review_manifest.json"
+        self.assertTrue(review_path.is_file())
+        review_manifest = json.loads(review_path.read_text(encoding="utf-8"))
+        self.assertEqual(review_manifest["review_manifest_version"], 1)
+        self.assertEqual(review_manifest["artifact_contract_version"], 2)
+        self.assertEqual(review_manifest["summary"]["pages_represented"], 1)
+        self.assertEqual(cov[ac.ArtifactType.REVIEW_MANIFEST]["produced_pages"], [1])
+        self.assertIn(ac.ArtifactType.REVIEW_MANIFEST, manifest["produced_artifacts"])
         self.assertTrue(manifest["byte_totals"][ac.ArtifactType.CLEAN_IMAGE] > 0)
         # editable PSD is produced in PROFESSIONAL_QC since Mission 6 (native Type Layers)
         self.assertIn(ac.ArtifactType.EDITABLE_PSD, manifest["produced_artifacts"])

@@ -291,10 +291,31 @@ def _artifact_manifest_contract(report: dict, artifacts: dict) -> tuple[bool, st
             or record.get("failed")
         ):
             return False, "artifact_coverage_incomplete"
-    if ArtifactType.QUALITY_REPORT in supported:
-        report_path = Path(str(report.get("quality_report_json") or ""))
-        if not report_path.is_file() or report_path.stat().st_size <= 0:
-            return False, "required_artifact_missing"
+        if ArtifactType.QUALITY_REPORT in supported:
+            report_path = Path(str(report.get("quality_report_json") or ""))
+            if not report_path.is_file() or report_path.stat().st_size <= 0:
+                return False, "required_artifact_missing"
+        if ArtifactType.REVIEW_MANIFEST in supported:
+            from artifact_contract import artifact_path
+            from review_manifest import validate_review_manifest
+            review_path = artifact_path(
+                manifest.get("output_root") or path.parent,
+                ArtifactType.REVIEW_MANIFEST,
+            )
+            try:
+                review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+                validate_review_manifest(review_payload, artifact_root=review_path.parents[1])
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                return False, "required_artifact_missing"
+            if int(review_payload["summary"]["logical_pages"]) != logical_count:
+                return False, "artifact_coverage_incomplete"
+            record = coverage.get(ArtifactType.REVIEW_MANIFEST)
+            expected_pages = list(range(1, logical_count + 1))
+            if (not isinstance(record, dict)
+                    or record.get("expected_pages") != logical_count
+                    or record.get("produced_pages") != expected_pages
+                    or record.get("missing_pages") or record.get("failed_pages")):
+                return False, "artifact_coverage_incomplete"
     return True, ""
 
 

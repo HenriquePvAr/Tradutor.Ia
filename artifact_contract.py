@@ -1,17 +1,16 @@
 """Artifact Contract V2 — the versioned foundation for Yomu Sekai output artifacts.
 
-This module is a *foundation only*. It defines what a job may produce, where each artifact
-canonically belongs, how artifacts are identified, which output profile requested them, and
-what this build can actually produce. It does NOT change any writer, the renderer, the PSD
-exporter, OCR, translation, or the pipeline: no code persists differently because this module
-exists yet. Physical writer migration happens in later missions (4/6/10).
+This module defines what a job may produce, where each artifact canonically belongs, how
+artifacts are identified, which output profile requested them, and what this build can produce.
+Artifact Contract V2 is consumed by the pipeline, canonical image/PSD exporters, and the
+Professional QC review-manifest writer.
 
 Capabilities reflect the REAL current implementation, never an aspiration:
   * FINAL_PDF / TRANSLATED_IMAGE / CLEAN_IMAGE / QUALITY_REPORT are produced today.
   * EDITABLE_PSD (native Photoshop Type Layers) is produced by ``editable_psd_writer`` in the
     PROFESSIONAL_QC profile (Mission 6); the existing raster export is a separate
     LEGACY_RASTER_PSD type and must never be reported as EDITABLE_PSD.
-  * REVIEW_MANIFEST is PLANNED (Mission 10).
+  * REVIEW_MANIFEST is generated for PROFESSIONAL_QC (Mission 10).
 
 Legacy outputs (runs without ``contract_version``) are treated as V1 and stay readable.
 """
@@ -30,7 +29,7 @@ class ArtifactType:
     FINAL_PDF = "final_pdf"
     TRANSLATED_IMAGE = "translated_image"
     CLEAN_IMAGE = "clean_image"
-    EDITABLE_PSD = "editable_psd"                 # native Type Layers -- PLANNED
+    EDITABLE_PSD = "editable_psd"                 # native Type Layers -- SUPPORTED
     LEGACY_RASTER_PSD = "legacy_raster_psd"       # existing raster PSD -- distinct type
     QUALITY_REPORT = "quality_report"
     REVIEW_MANIFEST = "review_manifest"
@@ -94,7 +93,7 @@ CAPABILITIES = {
     ArtifactType.EDITABLE_PSD: Capability.SUPPORTED,
     ArtifactType.LEGACY_RASTER_PSD: Capability.SUPPORTED,
     ArtifactType.QUALITY_REPORT: Capability.SUPPORTED,
-    ArtifactType.REVIEW_MANIFEST: Capability.PLANNED,
+    ArtifactType.REVIEW_MANIFEST: Capability.SUPPORTED,
     ArtifactType.OCR_PROVENANCE: Capability.SUPPORTED,
     ArtifactType.REGION_MANIFEST: Capability.SUPPORTED,
     ArtifactType.TRANSLATION_MANIFEST: Capability.SUPPORTED,

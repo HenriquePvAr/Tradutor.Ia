@@ -40,6 +40,12 @@ def _validate_output(final_dir: Path, fmt: str, expected_pages: int) -> dict[str
             dimensions.append(image.size)
     manifest_path = final_dir / "reconstruction_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    review_manifest_path = final_dir / "qc" / "review_manifest.json"
+    from review_manifest import validate_review_manifest
+    review_manifest = json.loads(review_manifest_path.read_text(encoding="utf-8"))
+    validate_review_manifest(review_manifest, artifact_root=final_dir)
+    if int(review_manifest["summary"]["pages_represented"]) != expected_pages:
+        raise ValueError("review_manifest_page_coverage_invalid")
     artifact = final_dir if fmt == "png" else final_dir / str(manifest.get("artifact") or "")
     if fmt == "pdf":
         from pdf_reader import parse_document

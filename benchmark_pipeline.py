@@ -478,7 +478,9 @@ def _export_editable_psds(output_root, completed_states, total_pages, clean_page
             continue
         produced.append(idx)
         total_bytes += os.path.getsize(dst)
-        per_page[idx] = {"path": str(dst), "text_layers": len(result["text_layers"]),
+        # Keep the writer-returned layer identities in memory for the QC index. Never
+        # reconstruct a PSD layer name from region ordering after the write.
+        per_page[idx] = {"path": str(dst), "text_layers": result["text_layers"],
                          "color_profile": result["color_profile"]}
         del original, clean, regions
     all_pages = set(range(1, int(total_pages) + 1))
@@ -3445,6 +3447,78 @@ def run_benchmark(args):
     if quality_json_path.is_file() and quality_json_path.stat().st_size > 0:
         artifact_manifest["artifact_status"][ac.ArtifactType.QUALITY_REPORT] = ac.ArtifactStatus.PRODUCED
         artifact_manifest["produced_artifacts"].append(ac.ArtifactType.QUALITY_REPORT)
+    if artifact_export["profile"] == ac.OutputProfile.PROFESSIONAL_QC:
+        import review_manifest as review_manifest_writer
+        manifest_path = ac.artifact_path(output_folder, ac.ArtifactType.REVIEW_MANIFEST)
+        page_artifacts = {}
+        for page in quality_report.get("pages", []):
+            try:
+                page_index = int(page.get("index") or page.get("sequence_index") or 0)
+            except (TypeError, ValueError):
+                continue
+            if page_index < 1:
+                continue
+            paths = {}
+            for field, kind in (("source_artifact", None),
+                                ("translated_artifact", ac.ArtifactType.TRANSLATED_IMAGE),
+                                ("clean_artifact", ac.ArtifactType.CLEAN_IMAGE)):
+                if kind is None:
+                    candidate = page.get("image_path")
+                    try:
+                        resolved = Path(str(candidate)).resolve()
+                        relative = resolved.relative_to(output_folder.resolve()).as_posix()
+                        paths[field] = relative
+                    except (OSError, ValueError, TypeError):
+                        continue
+                else:
+                    candidate = ac.artifact_path(output_folder, kind, page=page_index,
+                                                 total_pages=_lpc)
+                    if candidate.is_file():
+                        paths[field] = candidate.relative_to(output_folder).as_posix()
+            page_artifacts[page_index] = paths
+        psd_provenance = {
+            page: {"path": entry.get("path"), "text_layers": entry.get("text_layers", [])}
+            for page, entry in (editable_psd_export or {}).get("per_page", {}).items()
+        }
+        try:
+            review_started = time.perf_counter()
+            review_body = review_manifest_writer.build_review_manifest(
+                quality_report=quality_report,
+                logical_page_count=_lpc,
+                job_outcome=final_status,
+                artifact_root=output_folder,
+                psd_provenance=psd_provenance,
+                page_artifacts=page_artifacts,
+            )
+            build_seconds = round(time.perf_counter() - review_started, 6)
+            write_stats = review_manifest_writer.write_review_manifest(manifest_path, review_body)
+        except Exception:
+            artifact_manifest["artifact_status"][ac.ArtifactType.REVIEW_MANIFEST] = ac.ArtifactStatus.FAILED
+            artifact_manifest["failed_artifacts"] = list(artifact_manifest.get("failed_artifacts") or [])
+            if ac.ArtifactType.REVIEW_MANIFEST not in artifact_manifest["failed_artifacts"]:
+                artifact_manifest["failed_artifacts"].append(ac.ArtifactType.REVIEW_MANIFEST)
+            artifact_manifest["coverage"][ac.ArtifactType.REVIEW_MANIFEST] = {
+                "expected_pages": _lpc, "produced_pages": [],
+                "missing_pages": list(range(1, _lpc + 1)), "failed_pages": list(range(1, _lpc + 1)),
+            }
+            atomic_write_json(artifact_manifest_path, artifact_manifest)
+            raise
+        artifact_manifest["artifact_status"][ac.ArtifactType.REVIEW_MANIFEST] = ac.ArtifactStatus.PRODUCED
+        artifact_manifest["produced_artifacts"].append(ac.ArtifactType.REVIEW_MANIFEST)
+        artifact_manifest["coverage"][ac.ArtifactType.REVIEW_MANIFEST] = {
+            "expected_pages": _lpc,
+            "produced_pages": list(range(1, _lpc + 1)),
+            "missing_pages": [], "failed_pages": [],
+            "items_total": review_body["summary"]["items_total"],
+            "items_pending": review_body["summary"]["items_pending"],
+            "items_approved": review_body["summary"]["items_approved"],
+            "items_resolved": review_body["summary"]["items_resolved"],
+        }
+        artifact_manifest.setdefault("byte_totals", {})[ac.ArtifactType.REVIEW_MANIFEST] = write_stats["size_bytes"]
+        artifact_manifest.setdefault("io_seconds_by_artifact", {})[ac.ArtifactType.REVIEW_MANIFEST] = {
+            "build": build_seconds, "write": write_stats["write_seconds"],
+        }
+        report["review_manifest_json"] = str(manifest_path)
     atomic_write_json(artifact_manifest_path, artifact_manifest)
     _write_requested_artifact_aliases(
         output_folder,
