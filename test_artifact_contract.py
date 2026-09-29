@@ -30,10 +30,9 @@ class ArtifactContractTests(unittest.TestCase):
         self.assertEqual(ac.capability_of(AT.QUALITY_REPORT), CAP.SUPPORTED)
         self.assertEqual(ac.capability_of(AT.REVIEW_MANIFEST), CAP.PLANNED)
 
-    # E) EDITABLE_PSD is not falsely supported; legacy raster PSD is distinct
-    def test_editable_psd_not_supported_and_distinct_from_raster(self):
-        self.assertEqual(ac.capability_of(AT.EDITABLE_PSD), CAP.PLANNED)
-        self.assertNotEqual(ac.capability_of(AT.EDITABLE_PSD), CAP.SUPPORTED)
+    # E) EDITABLE_PSD is SUPPORTED since Mission 6 and stays distinct from legacy raster PSD
+    def test_editable_psd_supported_and_distinct_from_raster(self):
+        self.assertEqual(ac.capability_of(AT.EDITABLE_PSD), CAP.SUPPORTED)
         self.assertNotEqual(AT.EDITABLE_PSD, AT.LEGACY_RASTER_PSD)
         self.assertEqual(ac.capability_of(AT.LEGACY_RASTER_PSD), CAP.SUPPORTED)
 
@@ -119,16 +118,23 @@ class ArtifactContractTests(unittest.TestCase):
         # a diagnostic type is not part of AUTOMATIC at all (unrequested != unavailable)
         self.assertNotIn(AT.OCR_PROVENANCE, m["requested_artifacts"])
 
-    def test_professional_reports_editable_psd_unavailable(self):
+    def test_professional_reports_editable_psd_produced_and_review_manifest_unavailable(self):
+        # Since Mission 6 editable_psd is SUPPORTED: when produced it is PRODUCED; review_manifest
+        # is still PLANNED, so it remains the requested-but-unavailable one.
         m = ac.build_artifact_manifest(output_profile=OP.PROFESSIONAL_QC, output_root="C:/out/run1",
                                        logical_page_count=208,
                                        produced={AT.FINAL_PDF: True, AT.TRANSLATED_IMAGE: True,
-                                                 AT.CLEAN_IMAGE: True, AT.QUALITY_REPORT: True})
+                                                 AT.CLEAN_IMAGE: True, AT.EDITABLE_PSD: True,
+                                                 AT.QUALITY_REPORT: True})
         self.assertIn(AT.EDITABLE_PSD, m["requested_artifacts"])
-        self.assertIn(AT.EDITABLE_PSD, m["unavailable_artifacts"])
-        self.assertEqual(m["artifact_status"][AT.EDITABLE_PSD], ac.ArtifactStatus.UNAVAILABLE)
+        self.assertIn(AT.EDITABLE_PSD, m["produced_artifacts"])
+        self.assertEqual(m["artifact_status"][AT.EDITABLE_PSD], ac.ArtifactStatus.PRODUCED)
         self.assertIn(AT.REVIEW_MANIFEST, m["unavailable_artifacts"])
-        self.assertNotIn(AT.EDITABLE_PSD, m["produced_artifacts"])  # never faked as produced
+        # editable_psd requested but NOT produced this run -> REQUESTED, never faked
+        m2 = ac.build_artifact_manifest(output_profile=OP.PROFESSIONAL_QC, output_root="C:/out/run1",
+                                        logical_page_count=208, produced={AT.FINAL_PDF: True})
+        self.assertEqual(m2["artifact_status"][AT.EDITABLE_PSD], ac.ArtifactStatus.REQUESTED)
+        self.assertNotIn(AT.EDITABLE_PSD, m2["unavailable_artifacts"])
 
     def test_user_vs_internal_artifacts_partitioned(self):
         self.assertTrue(ac.USER_ARTIFACTS.isdisjoint(ac.INTERNAL_DIAGNOSTIC_ARTIFACTS))

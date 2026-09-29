@@ -2371,14 +2371,52 @@ Yomu não substitui Photoshop/Photopea.
 | `final_pdf` | SUPPORTED | PDF final atual |
 | `translated_image` | SUPPORTED | páginas renderizadas com texto traduzido |
 | `clean_image` | SUPPORTED | materializado em `images/clean/NNN.png` na Missão 4 (perfil `PROFESSIONAL_QC`); o `*_cleaned.png` legado por página segue existindo |
-| `editable_psd` | **PLANNED / NÃO IMPLEMENTADO** | PSD com Type Layers reais; **não** confundir com o raster atual |
+| `editable_psd` | **SUPPORTED** (Missão 6) | PSD com Type Layers nativas do Photoshop (`editable_psd_writer`), perfil `PROFESSIONAL_QC`; **não** confundir com o raster legado |
 | `legacy_raster_psd` | SUPPORTED | export raster existente, tipo distinto de `editable_psd` |
 | `quality_report` | SUPPORTED | `quality_report.json` |
 | `review_manifest` | PLANNED | Missão 10 |
 
-Um job `PROFESSIONAL_QC` executado antes da Missão 6 reporta `editable_psd` como
-**requested + unavailable**, nunca como produzido — o PSD raster legado jamais é declarado
-`editable_psd`.
+A partir da Missão 6, um job `PROFESSIONAL_QC` **produz** `editable_psd` (uma Type Layer por
+região de texto); `review_manifest` continua `requested + unavailable` (PLANNED, Missão 10). O
+PSD raster legado jamais é declarado `editable_psd`.
+
+## 26.3 PSD Profissional editável v2 — Type Layers nativas (Missão 6)
+
+`editable_psd_writer.py` (`write_editable_psd(...)`) emite **um PSD por página lógica** em
+`psd/<page>.psd` (resolver do contrato), **somente no perfil `PROFESSIONAL_QC`**. AUTOMATIC e
+download-only não geram PSD. A capacidade `editable_psd` é `SUPPORTED` (verificada fisicamente
+no Adobe Photoshop no spike da Missão 5, cujo mecanismo é reutilizado verbatim).
+
+**Estrutura:** grupos `ORIGINAL` (oculto por padrão, `ORIGINAL_ART` raster = fonte),
+`CLEAN` (visível, `CLEAN_ARTWORK` = o `clean_image` canônico da Missão 4, base visual) e
+`TEXT` (visível). O texto traduzido vive em **Type Layers nativas** (bloco `TySh`
+`TypeToolObjectSetting` com EngineData Adobe) — nunca rasterizado. Desligar `TEXT` revela o
+CLEAN; ligar `ORIGINAL` mostra a fonte.
+
+**Regiões (§14).** Cada região detectada com conteúdo vira uma Type Layer: tradução desenhada →
+camada traduzida; região com texto-fonte mas sem tradução → camada `*_REVIEW` com o texto de
+origem (o QC encontra o conteúdo para corrigir). Região sem texto não gera camada. Nomes
+determinísticos por classificação: `BALAO_NNN`, `NARRACAO_NNN`, `CAPTION_NNN`, `FOOTNOTE_NNN`,
+`TITLE_NNN`, `SFX_NNN`, senão `TEXT_NNN`; `region_id` preservado no manifest.
+
+**Modo de texto:** POINT text (o modo comprovadamente editável no Photoshop). **Fonte:** família
+referenciada (`ArialMT`/fallback); a fonte não é distribuída e é substituível se ausente, sem
+rasterizar. **Cor:** preto padrão. **Perfil de cor:** sRGB IEC61966-2.1 embutido (evita o aviso
+"Perfil Ausente" do protótipo). **Limitações cosméticas** (editabilidade > fidelidade):
+outline/stroke, rotação e bold/italic sintéticos não são aplicados; a Type Layer permanece
+editável.
+
+**Páginas sem texto / brancas / curtas** geram PSD válido com `TEXT` vazio, no tamanho real do
+canvas (sem piso de altura) — inclui as calhas 118/143/207 e as páginas curtas 48/208.
+
+**Escrita atômica + validação (§33/§35):** temp → validação estrutural (grupos, rasters,
+contagem/nomes de Type Layers, texto legível) → `os.replace`; só então `PRODUCED`. Falha real
+de página é `FAILED`, nunca mascarada. O `artifact_manifest.json` registra `editable_psd` em
+`produced`/`coverage` (produced/missing/failed) e `byte_totals`. Fluxo memory-bounded: uma
+página construída, escrita, validada e liberada por vez.
+
+**Legado:** `legacy_raster_psd` (o export raster de `professional_psd.py`, acionado por
+`--output-format psd`) permanece intacto e é um tipo distinto — não removido, não renomeado.
 
 **Estrutura canônica alvo** (contrato, ainda não materializada por padrão): `final/`,
 `images/translated/`, `images/clean/`, `psd/`, `qc/`, `diagnostics/`.

@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import config
 import artifact_contract as ac
+import editable_psd_writer
 import region_taxonomy
 from classification_profiler import (
     ClassificationProfiler,
@@ -341,6 +342,104 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
         "clean_total_bytes": int(clean_bytes),
         "io_seconds": round(io_seconds, 4),
         "provenance": provenance,
+    }
+
+
+def _editable_psd_regions(state):
+    """Build the writer's decoupled region model from a page's own render items (Mission 6 §42).
+
+    Every DETECTED text region with content becomes a Type Layer: a drawn translation becomes a
+    translated layer; a region that has source text but no drawn translation (preserved / SFX /
+    untranslated) is kept as a ``source_fallback`` layer so QC still finds the text (§14). A
+    region with no text at all is skipped -- we never invent a layer.
+    """
+    regions = []
+    for item in (state.get("debug_data") or {}).get("items", []) or []:
+        if not isinstance(item, dict):
+            continue
+        box = item.get("draw_box") or item.get("translation_box") or item.get("bounding_box")
+        if not box:
+            continue
+        try:
+            x, y, w, h = [int(round(float(v))) for v in box]
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        translation = str(item.get("translation") or "").strip()
+        source = str(item.get("clean_text") or item.get("text") or "").strip()
+        drawn = bool(item.get("redrawn") or item.get("translated")
+                     or item.get("translation_final_state") == "translated")
+        if drawn and translation and not item.get("preserved_original"):
+            text, status = translation, "translated"
+        elif source:
+            text, status = source, "source_fallback"
+        else:
+            continue
+        stype = str(item.get("classification") or "")
+        nlines = max(1, text.count("\n") + 1)
+        raw_size = int(item.get("font_size") or 0)
+        font_size = raw_size if raw_size > 0 else int(h / (nlines * 1.3)) or config.MIN_FONT_SIZE
+        font_size = max(int(config.MIN_FONT_SIZE), min(font_size, 200))
+        align = "center" if stype.strip().lower() in {
+            "speech", "speech_balloon", "balloon", "dialogue"} else "left"
+        regions.append(editable_psd_writer.EditableTextRegion(
+            region_id=str(item.get("region_id") or item.get("id") or ""),
+            semantic_type=stype, text=text, source_text=source,
+            translation_status=status, bbox=(x, y, w, h),
+            font_size=font_size, color=(0, 0, 0), alignment=align,
+            review_required=bool(item.get("manual_review_required")) or status != "translated",
+        ))
+    return regions
+
+
+def _export_editable_psds(output_root, completed_states, total_pages, clean_pages, font_path):
+    """Write one native-Type-Layer PSD per logical page under ``psd/<page>.psd`` (PROFESSIONAL_QC
+    only; caller gates on profile). Memory-bounded: one page built, written, validated, released
+    before the next (§48). Returns coverage for the artifact manifest."""
+    produced, failed, missing, per_page = [], [], [], {}
+    total_bytes = 0.0
+    started = time.perf_counter()
+    clean_set = set(clean_pages or [])
+    for state in completed_states:
+        idx = int(state["index"])
+        clean_path = ac.artifact_path(output_root, ac.ArtifactType.CLEAN_IMAGE,
+                                      page=idx, total_pages=total_pages)
+        original_path = state.get("image_path")
+        if idx not in clean_set or not clean_path.exists() or not original_path \
+                or not os.path.exists(original_path):
+            missing.append(idx)
+            continue
+        original = cv2.imread(str(original_path), cv2.IMREAD_COLOR)
+        clean = cv2.imread(str(clean_path), cv2.IMREAD_COLOR)
+        if original is None or clean is None:
+            failed.append(idx)
+            continue
+        h, w = clean.shape[:2]
+        if original.shape[:2] != (h, w):
+            original = cv2.resize(original, (w, h))
+        regions = _editable_psd_regions(state)
+        dst = ac.artifact_path(output_root, ac.ArtifactType.EDITABLE_PSD,
+                               page=idx, total_pages=total_pages)
+        try:
+            result = editable_psd_writer.write_editable_psd(
+                dst, original, clean, regions, (w, h),
+                metadata={"logical_page": idx}, font_path=font_path)
+        except Exception:  # noqa: BLE001 -- a failed page is FAILED, never silently produced
+            failed.append(idx)
+            continue
+        produced.append(idx)
+        total_bytes += os.path.getsize(dst)
+        per_page[idx] = {"path": str(dst), "text_layers": len(result["text_layers"]),
+                         "color_profile": result["color_profile"]}
+        del original, clean, regions
+    all_pages = set(range(1, int(total_pages) + 1))
+    covered = set(produced)
+    missing = sorted(all_pages - covered - set(failed))
+    return {
+        "produced": sorted(produced), "failed": sorted(failed), "missing": missing,
+        "total_bytes": int(total_bytes), "io_seconds": round(time.perf_counter() - started, 4),
+        "text_mode": editable_psd_writer.PRODUCTION_TEXT_MODE, "per_page": per_page,
     }
 
 
@@ -2661,6 +2760,12 @@ def run_benchmark(args):
     artifact_export = _persist_canonical_artifacts(
         output_folder, completed_states, len(image_paths), output_profile,
     )
+    editable_psd_export = None
+    if ac.ArtifactType.EDITABLE_PSD in ac.profile_artifacts(output_profile):
+        editable_psd_export = _export_editable_psds(
+            output_folder, completed_states, len(image_paths),
+            artifact_export["clean_produced"], getattr(config, "FONT_PATH", None),
+        )
 
     pdf_filename = (
         "regression.pdf"
@@ -3211,6 +3316,11 @@ def run_benchmark(args):
         and len(artifact_export["clean_produced"]) == _lpc
         and not artifact_export["clean_failed"]
     )
+    _psd_complete = bool(
+        editable_psd_export
+        and len(editable_psd_export["produced"]) == _lpc
+        and not editable_psd_export["failed"]
+    )
     artifact_manifest = ac.build_artifact_manifest(
         output_profile=artifact_export["profile"],
         output_root=output_folder,
@@ -3219,6 +3329,7 @@ def run_benchmark(args):
             ac.ArtifactType.FINAL_PDF: pdf_path.is_file(),
             ac.ArtifactType.TRANSLATED_IMAGE: _translated_complete,
             ac.ArtifactType.CLEAN_IMAGE: _clean_complete,
+            ac.ArtifactType.EDITABLE_PSD: _psd_complete,
         },
         run_id=str(run_signature),
         status=final_status,
@@ -3240,6 +3351,15 @@ def run_benchmark(args):
         ac.ArtifactType.TRANSLATED_IMAGE: artifact_export["translated_total_bytes"],
         ac.ArtifactType.CLEAN_IMAGE: artifact_export["clean_total_bytes"],
     }
+    if editable_psd_export is not None:
+        artifact_manifest["coverage"][ac.ArtifactType.EDITABLE_PSD] = {
+            "produced": editable_psd_export["produced"],
+            "missing": editable_psd_export["missing"],
+            "failed": editable_psd_export["failed"],
+        }
+        artifact_manifest["byte_totals"][ac.ArtifactType.EDITABLE_PSD] = \
+            editable_psd_export["total_bytes"]
+        artifact_manifest["editable_psd_text_mode"] = editable_psd_export["text_mode"]
     artifact_manifest["io_seconds"] = artifact_export["io_seconds"]
     artifact_manifest["provenance"] = artifact_export["provenance"]
     artifact_manifest_path = output_folder / "artifact_manifest.json"

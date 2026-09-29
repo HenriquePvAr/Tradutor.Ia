@@ -370,6 +370,7 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
         # same buffer as the PDF page, not a re-render
         self.assertEqual(page.read_bytes(), canonical_translated.read_bytes())
         self.assertFalse((self.output / "images" / "clean").exists())  # clean is PROFESSIONAL_QC only
+        self.assertFalse((self.output / "psd").exists())  # editable PSD is PROFESSIONAL_QC only (§55)
         manifest = json.loads((self.output / "artifact_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["contract_version"], 2)
         self.assertEqual(manifest["output_profile"], ac.OutputProfile.AUTOMATIC)
@@ -405,9 +406,18 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
         self.assertEqual(cov[ac.ArtifactType.CLEAN_IMAGE]["missing"], [])
         self.assertEqual(cov[ac.ArtifactType.CLEAN_IMAGE]["failed"], [])
         self.assertTrue(manifest["byte_totals"][ac.ArtifactType.CLEAN_IMAGE] > 0)
-        # editable PSD stays truthfully unavailable, never faked as produced (§7/§14)
-        self.assertIn(ac.ArtifactType.EDITABLE_PSD, manifest["unavailable_artifacts"])
-        self.assertNotIn(ac.ArtifactType.EDITABLE_PSD, manifest["produced_artifacts"])
+        # editable PSD is produced in PROFESSIONAL_QC since Mission 6 (native Type Layers)
+        self.assertIn(ac.ArtifactType.EDITABLE_PSD, manifest["produced_artifacts"])
+        self.assertEqual(manifest["coverage"][ac.ArtifactType.EDITABLE_PSD]["produced"], [1])
+        self.assertEqual(manifest["coverage"][ac.ArtifactType.EDITABLE_PSD]["failed"], [])
+        editable = self.output / "psd" / "001.psd"
+        self.assertTrue(editable.is_file())
+        from psd_tools import PSDImage
+        epsd = PSDImage.open(editable)
+        gnames = {l.name for l in epsd if l.is_group()}
+        self.assertEqual(gnames, {"ORIGINAL", "CLEAN", "TEXT"})
+        types = [l for g in epsd if g.is_group() and g.name == "TEXT" for l in g if l.kind == "type"]
+        self.assertTrue(any(t.text == "LEVANTA!" for t in types))
         # SOURCE -> CLEAN -> TRANSLATED provenance per page (§22); this page had text so its
         # clean comes from the rendered cleaned buffer, not the source fallback.
         chain = manifest["provenance"]["1"]  # JSON keys are strings

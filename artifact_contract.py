@@ -8,8 +8,9 @@ exists yet. Physical writer migration happens in later missions (4/6/10).
 
 Capabilities reflect the REAL current implementation, never an aspiration:
   * FINAL_PDF / TRANSLATED_IMAGE / CLEAN_IMAGE / QUALITY_REPORT are produced today.
-  * EDITABLE_PSD (native Type Layers) is PLANNED and NOT implemented; the existing raster
-    export is a separate LEGACY_RASTER_PSD type and must never be reported as EDITABLE_PSD.
+  * EDITABLE_PSD (native Photoshop Type Layers) is produced by ``editable_psd_writer`` in the
+    PROFESSIONAL_QC profile (Mission 6); the existing raster export is a separate
+    LEGACY_RASTER_PSD type and must never be reported as EDITABLE_PSD.
   * REVIEW_MANIFEST is PLANNED (Mission 10).
 
 Legacy outputs (runs without ``contract_version``) are treated as V1 and stay readable.
@@ -88,8 +89,9 @@ CAPABILITIES = {
     ArtifactType.TRANSLATED_IMAGE: Capability.SUPPORTED,
     # Persisted today as per-page ``*_cleaned.png``; canonical images/clean/ relocation is M4.
     ArtifactType.CLEAN_IMAGE: Capability.SUPPORTED,
-    # Native Type-Layer PSD is NOT implemented. Do not confuse with the raster export below.
-    ArtifactType.EDITABLE_PSD: Capability.PLANNED,
+    # Native Type-Layer PSD is implemented (Mission 6, editable_psd_writer). Physically verified
+    # editable in Adobe Photoshop. Distinct from the raster export below.
+    ArtifactType.EDITABLE_PSD: Capability.SUPPORTED,
     ArtifactType.LEGACY_RASTER_PSD: Capability.SUPPORTED,
     ArtifactType.QUALITY_REPORT: Capability.SUPPORTED,
     ArtifactType.REVIEW_MANIFEST: Capability.PLANNED,
