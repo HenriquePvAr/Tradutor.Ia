@@ -2557,6 +2557,29 @@ cópias adicionais. Histórico, retry, re-export, PDF, PSD raster legado, fixtur
 1 decode de validação cada); `PROFESSIONAL_QC` ≈ 4,7 s (416 cópias) — pequeno frente a
 OCR + tradução + render (minutos).
 
+## 26.3 Resumo de conclusão do job (Missão 12)
+
+`UiBridge._job_record()` anexa `completion_summary`, produzido por
+`job_completion.build_job_completion_summary(record, output_root)`. O DTO concentra estado
+terminal, perfil, `logical_pages`, contagem pendente da Review e disponibilidade real dos
+artefatos. Para Contract V2, a disponibilidade exige `artifact_status == produced` no
+`artifact_manifest.json` e os arquivos/páginas canônicos presentes; o PDF legado continua
+abrível pelo caminho já registrado e confinado. Saídas fora de `output_root` não produzem
+ações de abertura.
+
+A tela em `#jobCompletionPanel` consome esse DTO e distingue `finished`, `review_required`,
+`failed`, `cancelled` e `download_only`. `review_required` continua sendo sucesso estrutural
+com recomendação de QC, nunca texto de falha. Os botões PDF/pasta/Review/PSDs/QC são
+condicionados a `completion_summary.actions`, não apenas ao perfil. A Review usa o job atual
+e seu endpoint existente; abrir qualquer resultado não inicia provider, job ou cobrança.
+
+`POST /api/ui/open` recebe somente `job_id` e identificador allowlisted (`pdf`, `folder`,
+`psd_folder`, `qc_folder`, além das ações históricas existentes). O backend faz lookup
+owner-scoped, deriva subpastas canônicas e `_open_artifact_path` valida existência e
+confinamento em `output_root` antes de abrir. A UI nunca envia caminho do filesystem. Jobs
+legados sem Manifest V2 toleram ausência de perfil/manifest e preservam a ação PDF quando o
+arquivo registrado ainda existe.
+
 ## 27. Ambiente de desenvolvimento e comandos
 
 Todos os comandos abaixo foram executados ou validados contra o commit base.

@@ -533,6 +533,17 @@
               <span id="runNextHuman"></span>
               <button class="btn-ghost" type="button" id="runCancelAction">Cancelar processamento</button>
               <button class="btn-ghost" type="button" id="runRetryAction" hidden>Tentar novamente</button>
+              <section class="job-completion" id="jobCompletionPanel" hidden aria-labelledby="jobCompletionTitle" aria-live="polite">
+                <div class="job-completion-heading">
+                  <h2 id="jobCompletionTitle"></h2>
+                  <span id="jobCompletionBadge" hidden></span>
+                </div>
+                <p id="jobCompletionPages"></p>
+                <p id="jobCompletionMessage"></p>
+                <p class="job-completion-review" id="jobCompletionReview" hidden></p>
+                <ul class="job-completion-artifacts" id="jobCompletionArtifacts"></ul>
+                <div class="job-completion-actions" id="jobCompletionActions"></div>
+              </section>
               <dialog class="audit-confirm" id="retryConfirmDialog" hidden aria-label="Confirmar nova tentativa">
                 <strong>Confirmar nova tentativa</strong>
                 <p>Uma tentativa vinculada será criada; a execução anterior e seus artefatos serão preservados.</p>

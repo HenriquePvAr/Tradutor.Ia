@@ -33,6 +33,7 @@ from urllib.parse import quote
 
 from community_auth import RequestPrincipal, bind_is_loopback, peer_is_loopback
 from artifact_contract import OutputProfile
+from job_completion import build_job_completion_summary
 from config import effective_ocr_engine
 from job_store import JobStatus, JobStore
 from output_manifest import MANIFEST_FILENAME, load_verified_run_manifest, sanitize_source_url
@@ -994,6 +995,9 @@ class UiBridge:
             "cancellation_completed_at": _epoch_to_iso(job.get("cancellation_completed_at")),
             **result_metrics,
         }
+        record["completion_summary"] = build_job_completion_summary(
+            record, getattr(self, "output_root", OUTPUT_ROOT)
+        )
         if record["operation_kind"] == "artifact_reconstruction":
             record["publication_manifest_ready"] = (
                 self._reconstruction_publication_manifest_ready(job)
@@ -7206,7 +7210,23 @@ class UiBridge:
             "compare": "compare_sheet_path",
             "context": "session_context_path",
         }
-        field = fields.get(str(artifact or "").strip())
+        action = str(artifact or "").strip()
+        if action in {"psd_folder", "qc_folder"}:
+            summary = record.get("completion_summary") if isinstance(record.get("completion_summary"), dict) else {}
+            if not bool((summary.get("actions") or {}).get(action)):
+                raise ValueError("artifact_not_found")
+            output = Path(str(record.get("output_folder") or "")).expanduser().resolve()
+            relative = "psd" if action == "psd_folder" else "qc"
+            target = (output / relative).resolve()
+            root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+            if not target.is_relative_to(root) or not target.is_dir():
+                raise ValueError("artifact_not_found")
+            expected = {".psd"} if action == "psd_folder" else {".json", ".html"}
+            if not any(path.is_file() and path.suffix.lower() in expected for path in target.iterdir()):
+                raise ValueError("artifact_not_found")
+            self._open_artifact_path(str(target))
+            return
+        field = fields.get(action)
         path_value = str(record.get(field) or "") if field else ""
         if not path_value:
             raise ValueError("artifact_not_found")

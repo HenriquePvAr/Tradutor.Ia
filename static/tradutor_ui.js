@@ -3154,6 +3154,7 @@
       if (operationFailedWithoutResult) {
         $('#artifactActions') && ($('#artifactActions').innerHTML = '');
         $('#runSummary') && ($('#runSummary').hidden = true);
+        $('#jobCompletionPanel') && ($('#jobCompletionPanel').hidden = true);
       } else if (!appState.currentJobId || latestId === appState.currentJobId || terminalRunStatuses.has(presentationStatus)) {
         renderResult(resultRecord);
       } else {
@@ -3181,6 +3182,12 @@
     const active = activeOperationStatuses.has(runtime.status);
     const record = runtime.active || runtime.latest || null;
     const status = runtime.status === 'ready' && record ? record.status : runtime.status;
+    const completionPanel = $('#jobCompletionPanel');
+    if (completionPanel && active) completionPanel.hidden = true;
+    if (active) {
+      ['#runStatusHuman', '#runProgressHuman', '#runEtaHuman', '#runUpdatedHuman', '#runNextHuman']
+        .forEach(selector => { const node = $(selector); if (node) node.hidden = false; });
+    }
     const progress = runtime.progress || {};
     const pipelineState = appState.currentPipelineState || buildPipelineState(runtime, progress);
     card.hidden = !active && !record;
@@ -6688,12 +6695,120 @@
   function renderResult(record) {
     const summary = $('#runSummary');
     if (!record || record.status === 'running' || record.status === 'staging' || record.status === 'awaiting_source_review') return;
-    summary.hidden = false;
-    const gateValue = boolish(record.quality_gate);
-    const gate = gateValue === true ? 'aprovado' : gateValue === false ? 'reprovado' : 'não informado';
-    summary.innerHTML = `<strong>${escapeHtml(record.chapter_name || record.slug || 'Capítulo')}</strong><br>${Number(record.pages_processed || 0)} páginas · ${Number(record.groups_translated || 0)} grupos · ${formatSeconds(record.total_seconds)}<br>${Number(record.errors || 0)} erros · gate ${gate}`;
-    renderArtifactButtons($('#artifactActions'), record);
+    if (summary) summary.hidden = true;
+    renderJobCompletion(record);
+    const legacyActions = $('#artifactActions');
+    if (legacyActions) legacyActions.replaceChildren();
   }
+
+  function completionReviewCountText(count) {
+    return `${count} ${count === 1 ? 'item recomendado para revisão.' : 'itens recomendados para revisão.'}`;
+  }
+  function renderJobCompletion(record) {
+    const panel = $('#jobCompletionPanel');
+    const model = record?.completion_summary;
+    if (!panel || !model || !terminalRunStatuses.has(String(model.terminal_state || '').toLowerCase())) return;
+    panel.hidden = false;
+    const status = String(model.terminal_state || '').toLowerCase();
+    const downloadOnly = model.download_only === true;
+    const reviewRequired = model.review_required === true || status === 'review_required';
+    const profile = model.output_profile === 'professional_qc' ? 'professional_qc' : 'automatic';
+    const title = $('#jobCompletionTitle');
+    const badge = $('#jobCompletionBadge');
+    const pages = $('#jobCompletionPages');
+    const message = $('#jobCompletionMessage');
+    const review = $('#jobCompletionReview');
+    const artifacts = $('#jobCompletionArtifacts');
+    const actions = $('#jobCompletionActions');
+    if (!title || !pages || !message || !artifacts || !actions) return;
+    [$('#runStatusHuman'), $('#runProgressHuman'), $('#runEtaHuman'), $('#runUpdatedHuman'), $('#runNextHuman')]
+      .forEach(node => { if (node) node.hidden = true; });
+    title.textContent = status === 'failed' ? 'Não foi possível concluir a tradução'
+      : status === 'cancelled' ? 'Tradução cancelada'
+        : downloadOnly ? 'Download concluído' : 'Tradução concluída';
+    const showBadge = status === 'review_required' || reviewRequired
+      || (status === 'review_completed' && !downloadOnly);
+    if (badge) {
+      badge.hidden = !showBadge;
+      badge.textContent = status === 'review_completed' ? 'Revisão concluída' : 'Revisão recomendada';
+    }
+    const pageCount = Number(model.logical_pages);
+    pages.textContent = downloadOnly
+      ? (Number.isFinite(pageCount) && pageCount > 0 ? `${pageCount} imagens salvas` : 'As imagens encontradas foram salvas.')
+      : (Number.isFinite(pageCount) && pageCount > 0 ? `${pageCount} ${pageCount === 1 ? 'página processada' : 'páginas processadas'}` : 'Contagem de páginas indisponível.');
+    if (status === 'failed') {
+      message.textContent = String(reasonText(record.reason_code) || record.error_message || 'O processamento não foi concluído.');
+    } else if (status === 'cancelled') {
+      message.textContent = 'O processamento foi cancelado. Você pode iniciar uma nova tradução quando quiser.';
+    } else if (downloadOnly) {
+      message.textContent = 'O conteúdo original está pronto na pasta de saída.';
+    } else if (reviewRequired) {
+      message.textContent = 'Seu resultado foi gerado normalmente. A revisão é recomendada para melhorar alguns trechos.';
+    } else if (profile === 'professional_qc') {
+      message.textContent = 'Material QC Profissional gerado.';
+    } else {
+      message.textContent = 'Seu resultado está pronto.';
+    }
+    const pending = Number(model.review_pending);
+    if (review) {
+      review.hidden = !reviewRequired;
+      review.textContent = Number.isFinite(pending) && pending > 0
+        ? completionReviewCountText(pending)
+        : 'A revisão é recomendada para conferir o resultado.';
+    }
+    artifacts.replaceChildren();
+    const visibleTypes = downloadOnly ? [] : profile === 'professional_qc'
+      ? ['final_pdf', 'translated_image', 'clean_image', 'editable_psd', 'quality_report']
+      : ['final_pdf', 'translated_image'];
+    for (const kind of visibleTypes) {
+      const artifact = model.artifacts?.[kind] || {};
+      const item = document.createElement('li');
+      item.dataset.status = artifact.status || 'missing';
+      const mark = document.createElement('span');
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = artifact.available === true ? '✓' : '•';
+      const label = document.createElement('span');
+      label.textContent = `${artifact.label || kind} — ${artifact.available === true ? 'Pronto' : 'Não gerado'}`;
+      item.append(mark, label);
+      artifacts.appendChild(item);
+    }
+    actions.replaceChildren();
+    const addAction = (label, action, primary = false) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = primary ? 'btn-primary' : 'btn-ghost';
+      button.dataset.completionAction = action;
+      button.dataset.jobId = String(model.job_id || record.job_id || '');
+      button.textContent = label;
+      actions.appendChild(button);
+    };
+    if (status !== 'failed' && !downloadOnly && model.actions?.pdf) addAction('Abrir PDF', 'pdf', true);
+    if (status !== 'failed' && !downloadOnly && model.actions?.review) addAction('Abrir Review', 'review');
+    if (status !== 'failed' && !downloadOnly && model.actions?.psd_folder) addAction('Abrir PSDs', 'psd_folder');
+    if (status !== 'failed' && !downloadOnly && model.actions?.qc_folder) addAction('Abrir pasta de QC', 'qc_folder');
+    if (model.actions?.output_folder) addAction('Abrir pasta', 'folder');
+    if (status !== 'failed') addAction('Nova tradução', 'new-translation');
+    const retry = $('#runRetryAction');
+    if (retry && status !== 'failed') retry.hidden = true;
+  }
+  $('#jobCompletionActions')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-completion-action]');
+    if (!button) return;
+    const action = String(button.dataset.completionAction || '');
+    const jobId = String(button.dataset.jobId || '');
+    if (action === 'review') {
+      const record = appState.history.find(item => String(item.job_id || item.id || '') === jobId)
+        || appState.currentPipelineState?.record;
+      if (record) void openChapterReview(record);
+      else showToast('A revisão deste trabalho não está disponível.', 'warn');
+    } else if (action === 'new-translation') {
+      if (appState.reviewMode) exitReviewMode();
+      activateTab('nova');
+      $('#urlInput')?.focus();
+    } else if (['pdf', 'folder', 'psd_folder', 'qc_folder'].includes(action)) {
+      void openArtifact(jobId, action);
+    }
+  });
 
   /* ---------- logs ---------- */
   function appendLogs(entries) {

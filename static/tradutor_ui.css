@@ -3553,3 +3553,14 @@ html[data-visual-reduced-motion="1"] .auth-login-shell[data-entered] .auth-login
   color: var(--tab-accent, #2f8f5f); background: rgba(var(--tab-rgb, 47,143,95), .12); }
 .source-open { align-self: flex-start; }
 @media (max-width: 560px) { .sources-grid { grid-template-columns: 1fr; } }
+
+/* Mission 12: concise, accessible terminal result, independent of pipeline logs. */
+.job-completion{display:grid;gap:10px;margin-top:18px;padding:18px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.025)}
+.job-completion-heading{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.job-completion h2{margin:0;font-size:clamp(20px,2.5vw,27px);line-height:1.2;color:var(--paper)}
+.job-completion-heading span{padding:5px 9px;border:1px solid rgba(201,162,39,.35);border-radius:999px;color:var(--gold);font-size:12px;font-weight:650}
+.job-completion p{margin:0;color:var(--paper-dim);line-height:1.5}.job-completion #jobCompletionPages{font-weight:650;color:var(--paper)}
+.job-completion-review{padding:10px 12px;border-left:3px solid var(--gold);background:rgba(201,162,39,.07)}
+.job-completion-artifacts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:7px;margin:2px 0;padding:0;list-style:none}
+.job-completion-artifacts li{display:flex;gap:8px;align-items:flex-start;color:var(--muted);font-size:13px}.job-completion-artifacts li[data-status="produced"]{color:var(--success)}.job-completion-artifacts li[data-status="missing"],.job-completion-artifacts li[data-status="failed"]{color:var(--muted)}
+.job-completion-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:3px}.job-completion-actions button{min-width:0;max-width:100%;white-space:normal}
+@media (max-width:560px){.job-completion{padding:14px}.job-completion-actions{display:grid;grid-template-columns:1fr}.job-completion-actions button{width:100%}}

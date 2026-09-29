@@ -408,6 +408,20 @@ perfeita.
 
 ## 15. Onde ficam o PDF e os arquivos
 
+### Após a tradução
+
+Quando uma tradução termina, o resultado indica quantas páginas foram processadas e mostra
+somente as ações correspondentes aos arquivos que existem. **Abrir PDF** abre o documento
+no leitor padrão; **Abrir pasta** mostra a saída desta execução. No modo **QC Profissional**,
+também podem aparecer **Abrir Review**, **Abrir PSDs** e **Abrir pasta de QC**, conforme os
+artefatos produzidos. Imagens traduzidas e limpas ficam resumidas no material gerado.
+
+**Revisão recomendada não significa falha.** O resultado foi gerado normalmente; a Review
+permite conferir os itens sinalizados sem refazer a tradução. Se o processamento falhar, a
+tela informa a falha e oferece nova tentativa apenas quando ela é recuperável. Um
+processamento cancelado é identificado separadamente. **Nova tradução** volta ao formulário
+sem apagar os arquivos anteriores.
+
 Tudo fica dentro da pasta do programa, em `output/`. Em versões atuais, cada execução fica
 numa subpasta do capítulo com um identificador próprio:
 
