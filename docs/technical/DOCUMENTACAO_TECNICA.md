@@ -156,7 +156,7 @@ flowchart TD
     L -->|spawn detached| W[worker_service.py]
     L -->|spawn| UI[app_ui.py<br/>NiceGUI + FastAPI]
     L -. supervisiona .-> W
-    U -->|navegador<br/>127.0.0.1:8080| UI
+    U -->|WebView2 desktop ou UI local de desenvolvimento<br/>127.0.0.1:8080| UI
     UI --> B[ui_bridge.py]
     B --> DB[(.cache/runtime/jobs.sqlite3)]
     W --> DB
@@ -2372,13 +2372,14 @@ preservados. Caches/arquivos locais antigos não são apagados automaticamente.
 `mimrsxnhqbqkffsekxuw` e sua Edge Function/secrets permanecem intactos como rollback
 temporário; aposentadoria destrutiva do rollback requer missão e autorização separadas.
 
-## 26.1 Artifact Contract V2 (fundação)
+## 26.1 Artifact Contract V2 (ativo, com compatibilidade legada)
 
-`artifact_contract.py` (`ARTIFACT_CONTRACT_VERSION = 2`) define — **apenas como fundação,
-sem migrar nenhum writer nesta fase** — quais artefatos um job pode produzir, onde cada um
-pertence, como é identificado, o perfil que o pediu e o que esta build realmente consegue
-produzir. Nenhum caminho de produção muda por causa deste módulo ainda; a migração física
-dos writers ocorre em missões posteriores.
+`artifact_contract.py` (`ARTIFACT_CONTRACT_VERSION = 2`) é consumido pelo pipeline, pelos
+exporters canônicos e pelo writer do Review Manifest. Define tipos, perfis, caminhos canônicos
+e cobertura real de artefatos. A migração dos writers foi aditiva: alguns outputs legados
+continuam presentes e são descritos em [Saídas e artefatos](../OUTPUT_ARTIFACTS.md); manifests e
+paths persistidos identificam o que foi efetivamente escrito. Não presumir que todo arquivo
+legado foi movido para o resolver V2.
 
 **Perfis de saída.** `AUTOMATIC` = `final_pdf` + `translated_image` (resultado pronto para
 consumo). `PROFESSIONAL_QC` = `final_pdf` + `translated_image` + `clean_image` +
@@ -2698,10 +2699,13 @@ npm run typecheck; npm test; npm run build
 
 Guia mais amplo: [`docs/TROUBLESHOOTING.md`](../TROUBLESHOOTING.md).
 
-## 28.1 Estado das frentes (consolidação Beta — 2026-09-27)
+## 28.1 Snapshot histórico das frentes — 2026-09-27 (superado)
 
-Resumo verificado do trabalho consolidado para a próxima Beta. Detalhes por subsistema
-nas seções correspondentes; portões físicos (executável novo) marcados explicitamente.
+Registro do estado verificado em 2026-09-27, antes da conclusão das missões M16/M17. É mantido
+para contexto histórico; estados de PSD, Auth, YK, artifacts e gates abaixo não descrevem o
+produto presente quando conflitarem com seções posteriores ou com [M15 — compatibilidade PSD](../PSD_COMPATIBILITY_MATRIX.md),
+[M17 — performance PSD](../PSD_PERFORMANCE_REPORT.md) e [Saídas e artefatos](../OUTPUT_ARTIFACTS.md).
+Não usar este snapshot como status atual.
 
 ### Quality Review (R1–R4) — IMPLEMENTADO
 
@@ -2718,16 +2722,13 @@ nas seções correspondentes; portões físicos (executável novo) marcados expl
   subprocess, com recovery e lineage. **Zero OCR/provider/YK adicionais** no re-export
   (`review_reexport.py`, `review_reexport_runner.py`). `PHYSICAL_REVIEW_UI` = gate do executável.
 
-### Professional PSD (P1–P4) — IMPLEMENTADO, canônico
+### Professional PSD (P1–P4) — registro histórico supersedido por M15/M17
 
-- Tanto **Quality direto** quanto **Review R4** usam o exporter profissional (`professional_psd.py`);
-  o exporter legado de 2 camadas (`psd_exporter.py`) **não é mais alcançável no produto** (só em
-  seu próprio teste unitário).
-- Camadas por página: `Original` (oculto) · `Cleaned` (visível) · `Text/Region NNN` (raster por
-  região, visível no ON) · `Translated Preview` (oculto, referência).
-- **Typesetting ON**: Cleaned + region layers reconstroem o resultado traduzido. **OFF**: só
-  `Cleaned` + `Original`, sem preview e sem region layers, com metadata completa das regiões no
-  manifest. `PSD_TEXT_MODE=RASTER_PER_REGION`, `EDITABLE_TEXT_SUPPORTED=NO` (não é PSD de texto editável).
+- As afirmações abaixo registram a implementação P1–P4 daquele snapshot; não são o contrato
+  atual de `EDITABLE_PSD`.
+- O writer atual de `EDITABLE_PSD` é `editable_psd_writer.py`, com grupos ORIGINAL/CLEAN/TEXT e
+  Type Layers nativas. `professional_psd.py` é um caminho legado separado. Consulte a matriz
+  M15 e o relatório de performance M17.
 - **P4 memória**: causa do pico era `PSDImage.save()` recompondo (`composite(force=True)`) as
   camadas full-page para o preview mesclado. Como já temos a página achatada, o exporter define
   o `image_data` mesclado direto e pula a recomposição (com fallback seguro, pin `psd-tools==1.10.9`).
@@ -2778,9 +2779,12 @@ nas seções correspondentes; portões físicos (executável novo) marcados expl
 não declarar corrigido) · `WEBTOON_LIVE_RC` · `COMIX_FULL_QUALITY_WORKER_RC` · instalação
 limpa/updater · `YK_POSTGRES_VALIDATION`.
 
-## 29. Dívida técnica conhecida
+## 29. Snapshot histórico de dívida técnica (não revalidado na M18)
 
-Auditada contra o commit base. Itens já fechados foram removidos desta lista.
+Esta lista foi auditada contra um commit anterior às missões M16/M17. Ela é mantida para
+histórico, não constitui inventário atual de blockers. Em especial, status de Auth/licença,
+updater, installer e validação Postgres não devem ser inferidos daqui. A M18 atualizou texto e
+documentação de produto, mas não executou auditoria de release nem nova regressão.
 
 | ID | Severidade | Descrição | Evidência | Encaminhamento sugerido |
 | --- | --- | --- | --- | --- |
@@ -2854,7 +2858,13 @@ Scrapling e fica como trabalho futuro.
 
 ## 30. Empacotamento, updater e prontidão para Beta
 
-### Empacotamento — PLANEJADO
+### Snapshot de empacotamento/updater/tester — histórico anterior à Beta 17
+
+Os estados abaixo registram uma avaliação antiga. O owner confirmou a distribuição da Beta 17
+pelo updater e usou conta/licença no E2E M16; os itens de release continuam fora do escopo M18 e
+precisam de verificação própria antes de qualquer decisão operacional.
+
+### Empacotamento — PLANEJADO (histórico)
 
 Não há artefato de build. Distribuição atual = clone do repositório + venv + `.env`.
 

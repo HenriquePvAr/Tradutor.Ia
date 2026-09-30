@@ -1,8 +1,11 @@
-# Tradutor IA — Guia do Usuário
+# Yomu Sekai — Guia do Usuário
 
-> **Versão do guia verificada em:** commit `a28abd2` · **Revisado em:** 2026-09-29
+> **Base da revisão:** `49eb66a` · **Revisado em:** 2026-09-29
 > **Para quem é:** Scans, tradutores, editores e testadores da Beta. Nenhum conhecimento
 > técnico é necessário.
+
+O produto é chamado **Yomu Sekai**; alguns títulos e nomes de arquivos antigos ainda dizem
+“Tradutor IA”.
 
 ---
 
@@ -49,8 +52,10 @@ Você informa o endereço de um capítulo. O Tradutor IA então:
 6. **Monta um PDF** do capítulo traduzido;
 7. **Marca o que merece sua atenção**, em vez de fingir que ficou tudo perfeito.
 
-Tudo isso acontece **no seu computador**. Suas traduções são suas e ficam na sua máquina
-até que você decida publicá-las.
+O Yomu coordena a leitura e salva os outputs no seu computador. A tradução usa o provider
+configurado pela conta; autenticação, autorização e a contabilização da execução também usam o
+backend do produto. Os artefatos locais só são publicados na Comunidade se você escolher essa
+ação explicitamente.
 
 > 💡 O programa foi feito para ser honesto. Quando ele não tem certeza de alguma coisa, ele
 > avisa em vez de inventar.
@@ -62,23 +67,20 @@ até que você decida publicá-las.
 | Traduzir um capítulo a partir de um endereço da internet | ✅ Sim |
 | Traduzir imagens que já estão numa pasta do seu computador | ✅ Sim |
 | Fila com vários capítulos em sequência | ✅ Sim |
-| Continuar processando com o navegador fechado | ✅ Sim |
+| Continuar processando com a janela do Yomu fechada | ✅ Sim, o worker é independente da interface |
 | Biblioteca com os capítulos já traduzidos | ✅ Sim |
 | PDF do capítulo | ✅ Sim |
 | Pacote Professional/QC com imagens limpas, PSD editável, relatório e índice de revisão | ✅ Sim |
 | Tela de revisão de qualidade | ✅ Sim |
 | Publicar um PDF na comunidade | ✅ Sim (ação explícita, nunca automática) |
-| Instalador com um clique (Setup) | ⏳ **Em desenvolvimento** |
-| Atualização automática do programa | ⏳ **Em desenvolvimento** |
-| Licença/validade de testador | ⏳ **Em desenvolvimento** |
-
-> ⚠️ Itens marcados como **em desenvolvimento** ainda não existem. Se alguém disser que
-> você deve "baixar o instalador", essa informação está errada para esta versão.
+| Instalação Beta preparada | ✅ Disponível conforme o pacote fornecido pelo owner |
+| Atualização | ✅ O updater foi usado para distribuir a Beta 17; a disponibilidade de novas versões depende do canal |
+| Conta/licença de tester | ✅ Fluxo de conta e entitlement foi usado no E2E real M16 |
 
 ## 3. O que você precisa no computador
 
 - **Windows 64 bits** (é o único sistema testado de ponta a ponta);
-- **Google Chrome** instalado (usado para abrir o capítulo e localizar as páginas);
+- **Google Chrome** pode ser necessário para caminhos de descoberta/download que usam fallback de navegador; algumas fontes usam HTTP direto;
 - **Conexão com a internet** durante a tradução;
 - Espaço livre em disco — um capítulo completo com imagens, páginas redesenhadas e PDF
   pode ocupar algumas centenas de megabytes;
@@ -87,9 +89,10 @@ até que você decida publicá-las.
 
 ## 4. Como instalar hoje
 
-> ⚠️ **Instalador para usuário final: em desenvolvimento.** Nesta fase da Beta não existe
-> um `Setup.exe`. A instalação é feita a partir do repositório do projeto, e normalmente é
-> preparada por quem coordena a Beta.
+Use o pacote/atalho do Yomu Sekai fornecido para sua instalação. Se você recebeu uma instalação
+Beta pronta, não precisa clonar o repositório nem preparar Python. Para executar a partir do
+código-fonte, siga o procedimento técnico em [Instalação](../INSTALLATION.md); a M18 não valida
+instalação limpa nem o processo de release.
 
 Se você recebeu um computador ou uma pasta já preparada, pule direto para a
 [seção 5](#5-abrindo-o-programa-pela-primeira-vez).
@@ -107,22 +110,22 @@ da sua conta.
 
 ## 5. Abrindo o programa pela primeira vez
 
-Na pasta do programa existe um atalho chamado **`start_tradutor.bat`**. Dê um duplo clique
-nele.
+Abra o atalho do Yomu Sekai fornecido com o pacote. Na versão desktop, a interface aparece em
+uma janela nativa do aplicativo.
 
 O que acontece:
 
-1. Uma janela pode piscar rapidamente — é normal;
-2. O programa liga o **serviço de processamento**, que é a parte que faz o trabalho pesado;
-3. Em seguida a interface abre no seu navegador, no endereço **`http://127.0.0.1:8080`**.
+1. O runtime local inicia os serviços de interface e processamento;
+2. A janela desktop do Yomu Sekai mostra a interface.
 
-Se o navegador não abrir sozinho, digite `http://127.0.0.1:8080` na barra de endereços.
+`http://127.0.0.1:8080` é o endereço local usado pelo runtime, não um substituto para abrir o
+aplicativo desktop. Para uma execução a partir do repositório, consulte o launcher e o ambiente
+descritos na documentação técnica.
 
-> 💡 O serviço de processamento continua funcionando mesmo se você fechar a aba do
-> navegador. Um capítulo que já começou **não é perdido** porque você fechou a janela.
+> 💡 O serviço de processamento continua funcionando mesmo se você fechar a janela do
+> aplicativo. Um capítulo que já começou não é perdido apenas por fechar a interface.
 
-> ⚠️ Enquanto o programa estiver rodando, **não feche** a janela preta que ficou aberta
-> (quando houver uma). Fechá-la encerra o programa.
+> ⚠️ Encerre o Yomu pelo próprio aplicativo quando não houver processamento em andamento.
 
 ## 6. Entrando na sua conta
 
@@ -137,11 +140,16 @@ Na tela de acesso você verá:
 - um indicador de conexão: *verificando serviço…*, *serviço conectado* ou
   *sem conexão com o serviço*.
 
-Se você ainda não tem conta, use **Criar conta**. Dependendo da configuração do seu
-ambiente, pode ser necessário confirmar o cadastro pelo e-mail.
+Se você ainda não tem conta, use **Criar conta** e confirme o endereço pelo e-mail. A
+confirmação não faz login automaticamente: depois da mensagem de confirmação, volte ao Yomu
+e entre com seu e-mail e senha.
 
-> ⚠️ A opção de **recuperação de senha** pode aparecer indisponível dependendo do ambiente.
-> Nesse caso, peça ajuda a quem coordena a Beta.
+O callback de autenticação usado pelo aplicativo é local:
+`http://127.0.0.1:8080/auth/callback`. Abra a mensagem no mesmo computador em que o Yomu está
+rodando. Em celular ou outro dispositivo, `127.0.0.1` aponta para esse próprio dispositivo,
+não para o computador com o Yomu; a confirmação pode concluir, mas o callback local não estará
+disponível ali. Recuperação e troca de senha estão disponíveis pelo fluxo do aplicativo; o
+retorno PKCE é usado quando necessário.
 
 ## 7. Conhecendo as telas
 
@@ -151,7 +159,7 @@ Na lateral existe um menu com as áreas do programa:
 | --- | --- |
 | **Início** | Resumo: séries em andamento, atividade recente e atalhos rápidos |
 | **Nova tradução** | Onde você começa a tradução de um capítulo |
-| **Fontes** | Atalhos para os sites suportados (Webtoon, Comix, Vortex Scans): abre o site no navegador para você achar o capítulo e copiar a URL |
+| **Fontes** | Atalhos para Webtoon, Comix e Vortex Scans. Também é possível escolher uma pasta local na tela Nova tradução. |
 | **Fila** | Vários capítulos enfileirados para processar em sequência |
 | **Capítulos traduzidos** | Sua biblioteca local: ler, abrir pasta e ver relatórios |
 | **Leitor** | Lê o capítulo escolhido dentro do próprio programa |
@@ -162,7 +170,7 @@ Na lateral existe um menu com as áreas do programa:
 > 💡 Atalhos: as teclas **1 a 9** trocam de aba, e **Enter** inicia a análise da URL na
 > tela de nova tradução.
 
-A aba **Fontes** é só um atalho: ela mostra os sites suportados hoje — **Webtoon**
+A aba **Fontes** é só um atalho: ela mostra os sites com atalho integrado — **Webtoon**
 (https://www.webtoons.com/en/), **Comix** (https://comix.to/browse?genres_in=101137) e
 **Vortex Scans** (https://vortexscans.org/). Ao clicar em "Abrir …", o site abre no seu
 **navegador padrão** (o Yomu continua aberto). Lá você encontra o capítulo, **copia a URL**
@@ -238,12 +246,28 @@ selecionado.
 
 | Modo | Quando usar |
 | --- | --- |
-| **Qualidade** (padrão) | Páginas e fontes difíceis. Processamento mais conservador, mais lento. |
-| **Rápido** | Uso geral. Processa com otimizações automáticas e validação de qualidade. |
-| **Download-only** | Só coleta e valida as páginas. Não lê texto, não traduz e não gera PDF. Útil para conferir se um capítulo está completo. |
+| **Qualidade** (padrão) | Processa o capítulo para tradução, com validação; use para gerar os arquivos finais. |
+| **Download-only** | Só coleta e valida as páginas. Não executa OCR nem tradução, não chama provider e não consome YK. Útil para conferir a coleta. |
 
-No modo **Download-only**, os perfis de saída ficam desativados: somente o conteúdo original
-é coletado. A opção de perfil não altera o motor de tradução nem adiciona custo de YK.
+`Rápido` não é oferecido como escolha na interface atual. A CLI ainda aceita `fast` para uso
+técnico/compatibilidade.
+
+### Perfil de saída
+
+O perfil é separado do modo:
+
+| Perfil | Use quando | Arquivos principais |
+| --- | --- | --- |
+| **Automático** | Quer ler ou publicar o resultado | PDF traduzido e imagens traduzidas. |
+| **QC Profissional** | Vai revisar e finalizar detalhes | Os mesmos arquivos, mais imagens limpas, PSD com Type Layers editáveis, Quality Report e Review Manifest. |
+
+Download-only desativa os perfis e coleta somente o conteúdo original. Para localizar cada
+arquivo, veja [Onde ficam o PDF e os arquivos](#15-onde-ficam-o-pdf-e-os-arquivos).
+
+Uma tradução nova em **Qualidade** consome 1 YK somente depois de o provider concluir e a
+tradução válida ficar persistida. Falha antes desse ponto consome 0; uma falha posterior ao
+salvar a tradução ou gerar os arquivos não devolve automaticamente o YK. Retry/re-export
+reutiliza a tradução salva, sem outra chamada ao provider nem outro YK.
 
 ### Escopo
 
@@ -319,8 +343,9 @@ execução anterior e seus arquivos.
 
 O Tradutor IA foi feito esperando que coisas ruins aconteçam.
 
-**Se você fechar a aba ou o navegador:** nada é perdido. O processamento continua em
-segundo plano. Reabra `http://127.0.0.1:8080` e você volta a ver o progresso.
+**Se você fechar a janela do Yomu:** o worker independente continua o processamento. Abra
+novamente o aplicativo para acompanhar o job; não é necessário abrir o endereço loopback
+manualmente no navegador.
 
 **Se o serviço de processamento cair sozinho:** quando você iniciou o programa pelo atalho
 normal, ele **percebe a queda e liga um substituto automaticamente**, esperando alguns
@@ -422,8 +447,9 @@ tela informa a falha e oferece nova tentativa apenas quando ela é recuperável.
 processamento cancelado é identificado separadamente. **Nova tradução** volta ao formulário
 sem apagar os arquivos anteriores.
 
-Tudo fica dentro da pasta do programa, em `output/`. Em versões atuais, cada execução fica
-numa subpasta do capítulo com um identificador próprio:
+Tudo fica dentro da pasta de saída local, em `output/`. Jobs da interface mantêm execuções
+separadas por capítulo/run; a organização exata pode variar para outputs legados e execuções
+de CLI. Confie nos caminhos gravados nos manifests da execução, não em nomes montados à mão.
 
 ```text
 output/<nome_do_capitulo>/<id_da_execucao>/
@@ -433,14 +459,17 @@ Isso permite repetir o mesmo capítulo sem apagar o PDF ou os relatórios da exe
 anterior. Capítulos gerados por versões antigas podem continuar aparecendo diretamente em
 `output/<nome_do_capitulo>/`.
 
-| Arquivo | O que é |
+| O que procura | Conteúdo |
 | --- | --- |
-| `<obra>_capitulo_<número>.pdf` | **O capítulo traduzido** |
-| `pages/` | As páginas finais, uma imagem por página |
-| `input/` | As imagens originais que foram baixadas |
-| `quality_report.html` | Relatório de qualidade, legível no navegador |
-| `download_report.html` | Relatório da coleta das páginas |
-| `timing_report.txt` | Quanto tempo cada etapa levou |
+| Resultado para leitura | PDF traduzido e imagens traduzidas. |
+| QC Profissional | Imagens limpas, um PSD por página, Quality Report e Review Manifest. |
+| Diagnóstico interno | Manifests de job/run, relatório de download e tempos, quando produzidos. |
+
+O contrato V2 define os caminhos canônicos (`images/translated/`, `images/clean/`, `psd/`,
+`qc/quality_report.json` e `qc/review_manifest.json`). Compatibilidade com execuções anteriores
+e alguns writers ainda pode deixar aliases/relatórios na raiz do output; o
+`artifact_manifest.json` e os caminhos do job identificam o que foi realmente produzido.
+Veja [Saídas e artefatos](../OUTPUT_ARTIFACTS.md) para detalhes.
 
 A forma mais fácil de chegar lá é pela aba **Capítulos traduzidos**, que abre o PDF ou a
 pasta para você.
@@ -547,7 +576,7 @@ As mensagens abaixo são as que o programa realmente mostra.
 
 | O que você vê | O que significa | O que fazer |
 | --- | --- | --- |
-| *Serviço de processamento indisponível* | O serviço que faz o trabalho pesado não está ligado | Feche tudo e abra novamente pelo `start_tradutor.bat`. Se voltar a acontecer, veja a [seção 21](#21-como-reiniciar-com-segurança) |
+| *Serviço de processamento indisponível* | O serviço que faz o trabalho pesado não está ligado | Feche o Yomu e abra novamente pelo atalho do aplicativo. Se voltar a acontecer, veja a [seção 21](#21-como-reiniciar-com-segurança) |
 | Capítulo parado em **na fila** e nada acontece | Não há serviço de processamento ativo | Mesmo procedimento acima |
 
 ### Problemas com a origem do capítulo
@@ -607,10 +636,9 @@ do momento. Regra prática:
 
 ## 21. Como reiniciar com segurança
 
-1. Feche a aba do navegador;
-2. Feche a janela do programa, se houver uma aberta;
-3. Espere alguns segundos;
-4. Abra o `start_tradutor.bat` novamente.
+1. Feche a janela do Yomu;
+2. Espere alguns segundos;
+3. Abra novamente o atalho do aplicativo.
 
 Isso é seguro. Traduções já concluídas continuam na biblioteca, e capítulos que estavam no
 meio ficam marcados como interrompidos com os arquivos preservados.
@@ -653,16 +681,16 @@ O que a versão atual **não** promete:
 - Um site que passa na análise **não é necessariamente um site suportado** — sem um
   adaptador específico, o programa pode pedir sua confirmação ou recusar;
 - Sites com login, verificação anti-robô ou conteúdo protegido **não são contornados**;
-- Um capítulo por vez;
+- É possível enfileirar vários capítulos; o processamento segue a capacidade/ordem da fila;
 - Efeitos sonoros são **preservados**, não traduzidos, por padrão;
 - **Retomar** só aparece para capítulos interrompidos que o programa confirmou como
   recuperáveis (ver [seção 13](#13-se-o-programa-fechar-ou-travar-no-meio));
-- Não existe instalador, atualização automática nem controle de licença de testador.
+- A disponibilidade de atualização depende do canal Beta fornecido; esta lista não é um checklist de release.
 
 ## 24. Perguntas frequentes
 
-**Posso fechar o navegador enquanto traduz?**
-Pode. O processamento continua. Reabra `http://127.0.0.1:8080` para acompanhar.
+**Posso fechar a janela do Yomu enquanto traduz?**
+Pode. O worker continua o processamento. Abra novamente o aplicativo para acompanhar; não use o endereço local como substituto da janela desktop.
 
 **Posso desligar o computador no meio?**
 Pode, mas o capítulo ficará interrompido. Os arquivos produzidos até ali são preservados.
@@ -696,8 +724,8 @@ motor de tradução, apenas para você saber o que está sendo usado. O campo n�
 não tem seta: não há troca nesta versão, e o programa nunca troca de motor por conta
 própria. O que o campo mostra é o motor realmente configurado para a execução.
 
-**O programa vai atualizar sozinho?**
-Não nesta versão. A atualização automática está em desenvolvimento.
+**Como recebo uma atualização?**
+Quando uma atualização Beta estiver disponível, use a opção de atualização do aplicativo e siga as instruções apresentadas. A M18 não valida uma nova release nem garante que haja uma versão mais recente no canal.
 
 **Minha tradução aparece para outras pessoas?**
 Só se você publicar explicitamente na aba **Comunidade**.
@@ -715,7 +743,8 @@ horário da última atualização parar de avançar por muito tempo, veja a
 
 1. Confira a tabela de [mensagens de erro](#20-mensagens-de-erro-e-o-que-fazer);
 2. Veja a aba **Logs** dentro do programa;
-3. Abra o `quality_report.html` da pasta do capítulo — ele explica o que ficou pendente;
+3. Abra o Quality Report e a lista de revisão apontados pela execução; os caminhos também
+   aparecem no `artifact_manifest.json` e na Review;
 4. Se o problema for técnico, o material para quem dá suporte está em
    [Troubleshooting](../TROUBLESHOOTING.md) e na
    [Documentação Técnica](../technical/DOCUMENTACAO_TECNICA.md#28-troubleshooting-técnico).

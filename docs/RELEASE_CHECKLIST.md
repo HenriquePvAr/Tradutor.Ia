@@ -1,5 +1,10 @@
 # Release checklist
 
+> Este checklist contém caixas e estados herdados de uma avaliação anterior à Beta 17. Eles
+> não são um retrato atual nem foram revalidados pela M18. Use-o como roteiro para uma futura
+> execução do gate; confirme cada item de novo antes de tratar qualquer marcação/pendência como
+> válida. A M18 não executou auditoria de release.
+
 ## Pré-RC
 
 - [x] Pipeline, quality, provenance, PDF e accounting validados

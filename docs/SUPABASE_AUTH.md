@@ -87,6 +87,10 @@ de JWKS **falha fechado**: a requisição fica não autenticada, nunca aceita.
    confirmação e orienta o usuário a voltar ao Yomu e entrar com a senha. Esse caminho não
    cria sessão nem tenta trocar um código PKCE, pois o link pode abrir em outro perfil de
    navegador sem o verifier local.
+   O callback configurado é `http://127.0.0.1:8080/auth/callback`: o link deve ser aberto no
+   mesmo computador em que o Yomu está rodando. Em outro dispositivo, `127.0.0.1` aponta para
+   esse dispositivo; a confirmação de e-mail pode concluir, mas a página local de retorno não
+   estará disponível nele. Depois da confirmação, o usuário volta ao Yomu e entra com senha.
 5. Outros callbacks PKCE, como recuperação, só trocam um `code` não vazio quando o
    verifier local do projeto está presente. A sessão só é tratada como concluída depois
    de o SDK confirmar a sessão persistida. Destinos de retorno continuam fixos — sem open

@@ -8,6 +8,14 @@ paywall. O resultado é uma decisão codificada e metadados sanitizados para a U
 URLs, cookies, query strings, headers privados e corpos de resposta não entram no manifesto
 público.
 
+## Fontes disponíveis no produto
+
+A interface oferece atalhos para **Webtoon**, **Comix** e **Vortex Scans**, além da entrada por
+**pasta local**. A existência do `UniversalChapterAdapter` é um fallback de análise limitada,
+não uma promessa de compatibilidade com qualquer site. Tecnologias como Scrapling,
+DynamicFetcher/Playwright e Selenium são mecanismos internos de resolução/transporte; o usuário
+escolhe a fonte ou URL, não esses componentes.
+
 Entrada por pasta local é uma fonte distinta da resolução HTTP(S). A UI e a CLI escolhem
 exatamente uma origem — URL pública **ou** pasta local — antes de criar o job. A pasta passa por
 `LocalFolderChapterAdapter`, política de caminhos e snapshot interno; ela não é convertida em
@@ -71,6 +79,15 @@ O scroll é limitado aos bounds do reader, não ao fim do documento, para não e
 recomendações, rodapé ou Next Episode. Se ainda houver slots pendentes, timeout ou DOM alterado,
 a fase de fonte encerra com `incomplete_source_coverage`; nenhum runner é iniciado e isso nunca é
 rotulado como `incomplete_download`, porque nenhum byte de página foi baixado nessa etapa.
+
+### Comix
+
+`ComixAdapter` reconhece o host e encaminha a resolução do reader ao resolver dinâmico quando o
+preflight HTTP não encontra imagens utilizáveis. O resolver pode usar as dependências de browser
+declaradas no perfil Beta; isso é implementação interna, não uma opção separada na UI. A coleta
+continua sujeita a limites e a estados explícitos de acesso negado, challenge, timeout ou reader
+incompatível. Não há evasão de CAPTCHA/DRM/login nem garantia de que mudanças externas do site
+continuarão compatíveis.
 
 ### VortexScans
 

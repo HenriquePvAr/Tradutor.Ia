@@ -33,7 +33,8 @@ Depois, procure os artefatos do output ativo:
 
 - `progress.json` para status e última página registrada;
 - `timing_report.json` para etapa, contagens e PDF;
-- `quality_report.html` para revisão visual rápida;
+- `quality_report.json` e `qc/review_manifest.json` para qualidade e itens de Review, quando presentes;
+- `artifact_manifest.json` para a cobertura e o status real dos artefatos;
 - `download_report.html` para coleta e teardown;
 - stdout/stderr do launcher para falhas de processo.
 
@@ -165,10 +166,12 @@ Mantenha `MIN_SYSTEM_RESERVE_GB` e `PIPELINE_MEMORY_RESERVE_GB` em valores conse
 
 Esse status significa que o processamento técnico concluiu, mas o quality gate encontrou revisão pendente. O PDF pode estar disponível e o exit code técnico pode ser `0`.
 
-Abra:
+Abra o relatório/lista de revisão indicados pelo job. Em outputs atuais, confira o manifesto:
 
-- `quality_report.html` para itens de revisão;
+- `artifact_manifest.json` para saber quais artefatos foram produzidos;
 - `quality_report.json` para reasons e métricas;
+- `qc/review_manifest.json` para a navegação de Review, no perfil QC Profissional;
+- `quality_report.html` também pode estar disponível para leitura no navegador; use o manifest para confirmar os caminhos deste run;
 - `timing_report.json` para o status consolidado;
 - `progress.json` para a visão por página.
 
@@ -188,15 +191,37 @@ Os códigos próprios são `130` para cancelamento, `251` para falha de launch e
 
 Antes de retomar, confirme que não existe outro pipeline ativo. Não inicie duas execuções para o mesmo output.
 
+## Confirmação de e-mail abre um endereço local que não responde
+
+O callback atual é `http://127.0.0.1:8080/auth/callback` e só existe enquanto o runtime local
+do Yomu está disponível naquele computador. Abra o link no mesmo computador em que o aplicativo
+está rodando. Em celular ou outro computador, `127.0.0.1` aponta para o próprio dispositivo;
+por isso a confirmação pode ocorrer sem que a página local abra. Depois de confirmar o cadastro,
+volte ao Yomu e entre com e-mail e senha. A confirmação não cria sessão automaticamente.
+
+## O PSD avisa que uma fonte está ausente
+
+O editor pode substituir uma fonte não instalada e exibir uma advertência. Isso não significa
+que a Type Layer foi rasterizada: o texto continua editável e a fonte pode ser escolhida no
+Photoshop/Photopea. Preserve o PSD original e não rasterize texto para contornar o aviso. Veja
+[a matriz de compatibilidade](PSD_COMPATIBILITY_MATRIX.md).
+
+## A análise da fonte falhou
+
+Timeout, HTTP 522, challenge ou mudança de reader podem tornar uma fonte temporariamente
+indisponível/incompatível. A análise deve falhar de forma explícita, sem afirmar que a cobertura
+está completa. Confira a mensagem sanitizada e o relatório de download; não tente contornar login,
+CAPTCHA ou outras barreiras. Uma URL analisável pelo fallback universal não é garantia de suporte.
+
 ## Cache parece incompatível
 
 Os caches usam hashes, configuração e versões internas. Para um reprocessamento controlado, use uma saída nova e a flag existente:
 
 ```powershell
-python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast --force --output "nova_execucao"
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode quality --force --output "nova_execucao"
 ```
 
-`--force` ignora caches de download, OCR, tradução e renderização nessa execução. Ele não apaga o cache global. Evite editar manifests ou remover `.cache` inteiro; isso destrói evidências e pode provocar downloads e traduções desnecessários.
+`fast` ainda existe como modo técnico na CLI, mas não é uma opção da UI. `--force` ignora caches de download, OCR, tradução e renderização nessa execução; isso pode repetir aquisição e chamadas ao provider. Use-o somente se realmente quiser refazer o processamento. Ele não apaga o cache global. Evite editar manifests ou remover `.cache` inteiro; isso destrói evidências e pode provocar downloads e traduções desnecessários.
 
 ## O PDF não foi gerado
 

@@ -1,4 +1,4 @@
-# Tradutor.IA
+# Yomu Sekai
 
 **Pipeline local para transformar capítulos ilustrados em versões traduzidas para PT-BR, com OCR híbrido, validação de qualidade e geração de PDF.**
 
@@ -6,7 +6,7 @@
 ![Plataforma auditada: Windows](https://img.shields.io/badge/plataforma%20auditada-Windows-0078D4?logo=windows11&logoColor=white)
 ![Status: beta técnica](https://img.shields.io/badge/status-beta%20t%C3%A9cnica-D97706)
 
-Tradutor.IA organiza em um único fluxo a coleta de páginas, o reconhecimento de texto, a classificação semântica, a tradução, a reconstrução visual e a geração do PDF. O projeto foi desenhado para preservar evidências de cada etapa e encaminhar resultados duvidosos para revisão, em vez de tratá-los silenciosamente como corretos.
+Yomu Sekai organiza em um único fluxo a coleta de páginas, o reconhecimento de texto, a classificação semântica, a tradução, a reconstrução visual e a geração do PDF. O projeto preserva evidências de cada etapa e encaminha resultados duvidosos para revisão, em vez de tratá-los silenciosamente como corretos.
 
 O fluxo principal atual é voltado a capítulos web com texto-fonte em inglês e tradução para português brasileiro. Ele pode ser operado por uma interface local ou pela linha de comando.
 
@@ -27,6 +27,10 @@ O fluxo principal atual é voltado a capítulos web com texto-fonte em inglês e
 - **Artefatos de revisão:** produz PDF, relatórios JSON/HTML, progresso persistido, métricas e um quality gate com estados explícitos.
 - **Fila persistente:** o pipeline roda num worker independente da UI; fechar o navegador não interrompe um capítulo.
 - **Execução supervisionada:** o launcher canônico reinicia o worker que ele criou sob política limitada (2s/5s/15s, 3 tentativas, depois degradado) e persiste o exit code real controlando a árvore de processos no Windows.
+
+Os perfis de saída e caminhos dos arquivos estão em [Saídas e artefatos](docs/OUTPUT_ARTIFACTS.md).
+Em resumo: **Automático** entrega PDF e imagens traduzidas; **QC Profissional** também entrega
+imagens limpas, PSD editável, relatório de qualidade e lista de revisão.
 
 ## Como funciona
 
@@ -91,7 +95,7 @@ No Windows há também `start_tradutor.bat`. A aplicação escuta por padrão em
 Para executar pela CLI:
 
 ```powershell
-python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast --no-context
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode quality --no-context
 ```
 
 O cache é reutilizado por padrão. Use `--force` somente quando quiser reprocessar download, OCR, tradução e renderização. Consulte o [guia de instalação](docs/INSTALLATION.md) antes da primeira execução completa e a [referência de configuração](docs/CONFIGURATION.md) para ajustar recursos e qualidade.
@@ -104,14 +108,40 @@ protegido e leitores não observáveis falham fechados. Consulte as limitações
 de formatos em [Adaptador universal de capítulos](docs/UNIVERSAL_CHAPTER_ADAPTER.md) antes de
 usar esse fallback.
 
-## Modos de execução
+## Modos e perfis de saída
+
+Na interface do Yomu há dois modos de processamento: **Qualidade** e **Download-only**.
+`fast` continua aceito pela CLI para execuções técnicas/compatibilidade, mas não é opção da
+interface. Download-only apenas coleta e valida páginas: não executa OCR, provider de tradução
+nem consome YK.
+
+O perfil de saída é separado do modo:
+
+| Perfil | Resultado |
+| --- | --- |
+| **Automático** | PDF traduzido e imagens traduzidas — pronto para ler/publicar. |
+| **QC Profissional** | Tudo do Automático, mais imagens limpas, PSD editável com Type Layers, Quality Report e Review Manifest — pronto para revisar e finalizar. |
+
+Quality chama o provider configurado. O consumo de 1 YK ocorre somente depois de sucesso do
+provider e persistência válida da tradução. Uma falha posterior ao gerar arquivos não devolve
+automaticamente esse YK. Retry/re-export reutiliza tradução válida persistida, sem novo provider
+ou cobrança.
+
+Fontes disponíveis na interface: Webtoon, Comix e Vortex Scans por URL, além de uma pasta local
+de capítulo. A análise universal de uma URL não significa suporte homologado ao site. Scrapling,
+DynamicFetcher e Selenium são detalhes internos de aquisição, não fontes escolhidas pelo usuário.
+
+Consulte [Adapters de fonte](docs/SOURCE_ADAPTERS.md), [Saídas e artefatos](docs/OUTPUT_ARTIFACTS.md),
+o [contrato PSD](docs/PSD_COMPATIBILITY_MATRIX.md) e o [relatório de performance PSD M17](docs/PSD_PERFORMANCE_REPORT.md).
+
+### Modos da CLI
 
 Em ambos os modos o engine primário é **RapidOCR** (`config.BETA_OCR_ENGINE`). O modo não
 troca o engine; ele decide quanto esforço de recuperação é permitido.
 
 | Modo | Estratégia | Indicação |
 | --- | --- | --- |
-| `fast` | RapidOCR com fallbacks pesados desativados por padrão; uma leitura duvidosa vira revisão em vez de bloquear o capítulo | Uso geral e iteração mais rápida |
+| `fast` | RapidOCR com fallbacks pesados desativados por padrão; uma leitura duvidosa vira revisão em vez de bloquear o capítulo | CLI técnica/compatibilidade; não aparece na UI |
 | `quality` | RapidOCR com os caminhos de recuperação e validação mais caros habilitados, incluindo validação de OCR pós-render | Comparações conservadoras e diagnóstico |
 
 PaddleOCR não é dependência obrigatória de nenhum dos modos: é compatibilidade legacy
@@ -120,7 +150,7 @@ explicitamente opt-in (`OCR_LEGACY_PADDLE_FALLBACK`, desligado por padrão).
 Exemplos:
 
 ```powershell
-# Execução rápida com cache
+# CLI: modo técnico rápido com cache (não aparece na UI)
 python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast
 
 # OCR inicial com PaddleOCR e saída nomeada
@@ -209,7 +239,30 @@ A taxonomia completa (14 estados, incluindo `staging`, `awaiting_source_review`,
 
 Esses mecanismos reduzem falsos positivos, mas não garantem tradução perfeita. Veja [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) para o contrato completo.
 
-## Status do projeto
+## Produto atual — resumo M18
+
+| Área | Estado atual confirmado |
+| --- | --- |
+| Modos na interface | Qualidade e Download-only; `fast` continua somente na CLI. |
+| Fontes | Webtoon, Comix e Vortex Scans por URL; pasta local também é entrada suportada. |
+| Saída Automático | PDF e imagens traduzidas. |
+| Saída QC Profissional | Automático + imagens limpas, PSD editável com Type Layers, Quality Report e Review Manifest. |
+| Review | QC linguístico; `review_required` significa concluído com revisão recomendada, não falha automática. |
+| PSD | `editable_psd_writer.py`; M15 validou edição física no Photoshop 2025 e Photopea. Cross-editor round-trip direto não foi executado. |
+| Auth/backend | Projeto ativo Yomu Sekai: `ybxwjiycujminbwbdtlb`; fluxo signup/confirmar/login e recovery validados fisicamente. |
+| Profile Media | Removida do produto ativo. |
+| Custo PSD | Medições M17 e estimativas separadas em [PSD_PERFORMANCE_REPORT.md](docs/PSD_PERFORMANCE_REPORT.md). |
+
+Este resumo não substitui uma auditoria de release/packaging. Consulte
+[Saídas e artefatos](docs/OUTPUT_ARTIFACTS.md), [Adapters](docs/SOURCE_ADAPTERS.md) e os
+documentos especializados vinculados.
+
+## Status de projeto legado — snapshot histórico
+
+> A tabela abaixo é preservada de uma avaliação anterior e não foi revalidada como estado atual
+> na M18. Em particular, licenciamento, instalador, updater e distribuição não devem ser usados
+> como gate atual; consulte os documentos operacionais próprios. A M18 não executou auditoria de
+> release nem alterou esses sistemas.
 
 O Tradutor.IA está em **beta técnica**. O pipeline principal está sob
 **[Quality Freeze](docs/QUALITY_FREEZE.md)**: comportamento de produção, dependências
@@ -244,7 +297,11 @@ naturalidade do PT-BR, fontes incomuns e páginas visualmente densas podem exigi
 inspeção. O suporte end-to-end foi auditado no Windows; outros sistemas não fazem parte do
 contrato validado atual. Use apenas conteúdo que você tenha autorização para processar.
 
-## Empacotamento e distribuição
+## Empacotamento e distribuição — snapshot histórico
+
+> Os estados e planos descritos nesta seção foram registrados antes da Beta 17 e não foram
+> revalidados na M18. Não os use como status atual de installer/updater/clean-install; a M18
+> atualizou orientação textual e não executou gates de distribuição.
 
 A baseline de empacotamento está pronta — pipeline congelado, manifests pinados e evidência
 de E2E registrada. **A instalação limpa ainda não foi provada:** não existe validação em uma
@@ -254,7 +311,11 @@ A próxima fase planejada inclui distribuição única de OpenCV, runtime empaco
 instalador, teste em Windows limpo, updater e distribuição Beta controlada. Detalhes e
 estado por item em [Desenvolvimento](docs/DEVELOPMENT.md#empacotamento-e-distribuição).
 
-## Riscos conhecidos
+## Riscos conhecidos — snapshot técnico anterior
+
+> Esta lista inclui findings antigos de ambiente/runtime. Confirme-os em
+> [Desenvolvimento](docs/DEVELOPMENT.md#riscos-conhecidos) antes de tratá-los como abertos no
+> estado atual; a M18 não executou regressão nem auditoria de release.
 
 Riscos técnicos abertos e formalmente registrados, com detalhe em
 [Desenvolvimento](docs/DEVELOPMENT.md#riscos-conhecidos):
@@ -298,8 +359,15 @@ A flag `--experimental-vm-modules` é obrigatória para as suítes `.mjs`. Coman
 
 ## Roadmap
 
-> Esta seção descreve **intenções**, não comportamento disponível. O que já existe está na
-> [tabela de status](#status-do-projeto) e na
+> **Snapshot histórico de planejamento.** Os estados, bloqueadores e declarações de suporte
+> desta seção foram escritos antes das missões M1–M17 e não são um status atual do produto.
+> Para capacidades atuais, consulte [Saídas e artefatos](docs/OUTPUT_ARTIFACTS.md),
+> [Adapters de fonte](docs/SOURCE_ADAPTERS.md) e a documentação indicada acima. O conteúdo é
+> preservado como histórico; não use suas referências a Vortex-only, editor de camadas ou Beta
+> antiga como descrição do build atual.
+
+> Esta seção descreve **intenções**, não comportamento disponível. O que já existe está no
+> [resumo do produto atual](#produto-atual--resumo-m18) e na
 > [Documentação Técnica §2](docs/technical/DOCUMENTACAO_TECNICA.md#2-escopo-atual-do-produto);
 > nada listado abaixo deve ser lido como recurso existente.
 

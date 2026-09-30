@@ -114,7 +114,7 @@ A aplicação escuta em `http://127.0.0.1:8080` por padrão (`TRADUTOR_UI_PORT`,
 CLI:
 
 ```powershell
-python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast --no-context
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode quality --no-context
 python run_webtoon.py --help
 ```
 
@@ -326,14 +326,18 @@ modos. Sem a biblioteca, a escalação é pulada e a leitura do RapidOCR é mant
 próprio gate do RapidOCR recusa a página, a falha é fechada e contabilizada
 (`paddle_error:ModuleNotFoundError`), nunca silenciosa.
 
-| Item | Estado |
+> **Snapshot de distribuição anterior à Beta 17.** Os estados/planos abaixo não foram
+> revalidados pela M18 e não devem ser usados como situação atual de release. A M18 não fez
+> clean-install, build ou auditoria do canal; confirme cada item no checklist próprio.
+
+| Item | Estado histórico |
 | --- | --- |
 | Baseline de empacotamento | **PRONTA** — pipeline congelado, manifests pinados, evidência de E2E registrada |
 | Perfil de runtime Beta | **DEFINIDO E PROVADO EM AMBIENTE LIMPO** — `requirements-beta.txt`, uma única distribuição de OpenCV, `pip check` limpo, preflight verde, E2E real executado (job `902b149e`: 35/35 páginas, PDF válido, zero Paddle carregado) |
 | Baseline de qualidade sob o runtime Beta | **NÃO PRESERVADA** — o E2E não reproduziu P28/P31/P32; ver [Quality Freeze](QUALITY_FREEZE.md) |
 | Instalação limpa em Windows | **NÃO PROVADA** — não existe validação em máquina limpa |
 | Instalador para usuário final | **NÃO EXISTE** — não há spec de build nem `Setup.exe` no repositório |
-| Modelo de atualização | **PARCIAL** — `update_installer.py`/`update_manifest.py`/`update_transport.py` implementam staging, ativação atômica e rollback; canal assinado e superfície de UI pendentes |
+| Modelo de atualização | **Implementação no código** — `update_installer.py`/`update_manifest.py`/`update_transport.py`; estado de distribuição e canal deve ser revalidado no checklist de release (o owner confirmou uso do updater para Beta 17) |
 | Distribuição Beta | **EM PREPARAÇÃO** |
 
 Próxima fase planejada: distribuição única de OpenCV, runtime empacotado, instalador, teste

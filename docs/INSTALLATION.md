@@ -185,15 +185,19 @@ Esses comandos confirmam importação e testes offline; não validam a chave de 
 ### Interface local
 
 ```powershell
-python app_ui.py
+python desktop_app.py
 ```
 
-Abra `http://127.0.0.1:8080`. A UI valida a existência do `.env` e da `NVIDIA_API_KEY` antes de iniciar um processamento.
+O shell desktop cria a janela nativa e hospeda a UI local em WebView2. Para executar somente o
+servidor de UI durante desenvolvimento, use o procedimento em [Desenvolvimento](DEVELOPMENT.md);
+o endereço loopback não substitui a janela do aplicativo no uso desktop. Configure o provider
+selecionado no ambiente local; `DEEPL_API_KEY` é necessária para DeepL, enquanto
+`NVIDIA_API_KEY` só é necessária se selecionar Riva ou Nemotron.
 
 ### Linha de comando
 
 ```powershell
-python run_webtoon.py "<URL_DO_CAPITULO>" --mode fast --no-context
+python run_webtoon.py "<URL_DO_CAPITULO>" --mode quality --no-context
 ```
 
 RapidOCR é o engine primário nos dois modos. O modo `fast` mantém os fallbacks pesados

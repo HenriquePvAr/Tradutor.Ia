@@ -1,6 +1,6 @@
 # Arquitetura
 
-> **Base verificada:** `943de4d` (branch `main`) · **Revisado em:** 2026-09-27
+> **Base verificada:** `49eb66a` (branch `main`) · **Revisado em:** 2026-09-29
 
 Este documento descreve a arquitetura implementada no repositório. Ideias futuras aparecem somente quando identificadas como roadmap.
 
@@ -76,7 +76,10 @@ A UI tem seu próprio bridge assíncrono. Ela não usa automaticamente `process_
 
 `run_webtoon.py` é a entrada simplificada para o pipeline atual. Ele valida os argumentos, configura o modo de OCR, resolve a pasta de saída e chama `benchmark_pipeline.run_benchmark()`.
 
-Os modos públicos são:
+Na interface, o usuário escolhe **Qualidade** ou **Download-only**. `fast` permanece aceito
+pela CLI como modo técnico/compatibilidade, mas não é uma opção da interface.
+
+Os modos da CLI são:
 
 - `fast`: RapidOCR como primeira engine, com fallbacks pesados desativados por padrão;
 - `quality`: RapidOCR como engine primária, validação OCR pós-render e escalonamentos
@@ -118,7 +121,7 @@ $python = "$repo\.venv\Scripts\python.exe"
   --stdout-path "$runtime\stdout.log" `
   --stderr-path "$runtime\stderr.log" `
   -- $python -u run_webtoon.py "<URL_DO_CAPITULO>" `
-  --mode fast --output "minha_execucao" --no-context
+  --mode quality --output "minha_execucao" --no-context
 ```
 
 O separador `--` encerra os argumentos do launcher. Tudo o que vem depois pertence ao processo filho.
@@ -157,9 +160,10 @@ segue para o caminho de navegador.
 
 **Quem suporta HTTP-first.** `BaseAdapter.collect_dom_candidates_from_html` retorna `None` por
 padrão, então o caminho HTTP fica restrito aos adapters que explicitamente sobrescreveram o
-coletor. Hoje isso vale para o **VortexScans**, cujo leitor renderiza cada página como um
-`<img>` já presente na resposta HTTP inicial. Um leitor que só existe depois de JS do cliente
-rodar não pode honestamente reivindicar descoberta por HTTP e por isso não a reivindica.
+coletor. Hoje isso vale para o caminho de HTML estático do **VortexScans**, cujo leitor renderiza
+cada página como um `<img>` já presente na resposta HTTP inicial. **Comix** tem resolver dinâmico
+separado; não é classificado como suporte HTTP-first estático. Um leitor que só existe depois de
+JS do cliente rodar não pode reivindicar descoberta por HTML inicial.
 
 **Selenium não é o caminho principal do Vortex.** Ele permanece como fallback correto para
 todas as fontes, e é o caminho normal para as que não suportam HTTP-first.
@@ -476,7 +480,9 @@ output/<slug>/<run_id>/
 ├── downloaded_images.json       # manifest ativo do download
 ├── download_report.json|html    # auditoria da coleta
 ├── timing_report.json|txt       # tempos, contagens e caminhos
-├── quality_report.json|html     # itens de qualidade e revisão
+├── quality_report.json|html     # relatório atual na raiz do output
+├── artifact_manifest.json       # cobertura/estado dos artefatos do run
+├── qc/review_manifest.json      # índice de Review no perfil profissional
 ├── resource_report.json|html    # somente com monitoramento habilitado
 ├── classification_profile.*     # somente com profiling habilitado
 └── *.pdf                        # documento final
@@ -484,6 +490,10 @@ output/<slug>/<run_id>/
 
 Novos jobs da UI usam o nível `<run_id>` para manter reprocessamentos do mesmo capítulo
 separados. Saídas legadas em `output/<slug>/` permanecem aceitas pelo histórico.
+
+O Artifact Contract V2 também define localizações canônicas para PDF, imagens e PSD; alguns
+writers mantêm aliases/saídas legadas. Consulte [Saídas e artefatos](OUTPUT_ARTIFACTS.md) e use
+os caminhos persistidos nos manifests em vez de inferir um caminho a partir do nome.
 
 Contact sheets e diretórios de debug podem ser produzidos conforme as flags. Eles são artefatos locais e não devem ser tratados como assets públicos do projeto.
 

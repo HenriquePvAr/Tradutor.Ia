@@ -1,6 +1,6 @@
 # Documentação do Tradutor IA
 
-> **Base verificada:** `fed9b0c` (branch `fix/main-e2e-findings`) · **Revisado em:** 2026-09-03
+> **Base verificada:** `49eb66a` (branch `main`) · **Revisado em:** 2026-09-29
 >
 > O comportamento de produção está sob **[Quality Freeze](QUALITY_FREEZE.md)**.
 
@@ -24,6 +24,7 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 | Documento | Conteúdo |
 | --- | --- |
 | [Guia do Usuário](user/GUIA_DO_USUARIO.md) | Instalar, entrar, traduzir, acompanhar, revisar, resolver erros. Linguagem simples. |
+| [Saídas e artefatos](OUTPUT_ARTIFACTS.md) | Perfis Automático/QC Profissional, paths, manifests e distinção entre job, run e artifact. |
 | [Documentação Técnica](technical/DOCUMENTACAO_TECNICA.md) | Arquitetura, processos, estados, pipeline, segurança, testes, comandos, dívida técnica. |
 | [Política de Documentação](DOCUMENTATION_POLICY.md) | Quando e como a documentação deve ser atualizada junto com o código. |
 | [Auditoria de Documentação](DOCUMENTATION_AUDIT.md) | O que foi verificado, o que estava desatualizado e o que continua em aberto. |
@@ -51,6 +52,16 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 - [Adaptador universal de capítulos](UNIVERSAL_CHAPTER_ADAPTER.md) — fallback controlado, limites e restrições
 - [Entrada por pasta local](LOCAL_FOLDER_INPUT.md) — processar imagens já presentes no computador
 - [Transportes de download](DOWNLOAD_TRANSPORTS.md) — abstração de transporte e validação por bytes
+
+### PSD e saídas profissionais
+
+- [M15 — matriz de compatibilidade PSD](PSD_COMPATIBILITY_MATRIX.md) — evidência física Photoshop/Photopea; cross-editor round-trip ainda não executado
+- [M17 — performance e tamanho PSD](PSD_PERFORMANCE_REPORT.md) — medições do job existente e estimativas separadas
+
+### PSD e saídas profissionais
+
+- [M15 — matriz de compatibilidade PSD](PSD_COMPATIBILITY_MATRIX.md) — evidência física Photoshop/Photopea; cross-editor round-trip ainda não executado
+- [M17 — performance e tamanho PSD](PSD_PERFORMANCE_REPORT.md) — medições do job existente e estimativas separadas
 
 ### Qualidade
 
@@ -99,7 +110,12 @@ em que foram escritos e **não** substituem os documentos primários:
 
 ---
 
-## Estado atual do produto
+## Estado resumido do produto — snapshot histórico
+
+> A tabela abaixo veio de uma avaliação anterior e não foi revalidada como estado atual na M18.
+> Suas afirmações de licenciamento, distribuição, instalador, updater e OpenCV são contexto
+> histórico, não status de release. A M18 não executou uma auditoria de release. Capacidades
+> atuais de fontes e outputs estão nos documentos primários acima.
 
 | Área | Estado |
 | --- | --- |
@@ -133,8 +149,8 @@ e [§29 Dívida técnica](technical/DOCUMENTACAO_TECNICA.md#29-dívida-técnica-
 
 ---
 
-## Roadmap ≠ documentação
+## Roadmap histórico ≠ produto atual
 
-O roadmap do projeto vive no [README da raiz](../README.md#roadmap). Ele descreve
-**intenções**, não comportamento disponível. Nenhum item de roadmap deve aparecer nesta
-documentação como recurso existente.
+O roadmap na raiz é um snapshot de planejamento anterior às missões M1–M17, não um inventário
+atual de capacidades. Preserve-o como histórico; para comportamento atual, use os documentos
+primários acima.
