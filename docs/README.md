@@ -1,6 +1,6 @@
 # Documentação do Tradutor IA
 
-> **Base verificada:** `49eb66a` (branch `main`) · **Revisado em:** 2026-09-29
+> **Base verificada:** `27c1450` (branch `main`) · **Revisado em:** 2026-09-30
 >
 > O comportamento de produção está sob **[Quality Freeze](QUALITY_FREEZE.md)**.
 
@@ -66,6 +66,8 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 ### Qualidade
 
 - [Qualidade e validação](QUALITY_AND_VALIDATION.md) — gates, fallbacks, retries, estados terminais e riscos abertos
+- [M18.5 — hardening de qualidade de tradução](TRANSLATION_QUALITY_HARDENING.md) — guards determinísticos, retry/re-score e limitação semântica conhecida
+- [M16 — replay offline de qualidade](M16_TRANSLATION_QUALITY_REPLAY.md) — cobertura e limitações do replay read-only
 - [Quality Freeze](QUALITY_FREEZE.md) — o que está congelado, a evidência e como sair do freeze
 - [Taxonomia semântica e auditoria linguística](../SEMANTIC_CLASSIFICATION_AUDIT.md)
 

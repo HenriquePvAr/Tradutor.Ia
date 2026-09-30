@@ -229,12 +229,26 @@ def numeric_values(text):
 
 
 def _quantity_mismatches(source, candidate):
-    """Source numbers that no longer exist in the candidate, as written."""
-    remaining = list(numeric_values(candidate))
+    """Compare numeric and written quantities by value across both languages."""
+    def signatures(text, cardinal_words, magnitudes, approximators):
+        values = [("exact", value) for value in numeric_values(text)]
+        values.extend(_written_quantity_signatures(
+            text, cardinal_words, magnitudes, approximators
+        ))
+        return values
+
+    source_values = signatures(
+        source, _SOURCE_CARDINALS, _SOURCE_MAGNITUDES, _SOURCE_APPROXIMATORS
+    )
+    remaining = signatures(
+        candidate, _TARGET_CARDINALS, _TARGET_MAGNITUDES, _TARGET_APPROXIMATORS
+    )
     missing = []
-    for value in numeric_values(source):
-        if value in remaining:
-            remaining.remove(value)
+    for signature in source_values:
+        value = signature[-1]
+        expected = signature
+        if expected in remaining:
+            remaining.remove(expected)
         else:
             missing.append(value)
     return [f"{value:g}" if isinstance(value, float) else str(value) for value in missing]
@@ -255,6 +269,124 @@ _TARGET_QUANTITY_WORDS = {
     "seis": 6, "sete": 7, "oito": 8, "nove": 9, "dez": 10, "onze": 11,
     "doze": 12, "cem": 100, "cento": 100, "mil": 1000,
 }
+
+# Worded cardinal values must be compared as values, not as a set of words.
+# The prior token-intersection check could accept a phrase whose component
+# number words overlapped even though their composed value differed. Keep this
+# deliberately language-pair scoped (English -> Brazilian Portuguese), while
+# making it phrase-generic: no sentence, title, or corpus vocabulary lives here.
+# Approximate quantifiers are checked only when attached to a magnitude;
+# otherwise they are too context-dependent to judge locally.
+_SOURCE_CARDINALS = {
+    **_SOURCE_QUANTITY_WORDS,
+    "zero": 0, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "million": 1_000_000, "millions": 1_000_000,
+}
+_TARGET_CARDINALS = {
+    **_TARGET_QUANTITY_WORDS,
+    "zero": 0, "treze": 13, "quatorze": 14, "quinze": 15,
+    "dezesseis": 16, "dezessete": 17, "dezoito": 18, "dezenove": 19,
+    "vinte": 20, "trinta": 30, "quarenta": 40, "cinquenta": 50,
+    "sessenta": 60, "setenta": 70, "oitenta": 80, "noventa": 90,
+    "duzentos": 200, "duzentas": 200, "trezentos": 300, "trezentas": 300,
+    "quatrocentos": 400, "quatrocentas": 400,
+    "quinhentos": 500, "quinhentas": 500,
+    "seiscentos": 600, "seiscentas": 600,
+    "setecentos": 700, "setecentas": 700,
+    "oitocentos": 800, "oitocentas": 800,
+    "novecentos": 900, "novecentas": 900,
+    "milhao": 1_000_000, "milhoes": 1_000_000,
+}
+_SOURCE_MAGNITUDES = {
+    "hundred": 100, "hundreds": 100,
+    "thousand": 1_000, "thousands": 1_000,
+    "million": 1_000_000, "millions": 1_000_000,
+}
+_TARGET_MAGNITUDES = {
+    "centena": 100, "centenas": 100,
+    "milhar": 1_000, "milhares": 1_000,
+    "milhao": 1_000_000, "milhoes": 1_000_000,
+}
+_SOURCE_APPROXIMATORS = {
+    "several": "several", "many": "many", "few": "few",
+    "dozen": "dozen", "dozens": "dozen",
+}
+_TARGET_APPROXIMATORS = {
+    "varios": "several", "varias": "several", "muitos": "many",
+    "muitas": "many", "poucos": "few", "poucas": "few",
+    "duzia": "dozen", "duzias": "dozen",
+}
+_NUMBER_CONNECTORS = frozenset({"and", "e"})
+
+
+def _written_quantity_signatures(text, cardinal_words, magnitudes, approximators):
+    """Extract conservative, composed quantity signatures from number phrases."""
+    tokens = _words(text)
+    signatures = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        # In "no one / no-one" the token is a pronoun, not a count. Counting it
+        # as one would reject the natural PT-BR equivalent "ninguém".
+        if token == "one" and index > 0 and tokens[index - 1] == "no":
+            index += 1
+            continue
+        if token in approximators:
+            qualifier = approximators[token]
+            if index + 1 < len(tokens) and tokens[index + 1] in magnitudes:
+                signatures.append(("approx", qualifier, magnitudes[tokens[index + 1]]))
+                index += 2
+                continue
+            if qualifier == "dozen":
+                signatures.append(("approx", "dozen", 12))
+            index += 1
+            continue
+        if token in magnitudes and token not in cardinal_words:
+            signatures.append(("magnitude", magnitudes[token]))
+            index += 1
+            continue
+        if token not in cardinal_words:
+            index += 1
+            continue
+
+        total = 0
+        current = 0
+        consumed = False
+        previous_was_number = False
+        while index < len(tokens):
+            word = tokens[index]
+            if word in _NUMBER_CONNECTORS and previous_was_number:
+                index += 1
+                continue
+            if word in cardinal_words:
+                value = cardinal_words[word]
+                consumed = True
+                previous_was_number = True
+                if value >= 1_000:
+                    total += max(current, 1) * value
+                    current = 0
+                elif value == 100:
+                    current = max(current, 1) * value
+                else:
+                    current += value
+                index += 1
+                continue
+            if word in magnitudes:
+                total += max(current, 1) * magnitudes[word]
+                current = 0
+                consumed = True
+                previous_was_number = True
+                index += 1
+                continue
+            break
+        if consumed:
+            signatures.append(("exact", total + current))
+        else:  # defensive; the loop only starts on a recognized number token
+            index += 1
+    return signatures
 
 
 def _quantity_word_conflict(source, candidate):
@@ -1049,6 +1181,8 @@ def adjudicate(
     facts = tuple(
         str(fact) for fact in (answer.get("critical_fact_mismatches") or ()) if str(fact).strip()
     )
+    if answer.get("review_required") is True:
+        return FidelityFinding(REVIEW, codes or (FIDELITY_UNCERTAIN,), facts)
     if faithful is True:
         return FidelityFinding()
     if faithful is False:

@@ -166,6 +166,57 @@ class LocalInvariantTests(unittest.TestCase):
         )
         self.assertTrue(finding.faithful)
 
+    def test_composed_hundreds_are_compared_by_value(self):
+        finding = semantic_fidelity.evaluate_local_fidelity(
+            "FIVE HUNDRED SOLDIERS ARRIVED.",
+            "CINCO CENTOS DE SOLDADOS CHEGARAM.",
+        )
+        self.assertEqual(finding.status, semantic_fidelity.BLOCKED)
+        self.assertEqual(finding.primary_reason, semantic_fidelity.QUANTITY_CHANGED)
+
+    def test_composed_hundreds_with_correct_value_pass(self):
+        finding = semantic_fidelity.evaluate_local_fidelity(
+            "FIVE HUNDRED SOLDIERS ARRIVED.",
+            "QUINHENTOS SOLDADOS CHEGARAM.",
+        )
+        self.assertTrue(finding.faithful)
+
+    def test_numeric_digits_can_be_spelled_out_in_ptbr(self):
+        finding = semantic_fidelity.evaluate_local_fidelity(
+            "THERE ARE 3 ENEMIES AHEAD.",
+            "HÁ TRÊS INIMIGOS ADIANTE.",
+        )
+        self.assertTrue(finding.faithful)
+
+    def test_source_cardinal_can_be_rendered_as_digits(self):
+        finding = semantic_fidelity.evaluate_local_fidelity(
+            "FIVE HUNDRED SOLDIERS ARRIVED.",
+            "500 SOLDADOS CHEGARAM.",
+        )
+        self.assertTrue(finding.faithful)
+
+    def test_thousands_magnitude_cannot_be_silently_dropped(self):
+        finding = semantic_fidelity.evaluate_local_fidelity(
+            "SEVERAL THOUSAND TROOPS ADVANCED.",
+            "VÁRIOS SOLDADOS AVANÇARAM.",
+        )
+        self.assertEqual(finding.status, semantic_fidelity.BLOCKED)
+        self.assertEqual(finding.primary_reason, semantic_fidelity.QUANTITY_CHANGED)
+
+    def test_approximate_thousands_preserved_in_target_pass(self):
+        finding = semantic_fidelity.evaluate_local_fidelity(
+            "SEVERAL THOUSAND TROOPS ADVANCED.",
+            "VÁRIOS MILHARES DE SOLDADOS AVANÇARAM.",
+        )
+        self.assertTrue(finding.faithful)
+
+    def test_syntactic_numeric_locale_and_cardinal_composition(self):
+        finding = semantic_fidelity.evaluate_local_fidelity(
+            "ONE THOUSAND TWO HUNDRED PEOPLE.",
+            "MIL E DUZENTAS PESSOAS.",
+        )
+        self.assertTrue(finding.faithful)
+
     def test_locale_number_formatting_is_not_a_quantity_change(self):
         # 1,000 -> 1.000 and 3.5 -> 3,5 are the same values, written for a
         # different locale. Rejecting them would be rejecting correct output.
@@ -366,6 +417,21 @@ class SelectiveVerificationTests(unittest.TestCase):
         _run(group, verifier=_Broken())
         self.assertFalse(group.translation_valid)
 
+    def test_explicit_verifier_review_preserves_candidate_for_qc(self):
+        verifier = _StubVerifier({
+            "faithful": None,
+            "review_required": True,
+            "reason_codes": [semantic_fidelity.FIDELITY_UNCERTAIN],
+        })
+        group = _group(NEGATION_SOURCE, NEGATION_CORRUPTED)
+        translator = _StubTranslator("Não deveria haver retry.")
+        _run(group, translator=translator, verifier=verifier)
+        self.assertEqual(translator.calls, [])
+        self.assertTrue(group.translation_valid)
+        self.assertTrue(group.manual_review_required)
+        self.assertEqual(group.translation_quality_impact, "review_required")
+        self.assertIn(semantic_fidelity.FIDELITY_UNCERTAIN, group.semantic_review_reason)
+
     def test_without_a_configured_verifier_a_routed_region_is_not_trusted(self):
         group = _group(INTENT_SOURCE, INTENT_CORRUPTED)
         _records, stats = _run(group, verifier=None)
@@ -423,6 +489,21 @@ class RetryTests(unittest.TestCase):
         _run(group, translator=translator)
         self.assertTrue(group.translation_valid)
         self.assertEqual(group.translation, QUANTITY_FAITHFUL)
+
+    def test_composed_quantity_recovery_uses_existing_bounded_retry(self):
+        translator = _StubTranslator("QUINHENTOS SOLDADOS CHEGARAM.")
+        group = _group(
+            "FIVE HUNDRED SOLDIERS ARRIVED.",
+            "CINCO CENTOS DE SOLDADOS CHEGARAM.",
+        )
+        records, _stats = _run(group, translator=translator)
+        self.assertEqual(len(translator.calls), 1)
+        self.assertTrue(translator.calls[0]["validation_reason"].startswith(
+            semantic_fidelity.QUANTITY_CHANGED
+        ))
+        self.assertTrue(group.translation_valid)
+        self.assertEqual(group.translation, "QUINHENTOS SOLDADOS CHEGARAM.")
+        self.assertEqual(records[0]["retry_type"], "quality")
 
     def test_a_retry_that_is_still_unfaithful_cannot_become_trusted(self):
         # The second attempt keeps the wrong number: "least bad" is still wrong.

@@ -20,7 +20,6 @@ import font_fidelity
 import ocr_line_provenance
 import source_completeness
 import semantic_fidelity
-import semantic_nli_adapter
 
 _LAMA_INFERENCE_LOCK = threading.BoundedSemaphore(1)
 from cleanup_forensic_capture import CleanupForensicCapture
@@ -8590,7 +8589,6 @@ def _fidelity_protected_entities(group, ledger):
 
 def _fidelity_reason_for(
     group, candidate, *, ledger, verifier, budget, name_spans, stats,
-    semantic_nli=None,
 ):
     """Why this candidate may not be trusted, or '' when it may.
 
@@ -8614,14 +8612,6 @@ def _fidelity_reason_for(
     # not inherit the rejected candidate's review flag.
     group.semantic_review_reason = ""
     if finding.faithful:
-        if semantic_nli is not None:
-            nli = semantic_nli.evaluate(source_text, candidate, group=group)
-            if nli.status == "STRONG_CONTRADICTION":
-                _bump_fidelity(stats, "semantic_nli_contradiction")
-                return nli.reason or "semantic_contradiction"
-            if nli.status == "UNAVAILABLE":
-                _bump_fidelity(stats, "semantic_nli_unavailable")
-                return nli.reason or "semantic_check_unavailable"
         _bump_fidelity(stats, "fidelity_fast_path_pass")
         return ""
     if finding.status == semantic_fidelity.REVIEW:
@@ -8666,6 +8656,16 @@ def _fidelity_reason_for(
         terminology=terms,
         context=context_lines,
     )
+    if verdict.status == semantic_fidelity.REVIEW:
+        group.semantic_review_reason = verdict.reason() or semantic_fidelity.FIDELITY_UNCERTAIN
+        _bump_fidelity(stats, "fidelity_verifier_review")
+        _bump_fidelity(stats, f"fidelity_verifier_review_{verdict.primary_reason}")
+        if semantic_fidelity.is_review_unusable(group.semantic_review_reason):
+            return group.semantic_review_reason
+        # Unavailable/uncertain QE is not a reason to spend a provider retry.
+        # Preserve the useful candidate, mark it for QC, and fail closed on
+        # clean/automatic acceptance through the semantic review ledger.
+        return ""
     if verdict.faithful:
         _bump_fidelity(stats, "fidelity_verifier_pass")
         return ""
@@ -8779,14 +8779,8 @@ def validate_and_retry_translations(
     fidelity_stats=None,
     ptbr_naturalizer=None,
     source_recovery_context=None,
-    semantic_nli=None,
 ):
     retry_records = []
-    if semantic_nli is None and getattr(config, "SEMANTIC_NLI_ENABLED", False):
-        semantic_nli = semantic_nli_adapter.SemanticNLIAdapter(
-            enabled=True,
-            model_path=getattr(config, "SEMANTIC_NLI_MODEL_PATH", ""),
-        )
     selective_retry_budget_remaining = _selective_translation_retry_budget(groups)
     # What else this page says, given to every region as lexical context. The
     # page is the bound: no chapter is ever assembled, and nothing here reaches a
@@ -8827,7 +8821,6 @@ def validate_and_retry_translations(
                 budget=fidelity_budget,
                 name_spans=name_spans,
                 stats=fidelity_stats,
-                semantic_nli=semantic_nli,
             )
 
         validation_source = _source_text_for_validation(group)
