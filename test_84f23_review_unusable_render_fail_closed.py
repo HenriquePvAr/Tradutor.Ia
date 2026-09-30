@@ -109,17 +109,28 @@ class RenderDispositionMatrixTests(unittest.TestCase):
 
 
 class PhysicalFailClosedTests(unittest.TestCase):
-    def test_p65_review_unusable_never_reaches_cleanup_or_typography(self):
+    def test_p65_review_unusable_cleans_artifact_without_rendering_target(self):
         original = np.full((180, 420, 3), 255, dtype=np.uint8)
         group = _group(P65_SOURCE, P65_BAD_TARGET)
         group.semantic_review_reason = (
             f"{semantic_fidelity.SOURCE_SEGMENTATION_INCOMPLETE}:AGATETHROUGHWHICH"
         )
+        mask = np.zeros(original.shape[:2], dtype=np.uint8)
+        mask[45:90, 40:300] = 255
 
         with (
-            mock.patch.object(ob, "_remove_text_for_group") as remove,
+            mock.patch.object(
+                ob,
+                "_remove_text_for_group",
+                return_value=(original.copy(), mask, {"mask_valid": True}),
+            ) as remove,
             mock.patch.object(ob, "_draw_group_translation") as draw,
             mock.patch.object(ob, "typography_profile_for_region") as typography,
+            mock.patch.object(
+                ob,
+                "_uncovered_source_text_evidence",
+                return_value={"measured": True, "source_text_coverage": 0.0},
+            ),
         ):
             rendered, _debug = ob.render_analyzed_image(
                 original,
@@ -131,7 +142,9 @@ class PhysicalFailClosedTests(unittest.TestCase):
             )
 
         self.assertTrue(np.array_equal(rendered, original))
-        remove.assert_not_called()
+        # CLEAN is source-free even when a semantically unusable target cannot
+        # be drawn into the translated page.
+        remove.assert_called()
         draw.assert_not_called()
         typography.assert_not_called()
         self.assertFalse(group.redrawn)

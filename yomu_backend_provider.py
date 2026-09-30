@@ -27,6 +27,50 @@ class BackendTranslationError(RuntimeError):
     pass
 
 
+class SystemicTranslationFailure(BackendTranslationError):
+    """A job-wide backend contract failure, never a per-region QC finding."""
+
+
+_SYSTEMIC_TRANSLATION_FAILURE_CODES = frozenset({
+    "reservation_invalid",
+    "reservation_already_settled",
+    "reservation_not_found",
+    "reservation_job_mismatch",
+    "reservation_state_invalid",
+    "wallet_settlement_required",
+    "wallet_settlement_not_consumed",
+    "wallet_settlement_pending",
+    "auth_required",
+    "backend_transport_failed",
+    "backend_transport_not_configured",
+    "backend_response_invalid",
+    "backend_url_missing",
+    "backend_url_invalid",
+    "commercial_device_id_missing",
+    "invalid_license_device_uuid",
+})
+
+
+def systemic_translation_failure_code(error: BaseException | object) -> str:
+    """Return a stable systemic code, or ``""`` for a regional/provider failure.
+
+    A reservation, auth, transport, or settlement fault cannot be repaired by
+    retrying individual speech regions.  Keeping the classifier here makes the
+    boundary explicit without teaching the renderer any wallet implementation.
+    """
+
+    code = str(error or "").strip().casefold()
+    return code if code in _SYSTEMIC_TRANSLATION_FAILURE_CODES else ""
+
+
+def raise_if_systemic_translation_failure(error: BaseException | object) -> None:
+    code = systemic_translation_failure_code(error)
+    if code:
+        raise SystemicTranslationFailure(code) from (
+            error if isinstance(error, BaseException) else None
+        )
+
+
 class ReservationOutcomeClass(str, Enum):
     """Safety classification used before any reservation-release decision."""
 
@@ -692,23 +736,6 @@ class YomuBackendTranslationProvider:
             flush=True,
         )
 
-        try:
-            context = self.auth.acquire(job_id)
-        except AuthContextError as exc:
-            raise BackendTranslationError(str(exc)) from exc
-        device_id = _validated_device_uuid()
-        print(
-            "WALLET_RESERVE_REQUEST_SHAPE "
-            f"job_id={job_id} device_id_present=YES device_id_uuid_valid=YES",
-            flush=True,
-        )
-        reservation = self.backend.reserve(job_id=job_id, request_id=request_id,
-                                           auth_token=context.access_token,
-                                           device_id=device_id)
-        reservation_id = str(reservation.get("reservation_id") or "")
-        if not reservation_id:
-            raise BackendTranslationError("RESERVATION_FAILED")
-        self._record_reservation(job_id, reservation_id, request_id=request_id)
         # Each distinct translation batch gets a content-derived stable request
         # identity. That lets retries replay exact inputs while strict retries in
         # the same logical job remain separate provider requests under one YK.
@@ -723,13 +750,56 @@ class YomuBackendTranslationProvider:
             sub_request_id = f"{request_id[:220-len(suffix)]}{suffix}"
             sub_request = BatchRequest(sub_request_id, job_id, "EN", "PT-BR", chunk)
             request_ids.append(sub_request_id)
-            responses.append(self._translate_batch_with_reservation(
-                sub_request, reservation_id=reservation_id,
-                auth_token=context.access_token, finalize_job=False))
+            responses.append(sub_request)
+
+        # A completed job may replay its exact durable result during recovery,
+        # but it must never send a *new* region to the provider with a consumed
+        # reservation.  The old flow asked the reserve RPC again, received the
+        # same terminal reservation, and turned that contract error into a
+        # chapter-wide storm of regional fallbacks.
+        prior_state = str(prior_reservation.get("state") or "").strip().casefold()
+        if prior_state in {"consumed", "released", "cancelled", "expired"}:
+            cached = [self.results.get(job_id, item.request_id, item) for item in responses]
+            if all(cached):
+                by_id = {
+                    item.item_id: item.text
+                    for response in cached
+                    for item in response.items
+                }
+                if set(by_id) == {item.item_id for item in items}:
+                    return [by_id[item.item_id] for item in items]
+            raise SystemicTranslationFailure("reservation_already_settled")
+
+        try:
+            context = self.auth.acquire(job_id)
+        except AuthContextError as exc:
+            raise SystemicTranslationFailure(str(exc)) from exc
+        device_id = _validated_device_uuid()
+        print(
+            "WALLET_RESERVE_REQUEST_SHAPE "
+            f"job_id={job_id} device_id_present=YES device_id_uuid_valid=YES",
+            flush=True,
+        )
+        reservation = self.backend.reserve(job_id=job_id, request_id=request_id,
+                                           auth_token=context.access_token,
+                                           device_id=device_id)
+        reservation_id = str(reservation.get("reservation_id") or "")
+        if not reservation_id:
+            raise SystemicTranslationFailure("reservation_missing")
+        self._record_reservation(job_id, reservation_id, request_id=request_id)
+        translated_responses = []
+        for sub_request in responses:
+            try:
+                translated_responses.append(self._translate_batch_with_reservation(
+                    sub_request, reservation_id=reservation_id,
+                    auth_token=context.access_token, finalize_job=False))
+            except BackendTranslationError as exc:
+                raise_if_systemic_translation_failure(exc)
+                raise
         self.stats.update({"request_id": request_id, "job_id": job_id,
                            "translation_results": len(items),
-                           "translation_batches": len(responses)})
-        by_id = {item.item_id: item.text for response in responses for item in response.items}
+                           "translation_batches": len(translated_responses)})
+        by_id = {item.item_id: item.text for response in translated_responses for item in response.items}
         if set(by_id) == {item.item_id for item in items} and len(by_id) == len(items):
             try:
                 import yk_reservation

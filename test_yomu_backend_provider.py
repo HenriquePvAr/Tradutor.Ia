@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from secure_auth_context import AuthEnvelopeStore
-from yomu_backend_provider import (BackendTranslationError, BatchItem, BatchRequest,
+from yomu_backend_provider import (BackendTranslationError, SystemicTranslationFailure, BatchItem, BatchRequest,
                                    HttpBackendClient, MockBackendClient,
                                    YomuBackendTranslationProvider)
 
@@ -183,6 +183,44 @@ def test_multi_batch_failure_never_consumes_chapter_reservation(tmp_path: Path, 
     assert backend.debit_count == 0
 
 
+@pytest.mark.parametrize("failing_call", [1, 2])
+def test_reservation_invalid_batch_is_systemic_and_stops_remaining_batches(
+    tmp_path: Path, monkeypatch, failing_call: int
+):
+    class ReservationInvalidBackend(MockBackendClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def translate_batch(self, request, *, reservation_id, auth_token, finalize_job=False):
+            self.calls += 1
+            if self.calls == failing_call:
+                raise BackendTranslationError("reservation_invalid")
+            return super().translate_batch(
+                request,
+                reservation_id=reservation_id,
+                auth_token=auth_token,
+                finalize_job=finalize_job,
+            )
+
+    job_id = f"job-reservation-invalid-{failing_call}"
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_JOB_OUTPUT_DIR", str(tmp_path / "job-output"))
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", f"translation:{job_id}")
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    backend = ReservationInvalidBackend()
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+
+    with pytest.raises(SystemicTranslationFailure, match="reservation_invalid"):
+        provider.translate_many(["x" * 4000] * 35)
+
+    # A later-batch fault stops at that batch; it never fans out into one call
+    # per text region or commits an extra YK.
+    assert backend.calls == failing_call
+    assert backend.reserve_count == 1
+    assert backend.net_yk(next(iter(backend._reservation_jobs))) == 0
+
+
 def test_multiple_provider_batches_consume_once_after_job_result_is_durable(tmp_path: Path, monkeypatch):
     job_id = "job-legacy-repro"
     AuthEnvelopeStore(tmp_path).seal(job_id, tok())
@@ -224,6 +262,28 @@ def test_restart_and_ten_output_retries_reuse_local_translation_without_provider
     assert backend.provider_execution_count == 1
     assert backend.net_yk(reservation["reservation_id"]) == 1
     assert yk_reservation.translation_ready(output, job_id=job_id)
+
+
+def test_new_unit_retry_after_settlement_fails_systemically_without_provider_call(tmp_path: Path, monkeypatch):
+    """A consumed reservation is a job fault, not thirty bad speech regions."""
+    job_id = "job-settled-unit-retry"
+    output = tmp_path / "job-output"
+    monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
+    monkeypatch.setenv("TRADUTOR_JOB_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("TRADUTOR_REQUEST_ID", f"translation:{job_id}")
+    AuthEnvelopeStore(tmp_path).seal(job_id, tok())
+    backend = MockBackendClient()
+    provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
+
+    assert provider.translate_many(["initial region"])
+    provider.commit_translation_success()
+    before_calls = backend.provider_execution_count
+
+    with pytest.raises(SystemicTranslationFailure, match="reservation_already_settled"):
+        provider.translate_many(["new regional retry"])
+
+    assert backend.provider_execution_count == before_calls
+    assert backend.net_yk(next(iter(backend._reservation_jobs))) == 1
 
 
 def test_distinct_translation_retry_is_same_job_one_yk_commit(tmp_path: Path, monkeypatch):

@@ -90,6 +90,7 @@ from pipeline_cache import (
 )
 from session_context import SessionContextStore
 from png_output import export_final_pages_png, PngExportError
+from yomu_backend_provider import SystemicTranslationFailure
 
 _RAPIDOCR_INFERENCE_LOCK = threading.BoundedSemaphore(1)
 _PERF_JOB_ORIGIN_NS = None
@@ -2598,11 +2599,37 @@ def run_benchmark(args):
         session_context.record_translations(translation_targets)
     stage_seconds["translation"] += time.perf_counter() - retry_started
 
+    commit_translation = getattr(translator, "commit_translation_success", None)
+
+    # Layout shortening is still a provider request.  It must happen while the
+    # reservation is held, not after the durable provider result has settled the
+    # job.  Running this dry render pass before settlement keeps one valid
+    # reservation available to every bounded retry and prevents a consumed
+    # reservation from being mistaken for dozens of independent bad regions.
+    if translation_enabled and translator is not None:
+        layout_started = time.perf_counter()
+        try:
+            layout_retry_count = _resolve_layout_overflow_before_settlement(
+                analyzable_states,
+                translator,
+                translation_retry_records,
+                force=args.force,
+            )
+        except Exception:
+            # Initial batches are already persisted before this preflight. If a
+            # later local/layout or provider-contract error interrupts it, the
+            # existing recovery contract still settles that durable provider
+            # success once; the original error remains the job failure.
+            if callable(commit_translation):
+                commit_translation()
+            raise
+        translator_stats["pre_settlement_layout_retries"] = layout_retry_count
+        stage_seconds["translation"] += time.perf_counter() - layout_started
+
     # The charged milestone is after every translation/retry response has been
     # validated and a durable job-local recovery copy exists, but before any
     # reconstruction or export work can fail. Providers without this explicit
     # wallet contract are unaffected.
-    commit_translation = getattr(translator, "commit_translation_success", None)
     if translation_enabled and translation_targets and callable(commit_translation):
         settlement = commit_translation()
         translator_stats["wallet_commit_state"] = str(settlement.get("state") or "unknown")
@@ -2626,7 +2653,9 @@ def run_benchmark(args):
             analyzable_states,
             diagnostic_folder=diagnostic_folder,
             targeted_regression=targeted_regression,
-            translator=translator if translation_enabled else None,
+            # Provider requests are deliberately closed at settlement.  All
+            # bounded layout retries were resolved above while it was held.
+            translator=None,
             translation_retry_records=translation_retry_records,
             force=args.force,
             retry_lock=overflow_retry_lock,
@@ -2664,26 +2693,12 @@ def run_benchmark(args):
                     and float(group.text_overflow_ratio or 0.0)
                     > config.MAX_TEXT_OVERFLOW_RATIO
                 ]
-                if (
-                    translator is None
-                    or
-                    not overflow_groups
-                    or layout_retry_attempt >= config.TRANSLATION_MAX_RETRIES
-                    or not hasattr(translator, "translate_strict")
-                ):
+                if not overflow_groups:
                     break
-                retry_started = time.perf_counter()
-                retried = _retry_layout_overflow_translations(
-                    overflow_groups,
-                    translator,
-                    translation_retry_records,
-                    force=args.force,
-                    attempt=layout_retry_attempt + 1,
-                )
-                stage_seconds["translation"] += time.perf_counter() - retry_started
-                if not retried:
-                    break
-                layout_retry_attempt += 1
+                # Provider work is closed after the settlement boundary.  Any
+                # overflow remaining here is review-visible, but cannot trigger
+                # a new provider request with a consumed reservation.
+                break
             for name in ("inpainting", "redraw", "cleanup", "typography", "quality", "render"):
                 elapsed = float(render_timings.get(name, 0.0))
                 state["timings"][name] = elapsed
@@ -3637,6 +3652,8 @@ def _retry_layout_overflow_translations(
                 force=force,
             )
         except Exception as exc:
+            if isinstance(exc, SystemicTranslationFailure):
+                raise
             retry_records.append(
                 {
                     "group_id": group.group_id,
@@ -3692,6 +3709,59 @@ def _retry_layout_overflow_translations(
             group.translation_valid = True
             group.translation_validation_reason = "layout_retry_rejected"
     return retried
+
+
+def _resolve_layout_overflow_before_settlement(
+    page_states,
+    translator,
+    retry_records,
+    *,
+    force=False,
+):
+    """Resolve bounded provider-backed layout retries before YK settlement.
+
+    This is intentionally an in-memory preflight: it exercises the same layout
+    and overflow detector as final rendering but writes no artifact.  A later
+    render remains local-only, so a consumed reservation is never reused for a
+    new provider request.
+    """
+
+    total_retried = 0
+    for state in page_states:
+        if state.get("status") == "completed":
+            continue
+        attempts = 0
+        while attempts < int(config.TRANSLATION_MAX_RETRIES):
+            render_analyzed_image(
+                state["original_bgr"],
+                state.get("raw_lines", []),
+                state["candidates"],
+                state["groups"],
+                font_path=config.FONT_PATH,
+                page_index=state["index"],
+                image_path=state["image_path"],
+            )
+            overflow_groups = [
+                group
+                for group in state["groups"]
+                if group.sent_to_translation
+                and float(group.text_overflow_ratio or 0.0)
+                > config.MAX_TEXT_OVERFLOW_RATIO
+            ]
+            if not overflow_groups:
+                break
+            retried = _retry_layout_overflow_translations(
+                overflow_groups,
+                translator,
+                retry_records,
+                force=force,
+                attempt=attempts + 1,
+            )
+            if not retried:
+                break
+            total_retried += retried
+            attempts += 1
+    return total_retried
 
 
 def _download_with_cache(url, max_images, output_folder, force, source_candidate_ids=None,

@@ -20,6 +20,7 @@ import font_fidelity
 import ocr_line_provenance
 import source_completeness
 import semantic_fidelity
+from yomu_backend_provider import SystemicTranslationFailure
 
 _LAMA_INFERENCE_LOCK = threading.BoundedSemaphore(1)
 from cleanup_forensic_capture import CleanupForensicCapture
@@ -751,6 +752,30 @@ def _analyze_image_array(original_bgr, raw_lines, page_index=None):
 
 def get_translatable_groups(groups):
     return [group for group in groups if _should_translate_group(group)]
+
+
+def get_cleanable_translatable_groups(groups):
+    """Return story regions whose source belongs in CLEAN, regardless of target.
+
+    Translation validity is intentionally absent from this predicate.  It is a
+    gate for drawing target glyphs, not a reason for a professional CLEAN layer
+    to retain ordinary source dialogue.  Classification and OCR safety remain
+    authoritative, so SFX, names, decorative art and unreadable OCR are never
+    erased merely because they have no target candidate.
+    """
+
+    eligible = []
+    for group in groups:
+        if group.ignored or group.preserve_as_name:
+            continue
+        if group.classification == "sfx" and not config.TRANSLATE_SFX:
+            continue
+        if group.ocr_quality_blocked or _ocr_unintelligible_source_text(group.text):
+            continue
+        if not _group_has_story_translation_authority(group):
+            continue
+        eligible.append(group)
+    return eligible
 
 
 def normalize_recurring_compact_names(groups):
@@ -1998,6 +2023,70 @@ def _preserve_unrenderable_translation(group, reason):
     )
 
 
+def _clean_source_for_clean_artifact(current_bgr, original_bgr, group):
+    """Remove owned source glyphs for the CLEAN artifact without drawing a target.
+
+    CLEAN is evidence of source-text removal, not proof that a provider supplied
+    a renderable translation.  The translated page remains fail-closed when its
+    target is unusable; this separate pass prevents that safety decision from
+    silently turning the professional CLEAN layer back into the original page.
+    """
+
+    attempts = []
+    for strategy in (
+        "primary",
+        "conservative",
+        "glyph_overlay",
+        "caption_overlay",
+        "source_scoped",
+    ):
+        cleaned, cleanup_mask, metrics = _remove_text_for_group(
+            current_bgr,
+            original_bgr,
+            group,
+            strategy=strategy,
+        )
+        metrics = dict(metrics or {})
+        attempt = {"strategy": strategy, **metrics}
+        if not metrics.get("mask_valid", False):
+            attempts.append(attempt)
+            continue
+        cleaned = _apply_cleanup_mask(
+            current_bgr,
+            original_bgr,
+            group,
+            cleanup_mask,
+            strategy=strategy,
+        )
+        removal = _uncovered_source_text_evidence(
+            original_bgr,
+            cleaned,
+            group,
+            cleanup_mask,
+        )
+        attempt["source_text_removal"] = removal
+        attempt["clean_validation_passed"] = not _source_removal_incomplete(
+            group,
+            removal,
+        )
+        attempts.append(attempt)
+        if attempt["clean_validation_passed"]:
+            group.clean_artifact_validation = {
+                "clean_validation_passed": True,
+                "strategy": strategy,
+                "source_text_removal": removal,
+                "attempts": attempts,
+            }
+            return cleaned, cleanup_mask, strategy, True
+
+    group.clean_artifact_validation = {
+        "clean_validation_passed": False,
+        "reason": "clean_source_removal_unresolved",
+        "attempts": attempts,
+    }
+    return current_bgr, None, "", False
+
+
 def _terminal_translation_failure_reason(group, validation_reason, candidate):
     candidate_text = clean_ocr_text(candidate)
     if not candidate_text:
@@ -2236,6 +2325,12 @@ def _render_analyzed_image(
     )
     original = original_bgr.copy()
     valid_groups = get_translatable_groups(groups)
+    render_group_ids = {id(group) for group in valid_groups}
+    clean_only_groups = [
+        group
+        for group in get_cleanable_translatable_groups(groups)
+        if id(group) not in render_group_ids
+    ]
     final = original.copy()
     inpainted = original.copy()
     text_mask = np.zeros(original.shape[:2], dtype=np.uint8)
@@ -2281,6 +2376,11 @@ def _render_analyzed_image(
 
         render_allowed, render_block_reason = translation_allows_physical_render(group)
         if not render_allowed:
+            inpainted, clean_mask, _clean_strategy, clean_ok = (
+                _clean_source_for_clean_artifact(inpainted, original, group)
+            )
+            if clean_ok and clean_mask is not None:
+                text_mask = cv2.bitwise_or(text_mask, clean_mask)
             _preserve_unrenderable_translation(group, render_block_reason)
             continue
 
@@ -2616,6 +2716,15 @@ def _render_analyzed_image(
                 strategy=accepted_strategy,
             )
         else:
+            # A target rejected by typography/semantic/visual gates must not
+            # reintroduce the source into the canonical CLEAN artifact.  The
+            # translated page deliberately retains its source for review; CLEAN
+            # is separately validated as source-free artwork.
+            inpainted, clean_mask, _clean_strategy, clean_ok = (
+                _clean_source_for_clean_artifact(inpainted, original, group)
+            )
+            if clean_ok and clean_mask is not None:
+                text_mask = cv2.bitwise_or(text_mask, clean_mask)
             final = before_group
             group.redrawn = False
             group.manual_review_required = True
@@ -2632,6 +2741,16 @@ def _render_analyzed_image(
                 "translation_not_rendered_after_validation",
                 candidate=group.translation_candidate or group.translation,
             )
+
+    # Target-invalid story regions never enter ``valid_groups`` because their
+    # translated page must fail closed.  They still belong in the CLEAN artifact
+    # when OCR/classification established that the owned source is translatable.
+    for group in clean_only_groups:
+        inpainted, clean_mask, _clean_strategy, clean_ok = (
+            _clean_source_for_clean_artifact(inpainted, original, group)
+        )
+        if clean_ok and clean_mask is not None:
+            text_mask = cv2.bitwise_or(text_mask, clean_mask)
 
     if stage_timings is not None:
         stage_timings["inpainting"] = stage_timings.get("inpainting", 0.0) + inpaint_seconds
@@ -8261,6 +8380,8 @@ def _retry_terminology_drift(
             retry_attempt=group.translation_retry_count + 1,
         )
     except Exception as exc:  # noqa: BLE001 - one region must not sink the chapter.
+        if isinstance(exc, SystemicTranslationFailure):
+            raise
         retry_records.append({
             "group_id": group.group_id,
             "source": group.text,
@@ -8918,6 +9039,8 @@ def validate_and_retry_translations(
                     source_context=group.page_context_texts,
                 )
             except Exception as exc:  # noqa: BLE001 - keep the caller on failure.
+                if isinstance(exc, SystemicTranslationFailure):
+                    raise
                 candidate = ""
                 had_retry_error = True
                 reason = (
@@ -10130,6 +10253,13 @@ def _classify_background_region(img_bgr, group, page_index=None):
     else:
         background_type = "unknown"
     metrics["background_type"] = background_type
+    local_profile = _estimate_local_background_profile(
+        img_bgr,
+        group,
+        source_mask,
+        draw_box,
+    )
+    metrics.update(local_profile)
     metrics["uniform_light"] = bool(uniform_light)
     metrics["strict_uniform_light"] = bool(strict_uniform_light)
     metrics["strongly_uniform_white"] = bool(strongly_uniform_white)
@@ -10148,6 +10278,96 @@ def _classify_background_region(img_bgr, group, page_index=None):
     metrics["short_text_white_context"] = bool(short_text_white_context)
     metrics["background_edge_density"] = round(float(np.mean(background_edges > 0)), 4)
     return background_type, metrics
+
+
+def _estimate_local_background_profile(img_bgr, group, source_mask, draw_box):
+    """Estimate the background from the pixels immediately around the glyphs.
+
+    This is deliberately image-local.  It does not know the title, page, source,
+    or an expected colour.  The ring is preferred over the whole OCR box because
+    the latter is often dominated by antialiased lettering.  The profile is only
+    used for uniform/low-variation fills; textured artwork remains on the
+    conservative inpainting path.
+    """
+    empty = {
+        "local_background_class": "unknown",
+        "local_background_sample_count": 0,
+        "local_background_median_bgr": None,
+        "local_background_std_bgr": None,
+        "local_background_luminance_std": None,
+        "local_background_spatial_gradient": None,
+        "local_background_polarity": "unknown",
+    }
+    if img_bgr is None or source_mask is None or not np.any(source_mask):
+        return empty
+    x, y, w, h = (int(value) for value in draw_box)
+    image_h, image_w = img_bgr.shape[:2]
+    x1, y1 = max(0, x), max(0, y)
+    x2, y2 = min(image_w, x + w), min(image_h, y + h)
+    if x2 <= x1 or y2 <= y1:
+        return empty
+    roi = img_bgr[y1:y2, x1:x2]
+    if tuple(source_mask.shape[:2]) == tuple(roi.shape[:2]):
+        local_mask = (source_mask > 0).astype(np.uint8)
+    else:
+        local_mask = (source_mask[y1:y2, x1:x2] > 0).astype(np.uint8)
+    ring_radius = max(3, min(12, int(round(max(2, min(w, h) * 0.08)))))
+    ring = cv2.dilate(local_mask, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (ring_radius * 2 + 1, ring_radius * 2 + 1),
+    ), iterations=1) > 0
+    ring &= local_mask == 0
+    # Keep samples in the owned draw box. If the text fills the box, use the
+    # non-text pixels there rather than inventing a colour from a global page.
+    samples = roi[ring]
+    if samples.shape[0] < 12:
+        samples = roi[local_mask == 0]
+    if samples.shape[0] < 12:
+        return empty
+    samples = samples.astype(np.float32)
+    median_bgr = np.median(samples, axis=0)
+    std_bgr = np.std(samples, axis=0)
+    sample_gray = cv2.cvtColor(samples.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_BGR2GRAY).reshape(-1)
+    luminance_std = float(np.std(sample_gray))
+    hsv_samples = cv2.cvtColor(samples.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    median_luma = float(np.median(sample_gray))
+    median_sat = float(np.median(hsv_samples[:, 1]))
+    # A directional gradient is meaningful only when the ring has enough
+    # spatial extent.  Compare robust medians on opposite sides of the mask.
+    gradient = 0.0
+    if roi.shape[0] >= 8 and roi.shape[1] >= 8:
+        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        top = gray_roi[: max(2, gray_roi.shape[0] // 5)]
+        bottom = gray_roi[-max(2, gray_roi.shape[0] // 5):]
+        left = gray_roi[:, : max(2, gray_roi.shape[1] // 5)]
+        right = gray_roi[:, -max(2, gray_roi.shape[1] // 5):]
+        gradient = float(max(
+            abs(float(np.median(top)) - float(np.median(bottom))),
+            abs(float(np.median(left)) - float(np.median(right))),
+        ))
+    robust_std = float(np.mean(std_bgr))
+    if robust_std <= 11.0 and luminance_std <= 12.0:
+        if median_luma >= 190.0:
+            background_class = "solid_light"
+        elif median_luma <= 85.0:
+            background_class = "solid_dark"
+        else:
+            background_class = "solid_colored" if median_sat >= 28.0 else "solid_midtone"
+    elif gradient >= 18.0 and robust_std <= 48.0 and luminance_std <= 42.0:
+        background_class = "gradient"
+    else:
+        background_class = "textured_art"
+    polarity = "dark_text_on_light_bg" if median_luma >= 150.0 else (
+        "light_text_on_dark_bg" if median_luma <= 105.0 else "mixed_unknown"
+    )
+    return {
+        "local_background_class": background_class,
+        "local_background_sample_count": int(samples.shape[0]),
+        "local_background_median_bgr": [round(float(v), 2) for v in median_bgr],
+        "local_background_std_bgr": [round(float(v), 2) for v in std_bgr],
+        "local_background_luminance_std": round(luminance_std, 3),
+        "local_background_spatial_gradient": round(gradient, 3),
+        "local_background_polarity": polarity,
+    }
 
 
 def _source_scoped_speech_reason(group):
@@ -10672,6 +10892,17 @@ def _remove_text_for_group(
         background_type,
     )
     metrics.update(white_patch_metrics)
+    local_background_metrics = _local_background_reconstruction_metrics(
+        original_bgr,
+        cleaned,
+        group,
+        cleanup_mask,
+    )
+    metrics.update(local_background_metrics)
+    if local_background_metrics.get("local_background_color_mismatch"):
+        metrics["mask_valid"] = False
+        metrics["reason"] = "local_background_color_mismatch"
+        return current_bgr.copy(), cleanup_mask, metrics
     if white_patch_metrics.get("white_patch_rejected"):
         metrics["mask_valid"] = False
         metrics["reason"] = "large_white_patch_on_nonwhite_background"
@@ -10940,6 +11171,39 @@ def _white_patch_artifact_metrics(
         "largest_new_white_component_area": int(largest),
         "new_white_patch_to_group_ratio": round(float(pixels / group_area), 6),
         "white_patch_rejected": rejected,
+    }
+
+
+def _local_background_reconstruction_metrics(original_bgr, cleaned_bgr, group, cleanup_mask):
+    """Compare a solid/gradient reconstruction with its local background profile."""
+    empty = {
+        "local_background_color_mismatch": False,
+        "local_background_color_error": None,
+        "local_background_gradient_consistent": None,
+    }
+    metrics = getattr(group, "background_metrics", {}) or {}
+    profile = str(metrics.get("local_background_class") or "unknown")
+    if profile not in {"solid_light", "solid_dark", "solid_colored", "solid_midtone", "gradient"}:
+        return empty
+    if cleanup_mask is None or not np.any(cleanup_mask):
+        return empty
+    expected = metrics.get("local_background_median_bgr")
+    if not isinstance(expected, (list, tuple)) or len(expected) != 3:
+        return empty
+    mask = np.asarray(cleanup_mask) > 0
+    actual = np.asarray(cleaned_bgr)[mask].astype(np.float32)
+    if actual.size == 0:
+        return empty
+    expected_arr = np.asarray(expected, dtype=np.float32)
+    error = float(np.mean(np.abs(np.median(actual, axis=0) - expected_arr)))
+    # A gradient is allowed to vary; compare its median only as a coarse guard.
+    threshold = 30.0 if profile == "gradient" else 24.0
+    return {
+        "local_background_color_mismatch": bool(error > threshold),
+        "local_background_color_error": round(error, 3),
+        "local_background_gradient_consistent": (
+            None if profile != "gradient" else bool(error <= 42.0)
+        ),
     }
 
 
@@ -11977,6 +12241,42 @@ def _apply_cleanup_mask(current_bgr, original_bgr, group, cleanup_mask, strategy
             result, cleanup_mask, original_bgr=original_bgr, group=group,
         )
     draw_box = _safe_draw_box(group.box, original_bgr.shape, group)
+    local_profile = getattr(group, "background_metrics", {}) or {}
+    local_background_class = str(
+        local_profile.get("local_background_class") or "unknown"
+    )
+    local_color = local_profile.get("local_background_median_bgr")
+    if (
+        local_background_class in {
+            "solid_light",
+            "solid_dark",
+            "solid_colored",
+            "solid_midtone",
+        }
+        and isinstance(local_color, (list, tuple))
+        and len(local_color) == 3
+        and int(local_profile.get("local_background_sample_count") or 0) >= 12
+    ):
+        # The colour is sampled from the immediate, non-glyph ring.  This is
+        # the generic path for grey/coloured/neon enclosures; it never uses a
+        # product/page colour or an absolute black/white fallback.
+        result[cleanup_mask > 0] = np.clip(
+            np.asarray(local_color, dtype=np.float32), 0, 255
+        ).astype(np.uint8)
+        group.background_metrics["cleanup_fill_source"] = "local_ring_median"
+        return result
+    if local_background_class == "gradient":
+        # Preserve a spatially varying backdrop with bounded local inpainting.
+        # A gradient is intentionally not flattened to its ring median.
+        repaired = cv2.inpaint(
+            original_bgr,
+            cleanup_mask.astype(np.uint8),
+            3,
+            cv2.INPAINT_TELEA,
+        )
+        result[cleanup_mask > 0] = repaired[cleanup_mask > 0]
+        group.background_metrics["cleanup_fill_source"] = "local_gradient_inpaint"
+        return result
     white_region = (
         config.WHITE_BALLOON_FLAT_FILL
         and (
@@ -15126,6 +15426,9 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "visual_validation": group.visual_validation,
                 "visual_attempts": list(group.visual_attempts),
                 "mask_metrics": dict(group.mask_metrics),
+                "clean_artifact_validation": dict(
+                    getattr(group, "clean_artifact_validation", {}) or {}
+                ),
                 "manual_review_required": bool(group.manual_review_required),
                 "semantic_review_reason": str(group.semantic_review_reason),
                 "art_reconstruction_status": str(group.art_reconstruction_status),
