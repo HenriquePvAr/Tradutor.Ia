@@ -1,0 +1,81 @@
+{
+  "mission": "YOMU_MAIN_REPOSITORY_FULL_AUDIT_COMMIT_AND_STRUCTURE_REORGANIZATION_V1",
+  "result": "PARTIAL",
+  "base_head": "6ff0b87158d18c75108ce4bdfa827ef452961e97",
+  "branch": "chore/repository-structure-cleanup-v1",
+  "worktree": "C:/Projetos/Tradutor.Ia-worktrees/repository-structure-cleanup-v1",
+  "original_checkout_preserved": true,
+  "push": "NO",
+  "implementation_commit_before_final_report": "2076ef6f702b678aafddabc8b4914dce1a922c18",
+  "root_direct_files_before": 604,
+  "root_direct_files_after": 209,
+  "root_reduction_percent_approx": 65.4,
+  "moves": {
+    "test_suites_to_tests": 381,
+    "developer_harnesses_to_tools": 3,
+    "research_smoke_tool_relocated": 1,
+    "runtime_modules_moved": 0,
+    "runtime_module_rationale": "Legacy flat runtime entrypoints remain in place to avoid changing desktop, UI and PyInstaller import contracts."
+  },
+  "preserved_pending_source_and_evidence_files": 14,
+  "official_packaging_logo": {
+    "recovered_from_ignored_local_source": true,
+    "sha256": "FC08BECD70830E476A62A0B9D7B630916F901F6FC25C656CF5E62F9BFD1857CE",
+    "bytes": 1415553,
+    "source_checkout_modified": false
+  },
+  "tests": {
+    "baseline_full_pytest": {
+      "passed": 5691,
+      "failed": 5,
+      "skipped": 140,
+      "xfailed": 2,
+      "collected": 5838
+    },
+    "post_move_full_pytest_before_fixes": {
+      "passed": 5690,
+      "failed": 7,
+      "skipped": 140,
+      "xfailed": 2,
+      "collected": 5839
+    },
+    "moved_path_regressions": 2,
+    "moved_path_regressions_fixed_and_retested": 2,
+    "focused_retest": {"passed": 3, "failed": 0},
+    "broader_affected_file_retest": {"passed": 59, "failed": 1},
+    "frontend_mjs": {"passed": 18, "failed": 0},
+    "collect_only_after": {"exit_code": 0, "collected": 5839},
+    "known_failures_after_focused_verification": 4,
+    "full_pytest_rerun_after_fixes": false,
+    "failure_note": "Remaining failures require ignored local diagnostics/runtime artifacts absent from the isolated worktree, except the preexisting worker-process terminal-state mismatch. See tests_before.json, tests_after.json and test_delta.json."
+  },
+  "packaging": {
+    "entrypoint_compile_and_import_smoke": "PASS",
+    "official_branding_asset_test": "PASS",
+    "full_pyinstaller_build": "NOT_RUN"
+  },
+  "documentation_and_policy": {
+    "contributing_guide": true,
+    "project_structure": true,
+    "development_workflow": true,
+    "artifact_policy": true,
+    "reports_index": true,
+    "gitignore_and_gitattributes_audited": true,
+    "links_before": 0,
+    "links_after": 0
+  },
+  "security": {
+    "high_confidence_secret_hits_in_staged_files": 0,
+    "environment_file_contents_read": false,
+    "environment_files_committed": false,
+    "large_local_runtime_artifacts_committed": false
+  },
+  "final_git_check_before_report_commit": {
+    "status_clean": true,
+    "diff_check": "PASS",
+    "implementation_commit_count_from_base": 5,
+    "push_performed": false
+  },
+  "report_commit": "This report is included in the finalization commit; obtain its exact hash with git rev-parse HEAD.",
+  "scientific_or_production_mutations": "NONE"
+}
