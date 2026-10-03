@@ -1,0 +1,11 @@
+{
+  "schema_version": "1",
+  "status": "ok",
+  "image_sha256": "5596399f2dfa40a94b1152550c8e559236db9c8c6bbd410e4779f625b2fa2de9",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "prompt": "Perform a visual audit. Return JSON with status, text candidates, and bounding boxes for detected text.",
+  "answer": "{\n  \"status\": \"success\",\n  \"text_candidates\": [\n    {\n      \"text\": \"SLURP\",\n      \"bounding_box\": [\n        137,\n        53,\n        925,\n        885\n      ]\n    }\n  ]\n}",
+  "runtime": {
+    "seconds": 161.901
+  }
+}

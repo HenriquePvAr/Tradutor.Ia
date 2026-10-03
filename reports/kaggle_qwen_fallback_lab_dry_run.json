@@ -1,0 +1,13 @@
+{
+  "status": "dry_run",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
+  "image": "C:\\Projetos\\Tradutor.Ia\\README.md",
+  "kaggle_slug": "user/lab-x",
+  "cleanup": {
+    "staging_deleted": true
+  },
+  "started_at": 1790879871.869529,
+  "image_sha256": "fa7bcbffbc8b4b54ce2fc89a9f59354ca796cc328a6e89e3abfe56b8e7676fec",
+  "staging": "C:\\Users\\henri\\AppData\\Local\\Temp\\qwen-kaggle-lab-gdrmyo2d",
+  "elapsed_seconds": 0.005
+}
