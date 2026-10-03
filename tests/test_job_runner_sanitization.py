@@ -11,7 +11,7 @@ from unittest import mock
 
 from artifact_contract import ArtifactType, OutputProfile, build_artifact_manifest
 from job_runner import (
-    _OutputPump, _artifact_manifest_contract, _finalize, _write_manifest,
+    _OutputPump, _artifact_manifest_contract, _finalize, _requested_output_contract, _write_manifest,
 )
 from job_store import JobStatus, JobStore
 
@@ -153,6 +153,11 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         terminal = self.store.get_job(job["id"])
         self.assertEqual(terminal["status"], JobStatus.FAILED)
         self.assertEqual(terminal["reason_code"], "export_zero_output")
+
+    def test_requested_png_without_declared_path_cannot_scan_current_directory(self):
+        ok, reason = _requested_output_contract("png", {"pdf_path": "chapter.pdf"}, {})
+        self.assertFalse(ok)
+        self.assertEqual(reason, "export_zero_output")
 
     def test_requested_psd_must_materialize_every_declared_page(self):
         job, output = self._running_job(configuration_updates={"output_format": "psd"})

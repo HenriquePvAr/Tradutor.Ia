@@ -221,7 +221,10 @@ def _requested_output_contract(output_format: str, artifacts: dict, report: dict
     key, suffix = ("png_path", ".png") if output_format == "png" else ("psd_path", ".psd")
     if output_format not in {"png", "psd"}:
         return False, "unsupported_output_format"
-    root = Path(str(artifacts.get(key) or ""))
+    declared_root = str(artifacts.get(key) or "").strip()
+    if not declared_root:
+        return False, "export_zero_output"
+    root = Path(declared_root)
     if not root.is_dir():
         return False, "export_zero_output"
     try:

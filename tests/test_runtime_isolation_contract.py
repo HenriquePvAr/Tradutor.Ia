@@ -161,11 +161,15 @@ class SqliteUriTripwireTests(unittest.TestCase):
         self.assertIsNone(sqlite_uri_path("C:/x/jobs.db"))
 
     def test_the_real_queue_was_never_opened(self):
-        self.assertEqual(REAL_JOBS_DB.stat().st_size, self.size_before)
+        exists_after = REAL_JOBS_DB.exists()
+        self.assertEqual(exists_after, self.existed_before)
+        if self.existed_before:
+            self.assertEqual(REAL_JOBS_DB.stat().st_size, self.size_before)
 
     @classmethod
     def setUpClass(cls):
-        cls.size_before = REAL_JOBS_DB.stat().st_size if REAL_JOBS_DB.exists() else -1
+        cls.existed_before = REAL_JOBS_DB.exists()
+        cls.size_before = REAL_JOBS_DB.stat().st_size if cls.existed_before else None
 
 
 class RealOutputTripwireTests(unittest.TestCase):

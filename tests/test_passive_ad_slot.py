@@ -219,7 +219,7 @@ def test_yk_observability_allowlist_contains_only_sanitized_state_fields():
 
 def test_yk_plan_snapshot_fields_are_sanitized_and_backward_compatible():
     source = (ROOT / "static/control_plane_client.js").read_text(encoding="utf-8")
-    migration = (ROOT / ".local-audit/yk-plan-diagnostic/20260916120000_wallet_summary_plan_diagnostic.sql").read_text(encoding="utf-8")
+    migration = (ROOT / "supabase/migrations/20260917012623_wallet_summary_plan_diagnostic.sql").read_text(encoding="utf-8")
     for field in ("has_active_plan", "resolved_plan", "daily_yk_target"):
         assert field in source
         assert field in migration
