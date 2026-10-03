@@ -18,6 +18,12 @@ temp/
 tmp/
 downloads/
 models/
+checkpoints/
+weights/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
 .paddlex/
 .paddleocr/
 .cache/
@@ -31,6 +37,8 @@ models/
 !static/assets/
 !static/assets/reference-ui/
 !static/assets/reference-ui/*.jpg
+# Canonical source branding asset required by Windows packaging.
+!assets/branding/yomu-sekai-logo.png
 # Documentation assets: screenshots for docs/user/GUIA_DO_USUARIO.md must be versionable.
 !docs/assets/
 !docs/assets/**
