@@ -259,7 +259,7 @@ class UiFailureDisplayContract(unittest.TestCase):
     """The user sees a short coded reason; never a traceback or a diagnostic path."""
 
     def setUp(self):
-        self.js = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+        self.js = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8")
 
     def test_the_generic_source_analysis_reason_has_a_safe_user_message(self):

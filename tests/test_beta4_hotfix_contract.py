@@ -7,7 +7,7 @@ from unittest.mock import patch
 import installer_update
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 UI_SOURCE = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
 APP_SOURCE = (ROOT / "app_ui.py").read_text(encoding="utf-8")
 

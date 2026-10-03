@@ -86,7 +86,7 @@ from ocr_balloon import (
     rapidocr_region_decision,
 )
 from ocr_engine import OCRLine
-from test_physical_source_residual_trust import (
+from tests.test_physical_source_residual_trust import (
     LINE_BOX,
     SOURCE_TEXT,
     TRANSLATION,

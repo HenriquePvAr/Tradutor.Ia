@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const shell = fs.readFileSync(path.join(ROOT, 'ui', 'ui_shell.html'), 'utf8');
 const community = fs.readFileSync(path.join(ROOT, 'static', 'social_community.js'), 'utf8');
 const api = fs.readFileSync(path.join(ROOT, 'static', 'social_api.js'), 'utf8');

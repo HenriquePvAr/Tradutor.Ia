@@ -23,7 +23,7 @@ install_offline_network_guard()
 
 from commercial_foundation import PLANS, Plan, YKWallet
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "supabase/migrations/20260916041829_yk_ads_foundation.sql"
 SQL = MIGRATION.read_text(encoding="utf-8")
 

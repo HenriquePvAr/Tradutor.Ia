@@ -20,7 +20,7 @@ from unittest import mock
 from chapter_source import SourceError
 from down import download_images
 from scrapling_reader_resolver import DynamicReaderError
-from test_downloader_regressions import _accepted_source_analysis
+from tests.test_downloader_regressions import _accepted_source_analysis
 
 
 class _QuitDriver:

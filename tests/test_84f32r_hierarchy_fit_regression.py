@@ -43,7 +43,7 @@ import ocr_balloon as ob
 from ocr_engine import OCRLine
 
 _REAL_RUN = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "output",
     "shadow_slave_chapter_1_5",
     "e489db56-d7be-4fda-aead-b9ae5e54186a",

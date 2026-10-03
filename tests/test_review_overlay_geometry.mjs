@@ -2,13 +2,13 @@
 // from static/tradutor_ui.js (extracted by balanced-brace scan, not a copy) and proves
 // the object-fit: contain letterbox mapping and resize alignment.
 //
-// Isolated: no DOM, no network. Run with: node test_review_overlay_geometry.mjs
+// Isolated: no DOM, no network. Run with: node tests/test_review_overlay_geometry.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = fs.readFileSync(path.join(ROOT, 'static', 'tradutor_ui.js'), 'utf8');
 
 function extractFunction(name) {

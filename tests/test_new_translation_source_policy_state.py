@@ -16,10 +16,10 @@ from types import SimpleNamespace
 from chapter_source import SUPPORTED_SPECIFIC_ADAPTER
 from job_store import JobStore
 from source_readiness import SourceReadinessStore, default_workspace_id
-from test_translation_start import WEBTOON_URL, _Bridge, drive
+from tests.test_translation_start import WEBTOON_URL, _Bridge, drive
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 UI = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
 LOADING_VIEW = (ROOT / "static" / "loading_view.js").read_text(encoding="utf-8")
 NODE = shutil.which("node")

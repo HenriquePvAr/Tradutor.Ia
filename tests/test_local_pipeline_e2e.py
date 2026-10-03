@@ -27,7 +27,7 @@ from local_folder_job import (
 from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
 from pdf import prepare_smart_webtoon_pages
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 
 
 def synthetic_pages(folder: Path) -> list[Path]:

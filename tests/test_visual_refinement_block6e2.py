@@ -14,7 +14,7 @@ import human_mask_decisions as hmd
 import human_typography_decisions as htd
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _candidate(candidate_id: str, *, style=0.7, stroke=0.5, condensation=0.7,

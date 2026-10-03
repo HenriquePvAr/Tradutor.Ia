@@ -141,13 +141,13 @@ class HermeticTestBoundaryTests(unittest.TestCase):
         self.assertEqual(answer[0][4][0], "93.184.216.34")
 
     def test_unittest_bootstrap_installs_the_guard_before_importing_tests(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         environment = dict(os.environ)
         # Prove the direct unittest bootstrap rather than relying on inheritance from this
         # already-guarded pytest process.
         environment.pop("TRADUTOR_IA_OFFLINE_TEST_GUARD", None)
         completed = subprocess.run(
-            [sys.executable, "-m", "unittest", "test_unittest_guard_probe.UnittestGuardProbe"],
+            [sys.executable, "-m", "unittest", "tests.test_unittest_guard_probe.UnittestGuardProbe"],
             cwd=root, env=environment, capture_output=True, text=True, timeout=20,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
@@ -158,13 +158,19 @@ class HermeticTestBoundaryTests(unittest.TestCase):
             self.assertIs(socket.create_connection(("example.invalid", 443)), sentinel)
 
     def test_manual_smokes_are_not_standard_test_filenames(self):
-        root = Path(__file__).resolve().parent
-        discovered = {path.name for path in root.glob("test_*.py")}
+        root = Path(__file__).resolve().parents[1]
+        tests_dir = root / "tests"
+        discovered = {path.name for path in tests_dir.glob("test_*.py")}
 
         self.assertNotIn("test_pipeline_webtoon.py", discovered)
         self.assertNotIn("test_nvidia_translation.py", discovered)
         self.assertTrue((root / "scripts" / "manual_webtoon_smoke.py").is_file())
         self.assertTrue((root / "scripts" / "manual_nvidia_smoke.py").is_file())
+
+    def test_automated_tests_are_not_left_loose_in_repository_root(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual(list(root.glob("test_*.py")), [])
+        self.assertEqual(list(root.glob("test_*.mjs")), [])
 
     def test_sitecustomize_only_uses_the_test_entrypoint_or_inherited_marker(self):
         self.assertTrue(sitecustomize._is_test_invocation(
@@ -213,7 +219,7 @@ class HermeticTestBoundaryTests(unittest.TestCase):
         return False
 
     def test_every_discoverable_test_installs_the_offline_guard_for_unittest_too(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         # Walk source directories only. Descending into ``output`` or ``.cache`` would read
         # the user's real run artifacts, which the runtime guard refuses (TDD #55).
         skipped = {"__pycache__", "__pypackages__", ".git", "output", ".cache",

@@ -187,7 +187,7 @@ class ResidualDeterminismTests(unittest.TestCase):
     def test_independent_processes_produce_same_identity(self):
         code = (
             "import json;"
-            "from test_residual_analysis_identity import make_bundle;"
+            "from tests.test_residual_analysis_identity import make_bundle;"
             "b=make_bundle();"
             "print(json.dumps([b['artifact']['residual_analysis_id'],"
             "b['artifact']['residual_bitmap_hash'],"

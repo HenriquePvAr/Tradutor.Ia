@@ -89,7 +89,7 @@ class StrategyOwnershipTests(unittest.TestCase):
     def test_the_downloader_decides_by_strategy_not_by_host(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
         body = source[source.index("def _scroll_coverage_warnings"):]
         body = body[:body.index("\ndef ", 10)]
         self.assertIn("coverage_strategy", body)

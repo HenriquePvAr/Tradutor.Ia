@@ -20,7 +20,7 @@ import re
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "static"
 HARNESS = STATIC / "pipeline_loading_harness.js"
 

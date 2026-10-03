@@ -283,7 +283,7 @@ class NoNetworkTests(unittest.TestCase):
     def test_the_resolver_module_fetches_nothing(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent / "lazy_slot_resolver.py").read_text(
+        source = (Path(__file__).resolve().parents[1] / "lazy_slot_resolver.py").read_text(
             encoding="utf-8")
         imports = [l.strip() for l in source.splitlines()
                    if l.strip().startswith(("import ", "from "))]

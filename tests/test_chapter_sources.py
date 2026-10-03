@@ -241,7 +241,7 @@ class SelectorOwnershipTests(unittest.TestCase):
 
     def test_downloader_holds_no_site_specific_selectors(self):
         from pathlib import Path
-        source = (Path(__file__).resolve().parent / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
         for leaked in ("#_imageList", "_viewerBox", "viewer_img", "img._images"):
             self.assertNotIn(leaked, source, leaked)
 

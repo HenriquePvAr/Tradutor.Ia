@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const html = fs.readFileSync(new URL('./ui/auth_callback.html', import.meta.url), 'utf8');
+const html = fs.readFileSync(new URL('../ui/auth_callback.html', import.meta.url), 'utf8');
 const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/gi)];
 const watchdogSource = scripts.find(([_, attrs]) => !/type\s*=\s*["']module/i.test(attrs))?.[2];
 const moduleSource = scripts.find(([_, attrs]) => /type\s*=\s*["']module/i.test(attrs))?.[2];

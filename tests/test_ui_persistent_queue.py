@@ -1,4 +1,4 @@
-﻿"""The UI creates and reads jobs through the persistent store, never running them."""
+"""The UI creates and reads jobs through the persistent store, never running them."""
 
 import _test_bootstrap  # noqa: F401
 

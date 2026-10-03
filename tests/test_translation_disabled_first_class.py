@@ -52,7 +52,7 @@ def test_disabled_translation_has_first_class_provider_provenance():
 def test_pipeline_spawn_uses_hidden_console_helper():
     from pathlib import Path
 
-    source = (Path(__file__).with_name("job_runner.py")).read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "job_runner.py").read_text(encoding="utf-8")
     assert "build_background_process_options" in source
     assert "PIPELINE_SPAWN_BEGIN" in source
     assert "shell=True" not in source

@@ -544,7 +544,7 @@ class NoHardcodedTranslations(unittest.TestCase):
                   "static/tradutor_ui.css")
 
     def test_no_decided_phrase_appears_in_production(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         forbidden = ("REAL COFFEE", "VERDADEIRO CAF", "CAFÉ DE VERDADE",
                      "SINCE I'VE SPENT", "Já que gastei", "IT BETTER BE WORTH",
                      "É MELHOR VALER", "shadow_slave", "reviewed_v8", "reviewed_v9")
@@ -555,7 +555,7 @@ class NoHardcodedTranslations(unittest.TestCase):
 
     def test_no_production_module_branches_on_an_identity(self):
         import re
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         for rel in self.PRODUCTION:
             if not rel.endswith(".py"):
                 continue

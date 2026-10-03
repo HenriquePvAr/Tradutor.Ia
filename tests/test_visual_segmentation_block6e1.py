@@ -10,7 +10,7 @@ import unittest
 import numpy as np
 
 import art_text_inpainting as ati
-from test_visual_refinement_block6e1 import _synthetic_text_region
+from tests.test_visual_refinement_block6e1 import _synthetic_text_region
 
 
 class LayeredSegmentationTests(unittest.TestCase):

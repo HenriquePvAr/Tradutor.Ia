@@ -18,7 +18,7 @@ from session_context import (
     SessionContextStore,
 )
 from ocr_balloon import validate_and_retry_translations
-from test_chapter_terminology_ledger import _StubTranslator, _group
+from tests.test_chapter_terminology_ledger import _StubTranslator, _group
 
 
 def _store(tmp):

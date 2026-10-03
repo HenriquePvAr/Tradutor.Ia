@@ -12,7 +12,7 @@ from psd_tools import PSDImage
 import benchmark_pipeline
 import config
 import local_folder_input
-from test_local_benchmark_pipeline_e2e import (
+from tests.test_local_benchmark_pipeline_e2e import (
     LocalBenchmarkPipelineE2ETests, _OfflineTranslator, _NoopResourceMonitor)
 
 

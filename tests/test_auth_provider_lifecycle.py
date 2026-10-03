@@ -28,7 +28,7 @@ from pathlib import Path
 
 import community_auth
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 _SCRUBBED_PREFIXES = ("SUPABASE_", "AUTH_PROVIDER", "COMMUNITY_AUTH_PROVIDER",
                       "ALLOW_LOCAL_TEST_IDENTITIES", "LOCAL_TEST_AUTH", "BETTER_AUTH_")
@@ -78,8 +78,8 @@ class ImportIsHermeticTests(unittest.TestCase):
     def test_collect_only_owner_and_provider_modules_without_supabase_config_succeeds(self):
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "--collect-only", "-q",
-             "test_owner_scoped_ui.py", "test_provider_selection.py",
-             "test_ui_runtime_dependency.py"],
+             "tests/test_owner_scoped_ui.py", "tests/test_provider_selection.py",
+             "tests/test_ui_runtime_dependency.py"],
             cwd=ROOT, capture_output=True, text=True, timeout=120, env=_clean_env())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

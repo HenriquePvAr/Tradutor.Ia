@@ -20,7 +20,7 @@ from chapter_quality_revision import (
 from job_store import JobStatus, JobStore
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 JS = ROOT / "static" / "tradutor_ui.js"
 SHELL = ROOT / "ui" / "ui_shell.html"
 

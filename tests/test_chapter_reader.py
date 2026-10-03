@@ -1,4 +1,4 @@
-﻿"""Contract for the in-app chapter reader: run binding, path safety, read-only.
+"""Contract for the in-app chapter reader: run binding, path safety, read-only.
 
 The reader is the default way to read a finished chapter, so the artifact it shows
 must be the one belonging to the History card that was clicked -- not the newest run
@@ -386,7 +386,7 @@ def test_reader_state_contract_runs_in_node():
     if not node:
         pytest.skip("node is not installed")
     result = subprocess.run(
-        [node, str(Path(app_ui.ROOT) / "test_chapter_reader.mjs")],
+        [node, str(Path(app_ui.ROOT) / "tests" / "test_chapter_reader.mjs")],
         cwd=str(app_ui.ROOT), capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr

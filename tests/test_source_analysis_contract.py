@@ -16,7 +16,7 @@ from pathlib import Path
 from chapter_source import INCOMPLETE_DOWNLOAD, INCOMPLETE_SOURCE_COVERAGE
 from ui_bridge import UiBridge
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 ANALYSIS_COVERAGE_WARNINGS = ("page_limit_exceeded", "scroll_incomplete", "pagination_incomplete")
 
 

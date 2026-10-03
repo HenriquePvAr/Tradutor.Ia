@@ -22,7 +22,7 @@ genuinely active job (``appState.activeJobId``) keeps gating the button.
 """
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
 
 # Mirror of the JS Set literal so the model can never silently drift from source.

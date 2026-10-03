@@ -5,7 +5,7 @@ from pathlib import Path
 import app_ui
 from ui_bridge import UiBridge
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_profile_media_routes_bridge_and_fetchers_are_absent():

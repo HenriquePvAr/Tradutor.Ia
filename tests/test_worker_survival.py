@@ -24,7 +24,7 @@ from pathlib import Path
 
 from job_store import JobStatus, JobStore
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 
 
 def _fake_command(output_dir: Path, *, steps=4, sleep=0.2):

@@ -417,7 +417,7 @@ class ReviewRerunBridgeAndUiTests(unittest.TestCase):
         )
 
     def test_review_rerun_ui_has_confirmation_and_real_handlers(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         shell = (root / "ui" / "ui_shell.html").read_text(encoding="utf-8")
         js = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn('id="rerunPendingReview"', shell)

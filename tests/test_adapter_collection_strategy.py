@@ -115,7 +115,7 @@ class CollectorBoundaryTests(unittest.TestCase):
     def test_analyze_routes_by_strategy_not_by_host(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent / "chapter_source.py").read_text(
+        source = (Path(__file__).resolve().parents[1] / "chapter_source.py").read_text(
             encoding="utf-8")
         # Anchor on the implementation, not the Protocol stub of the same name earlier in
         # the file, or the slice swallows half the module.

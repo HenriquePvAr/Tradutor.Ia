@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_scans_and_community_share_single_coming_soon_badge():

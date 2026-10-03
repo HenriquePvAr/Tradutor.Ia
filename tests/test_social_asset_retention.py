@@ -283,7 +283,7 @@ class ReconcileTests(Base):
 
 class SafetyTests(Base):
     def test_no_permanent_delete_anywhere_in_the_retention_code(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         for name in ("social_asset_retention.py", "social_asset_reconcile.py",
                      "social_asset_maintenance_cli.py"):
             src = (root / name).read_text(encoding="utf-8")
@@ -291,7 +291,7 @@ class SafetyTests(Base):
                 self.assertNotIn(bad, src, f"{name}: {bad}")
 
     def test_no_broad_drive_listing(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         for name in ("social_asset_retention.py", "social_asset_reconcile.py"):
             src = (root / name).read_text(encoding="utf-8")
             for bad in ("list_files", "files.list", "q=", "'*'"):

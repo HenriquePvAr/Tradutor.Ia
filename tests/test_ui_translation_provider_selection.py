@@ -23,10 +23,10 @@ from unittest import mock
 
 from source_readiness import SourceReadinessStore, default_workspace_id
 from ui_helpers import build_run_command
-from test_new_translation_source_policy_state import SourceStateBridge, source_payload
-from test_translation_start import WEBTOON_URL, drive
+from tests.test_new_translation_source_policy_state import SourceStateBridge, source_payload
+from tests.test_translation_start import WEBTOON_URL, drive
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 UI_SOURCE = ROOT / "static" / "tradutor_ui.js"
 UI_SHELL = ROOT / "ui" / "ui_shell.html"
 NODE = shutil.which("node")

@@ -414,7 +414,7 @@ def test_cli_without_dry_run_is_rejected(tmp_path: Path):
     fixture.write_text(json.dumps(_published_fixture(tmp_path)), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, "-m", "legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path)],
-        cwd=Path(__file__).parent,
+        cwd=Path(__file__).resolve().parents[1],
         text=True,
         capture_output=True,
         check=False,
@@ -428,7 +428,7 @@ def test_cli_dry_run_success(tmp_path: Path):
     fixture.write_text(json.dumps(_published_fixture(tmp_path)), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, "-m", "legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path), "--dry-run"],
-        cwd=Path(__file__).parent,
+        cwd=Path(__file__).resolve().parents[1],
         text=True,
         capture_output=True,
         check=False,
@@ -444,7 +444,7 @@ def test_cli_dry_run_invalid_input_returns_json_without_traceback(tmp_path: Path
     fixture.write_text(json.dumps(_draft_fixture(tmp_path, remote_asset_verification="nonsense")), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, "-m", "legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path), "--dry-run"],
-        cwd=Path(__file__).parent,
+        cwd=Path(__file__).resolve().parents[1],
         text=True,
         capture_output=True,
         check=False,

@@ -29,7 +29,7 @@ from legacy_publication_migration_executor import (
     TerminalBackendError,
     TransientBackendError,
 )
-from test_legacy_publication_migrator_dry_run import _draft_fixture, _published_fixture
+from tests.test_legacy_publication_migrator_dry_run import _draft_fixture, _published_fixture
 
 
 def _input_and_plan(root: Path, fixture: dict[str, object]):
@@ -412,7 +412,7 @@ def test_cli_remains_dry_run_only(tmp_path: Path):
     fixture.write_text(json.dumps(_published_fixture(tmp_path)), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, "-m", "legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path)],
-        cwd=Path(__file__).parent,
+        cwd=Path(__file__).resolve().parents[1],
         text=True,
         capture_output=True,
         check=False,

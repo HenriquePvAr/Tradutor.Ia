@@ -41,7 +41,7 @@ from job_store import JobStatus, JobStore
 from ui_history import UIHistoryStore
 from runtime_paths import default_user_data_root
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class RealRuntimePathTripwireTests(unittest.TestCase):
@@ -423,7 +423,7 @@ class EntryPointHermeticityTests(unittest.TestCase):
         completed = subprocess.run(
             [
                 sys.executable, "-m", "unittest",
-                "test_runtime_isolation_contract.IsolatedRuntimeVisibilityTests",
+                "tests.test_runtime_isolation_contract.IsolatedRuntimeVisibilityTests",
             ],
             cwd=REPO_ROOT, env=environment, capture_output=True, text=True, timeout=300,
         )

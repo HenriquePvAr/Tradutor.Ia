@@ -213,7 +213,7 @@ class ExecutionScope(unittest.TestCase):
 
 class CorrectedReadingContract(unittest.TestCase):
     def test_the_ui_writes_the_prefix_the_backend_reads(self):
-        js = Path(__file__).resolve().parent.joinpath("static", "tradutor_ui.js").read_text(encoding="utf-8")
+        js = Path(__file__).resolve().parents[1].joinpath("static", "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn(audit_decisions.CORRECTED_READING_PREFIX.strip().rstrip(":"), js)
 
 

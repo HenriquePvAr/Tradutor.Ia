@@ -353,7 +353,7 @@ class RapidOCRSourceRecoveryTests(unittest.TestCase):
 
 class VisualStyleRegressionOrderTests(unittest.TestCase):
     def test_84f22_styles_remain_available_for_renderable_regions(self):
-        from test_84f22_visual_fidelity import (
+        from tests.test_84f22_visual_fidelity import (
             _dark_blue_canvas,
             _draw_original_text,
             _group as visual_group,

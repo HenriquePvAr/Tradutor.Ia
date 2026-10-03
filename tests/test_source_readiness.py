@@ -313,7 +313,7 @@ class PhaseGateTests(unittest.TestCase):
 
 class UiContractTests(unittest.TestCase):
     def test_ready_ui_uses_workspace_policy_without_per_source_modal(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         html = (root / "ui" / "ui_shell.html").read_text(encoding="utf-8")
         script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn("Fonte analisada", html)
@@ -325,7 +325,7 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("workspace_source_policy", script)
 
     def test_polling_preserves_ready_state_and_isolates_unrelated_terminal_results(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn("applyStandaloneSourceReady(data)", script)
         self.assertIn("&& !runtime.source_ready", script)
@@ -335,7 +335,7 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("else if (runtime.source_ready)", script)
 
     def test_opening_new_translation_hides_unrelated_terminal_artifacts(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn("appState.newTranslationDraft = true;", script)
         self.assertIn("clearNewTranslationDraftPanels();", script)
@@ -349,7 +349,7 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("reviewedPdf.innerHTML = '';", clear)
 
     def test_quality_review_must_belong_to_the_current_operation(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         render = script.split("const reviewDismissed =", 1)[1].split(
             "const resultRecord =", 1)[0]
@@ -358,7 +358,7 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("qualityReviewJobId === reviewOwnerJobId", render)
 
     def test_current_ui_sends_explicit_pipeline_intent(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         form = script.split("function formPayload", 1)[1].split(
             "function resetRunPreview", 1)[0]
@@ -367,7 +367,7 @@ class UiContractTests(unittest.TestCase):
         self.assertIn("scope:", form)
 
     def test_ui_surfaces_confirmed_official_link_without_technical_parameters(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         script = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn("Link oficial do episódio confirmado.", script)
         self.assertNotIn("episode_no=", script)

@@ -364,7 +364,7 @@ class LifecycleAndProcessTests(unittest.TestCase):
 
 class FrontendOperationalContractsTests(unittest.TestCase):
     def test_frontend_exposes_review_cancel_eta_and_retry(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         js = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         shell = (root / "ui" / "ui_shell.html").read_text(encoding="utf-8")
         for marker in (
@@ -374,7 +374,7 @@ class FrontendOperationalContractsTests(unittest.TestCase):
             self.assertIn(marker, js + shell, marker)
 
     def test_frontend_uses_structured_human_messages_not_tracebacks(self):
-        js = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+        js = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.assertIn("worker_unavailable", js)
         self.assertIn("user_cancelled", js)
         self.assertNotIn("traceback", js[js.index("function renderRunStatus"):])
@@ -382,7 +382,7 @@ class FrontendOperationalContractsTests(unittest.TestCase):
 
 class TranslatedHistoryReviewEntry(unittest.TestCase):
     def setUp(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         self.js = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.shell = (root / "ui" / "ui_shell.html").read_text(encoding="utf-8")
 
@@ -473,7 +473,7 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
 
     def test_terminal_rejected_filter_is_distinct_from_visual_gate_rejection(self):
         shell = (
-            Path(__file__).resolve().parent / "ui" / "ui_shell.html"
+            Path(__file__).resolve().parents[1] / "ui" / "ui_shell.html"
         ).read_text(encoding="utf-8")
         review_start = self.js.index("function renderQualityReview(review)")
         review_end = self.js.index("function visibleQualityReviewKeys", review_start)
@@ -504,7 +504,7 @@ class TranslatedHistoryReviewEntry(unittest.TestCase):
         self.assertLess(action.index(validation), action.index(request))
 
     def test_review_editor_fields_do_not_shrink_inside_button_flex_row(self):
-        css = (Path(__file__).resolve().parent / "static" / "tradutor_ui.css").read_text(
+        css = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.css").read_text(
             encoding="utf-8"
         )
         review_actions_start = self.js.index("const reviewActions = isReportOnly ?")

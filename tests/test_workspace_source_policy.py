@@ -470,7 +470,7 @@ class SourcePolicyRouteTests(unittest.TestCase):
 class SettingsToggleErrorHandlingContract(unittest.TestCase):
     """The settings pane must never paint an activation the backend refused."""
 
-    UI = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+    UI = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(
         encoding="utf-8")
 
     def submit_handler(self) -> str:

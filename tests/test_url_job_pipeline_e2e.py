@@ -25,7 +25,7 @@ from unittest import mock
 import ui_bridge
 from job_store import JobStatus, JobStore
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 CHAPTER_URL = ("https://www.webtoons.com/en/drama/daytime-in-the-bunker/episode-1/viewer"
                "?title_no=9842&episode_no=1")
 

@@ -21,7 +21,7 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 APP_UI_SOURCE = (ROOT / "app_ui.py").read_text(encoding="utf-8")
 REQUIREMENTS_TXT = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 REQUIREMENTS_DEV_TXT = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")

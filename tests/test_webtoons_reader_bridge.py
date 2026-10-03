@@ -20,7 +20,7 @@ PAGE = "https://www.webtoons.com/en/drama/serie/episode-1/viewer?title_no=1&epis
 PAGE_HOST = "webtoon-phinf.pstatic.net"
 PLACEHOLDER_HOST = "webtoons-static.pstatic.net"
 SLOT_HEIGHT = 1280
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 
 
 def public_dns(*_args, **_kwargs):

@@ -82,7 +82,7 @@ class AtomicWalletSettlement(unittest.TestCase):
                                          finalize_job=True)
 
     def test_migration_requires_persisted_results_and_forbids_release_after_provider_success(self):
-        migration = (Path(__file__).parent / "supabase/migrations/20260926175232_yk_job_atomic_settlement.sql").read_text(encoding="utf-8")
+        migration = (Path(__file__).resolve().parents[1] / "supabase/migrations/20260926175232_yk_job_atomic_settlement.sql").read_text(encoding="utf-8")
         self.assertIn("set search_path = ''", migration)
         self.assertIn("v_result_persisted <> v_requests", migration)
         self.assertIn("v_completed > 0 or v_result_persisted > 0", migration)

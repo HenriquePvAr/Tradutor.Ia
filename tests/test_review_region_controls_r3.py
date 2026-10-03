@@ -10,7 +10,7 @@ from PIL import Image
 import pytest
 
 from job_store import JobStore, TransitionError
-from test_review_ordering_r1 import _bridge, _review_job, _close
+from tests.test_review_ordering_r1 import _bridge, _review_job, _close
 
 
 def _fixture(tmp_path, monkeypatch):

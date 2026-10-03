@@ -26,7 +26,7 @@ import numpy as np
 from PIL import Image
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _free_loopback_port() -> int:

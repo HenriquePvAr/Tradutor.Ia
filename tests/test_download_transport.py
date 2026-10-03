@@ -391,7 +391,7 @@ class TransportSelectionTests(unittest.TestCase):
     def test_cloudscraper_is_not_a_default_dependency(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent / "download_transport.py").read_text(
+        source = (Path(__file__).resolve().parents[1] / "download_transport.py").read_text(
             encoding="utf-8")
         self.assertNotIn("import cloudscraper", source)
         for banned in (

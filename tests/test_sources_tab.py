@@ -11,7 +11,7 @@ from unittest import mock
 
 import desktop_app
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SHELL = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
 UI_JS = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
 

@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 LOADING_VIEW = ROOT / "static" / "loading_view.js"
 SURFACE = ROOT / "static" / "processing_surface.js"
 CSS = ROOT / "static" / "loading_surface.css"

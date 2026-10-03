@@ -4,14 +4,14 @@
 // result is still wanted -- lives in `createReaderState` and is exercised here with
 // no DOM, no timers and no network.
 //
-// Run: node test_chapter_reader.mjs
+// Run: node tests/test_chapter_reader.mjs
 
 import assert from 'node:assert/strict';
 import {
   createReaderState, MIN_ZOOM, MAX_ZOOM, ZOOM_STEPS, PAGE_GAP, RENDER_RADIUS,
   CLOSED, LOADING, READY, ERROR,
   readerRequestInit, readerErrorMessage,
-} from './static/chapter_reader.js';
+} from '../static/chapter_reader.js';
 
 const failures = [];
 let passed = 0;

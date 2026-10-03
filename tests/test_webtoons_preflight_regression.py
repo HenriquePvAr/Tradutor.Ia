@@ -305,7 +305,7 @@ class ReaderSelectorOwnershipTests(unittest.TestCase):
     def test_downloader_holds_no_webtoons_selectors(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
         for leaked in ("#_imageList", "viewer_img", "img._images", "viewer_lst"):
             self.assertNotIn(leaked, source, leaked)
 

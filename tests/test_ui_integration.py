@@ -14,7 +14,7 @@ from ui_history import UIHistoryStore
 from ui_bridge import UiBridge
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 URL = (
     "https://www.webtoons.com/en/action/jungle-juice/episode-1/viewer"
     "?title_no=2480&episode_no=1"
@@ -535,7 +535,7 @@ class UiIntegrationTests(unittest.TestCase):
     def test_history_delete_route_authenticates_without_requiring_store_job(self):
         # Gate #1 regression: the route must not require a live store job -- legacy
         # local cards have no job row and were 404'd before reaching the bridge.
-        src = (Path(__file__).resolve().parent / "app_ui.py").read_text(encoding="utf-8")
+        src = (Path(__file__).resolve().parents[1] / "app_ui.py").read_text(encoding="utf-8")
         route = src.split('@app.post("/api/ui/history/delete")', 1)[1].split("\n@app.", 1)[0]
         self.assertIn("_ui_principal(request, mutate=True)", route)
         self.assertNotIn("_owned_ui_job", route)
@@ -897,7 +897,7 @@ class ServiceHealthTruthfulnessTests(unittest.TestCase):
         if not node:
             self.skipTest("node is not installed")
         result = subprocess.run(
-            [node, str(ROOT / "test_service_health.mjs")],
+            [node, str(ROOT / "tests" / "test_service_health.mjs")],
             cwd=str(ROOT), capture_output=True, text=True, timeout=120,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

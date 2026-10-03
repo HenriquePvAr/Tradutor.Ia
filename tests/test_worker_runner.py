@@ -20,7 +20,7 @@ from job_store import JobStatus, JobStore
 import process_tree
 from worker_service import Worker
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 
 
 def _fake_command(output_dir: Path, *, outcome="finished", steps=2, sleep=0.02,

@@ -526,7 +526,7 @@ class RestartIdempotency(NaturalityRetryHarness):
         records_path.write_text(json.dumps(records), encoding="utf-8")
         script = textwrap.dedent(f"""
             import json, sys
-            sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+            sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
             import provider_execution as pe
             records = json.loads(open({str(records_path)!r}, encoding="utf-8").read())
             spent = pe.find_request({self.output!r}, {request["authorization_request_id"]!r})

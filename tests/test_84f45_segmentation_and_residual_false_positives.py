@@ -25,7 +25,7 @@ import numpy as np
 
 import semantic_fidelity
 from ocr_balloon import _post_render_source_text_check
-from test_ocr_quality_regressions import _line, _scored_group
+from tests.test_ocr_quality_regressions import _line, _scored_group
 
 
 def _fidelity(source, candidate, **kwargs):

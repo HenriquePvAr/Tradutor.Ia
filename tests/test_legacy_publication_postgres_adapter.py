@@ -38,7 +38,7 @@ from legacy_publication_postgres_adapter import (
     RefuseRemotePostgresHostError,
     map_postgres_error,
 )
-from test_legacy_publication_migrator_dry_run import _draft_fixture, _published_fixture
+from tests.test_legacy_publication_migrator_dry_run import _draft_fixture, _published_fixture
 
 
 POSTGRES_IMAGE = "postgres:15-alpine"

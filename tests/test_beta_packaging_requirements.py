@@ -10,7 +10,7 @@ ship without it. Runs offline; reads files only.
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 REQS = (ROOT / "requirements-beta.txt").read_text(encoding="utf-8")
 SPEC = (ROOT / "packaging" / "tradutor_ia.spec").read_text(encoding="utf-8")
 

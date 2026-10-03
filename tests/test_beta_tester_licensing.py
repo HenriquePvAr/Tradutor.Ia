@@ -28,7 +28,7 @@ from beta_license import (
 )
 from community_auth import RequestPrincipal
 from job_store import JobStatus
-from test_translation_start import WEBTOON_URL, _Bridge
+from tests.test_translation_start import WEBTOON_URL, _Bridge
 
 
 def drive(coro):
@@ -386,7 +386,7 @@ class UiBetaAuthorizerCompositionTests(unittest.TestCase):
 
 class RemoteSqlContractTests(unittest.TestCase):
     def test_authorization_rpc_is_hardened_and_atomic(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         sql = (root / "supabase" / "migrations" /
                "20260824192601_beta_tester_authorization_rpc.sql").read_text(
                    encoding="utf-8")
@@ -405,7 +405,7 @@ class RemoteSqlContractTests(unittest.TestCase):
         self.assertNotIn("p_user_id", lowered)
 
     def test_grants_hardening_revokes_raw_table_privileges(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         sql = (root / "supabase" / "migrations" /
                "20260824192729_beta_tester_grants_hardening.sql").read_text(
                    encoding="utf-8").lower()
@@ -426,7 +426,7 @@ class RemoteSqlContractTests(unittest.TestCase):
 
 class BetaSecurityStaticScanTests(unittest.TestCase):
     def test_client_code_has_no_service_role_or_admin_secret_runtime_use(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         suspicious = []
         needles = ("SUPABASE_SERVICE_ROLE", "service_role", "private signing key")
         allowed_files = {"test_beta_tester_licensing.py", "supabase_auth.py", "community_auth.py"}

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-AUTH_UI = Path(__file__).parent / "static" / "auth_ui.js"
+AUTH_UI = Path(__file__).resolve().parents[1] / "static" / "auth_ui.js"
 
 
 def test_sdk_session_is_not_authenticated_before_canonical_confirmation():
@@ -29,7 +29,7 @@ def test_canonical_backend_success_marks_destination_confirmed():
 
 
 def test_bootstrap_does_not_promote_unconfirmed_persisted_token():
-    source = (Path(__file__).parent / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
     assert "getGlobal('__tradutorAuthState') === 'authenticated'" in source
 
 
@@ -40,7 +40,7 @@ def test_explicit_login_owns_canonical_verification_during_sdk_event():
 
 
 def test_stale_bearer_is_blocked_until_canonical_auth_state():
-    source = (Path(__file__).parent / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
     assert "let bearer = authState === 'authenticated'" in source
     assert "let bearer = getGlobal('__tradutorAccessToken') || ''" not in source
 

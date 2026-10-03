@@ -90,7 +90,7 @@ class Mission2ValidationFixTests(unittest.TestCase):
         self.assertIn("zero_lines_on_story_like_page", suspicion["reasons"])
 
     def test_canonical_p029_art_only_does_not_create_false_review(self):
-        image_path = Path(__file__).parent / ".local-audit/mission6d_corpus_recovery/incremental_pages/page_029.png"
+        image_path = Path(__file__).resolve().parents[1] / ".local-audit/mission6d_corpus_recovery/incremental_pages/page_029.png"
         image = cv2.imread(str(image_path))
         self.assertIsNotNone(image)
         engine = ocr_engine.OCREngine("en", engine="rapidocr", fallback_engine="")

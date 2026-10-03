@@ -471,7 +471,7 @@ class RecordedPageTest(unittest.TestCase):
         self.addCleanup(provenance.deactivate)
 
     def record(self, raw_text, group_text, group_box, member_box=None):
-        from test_ocr_line_provenance import FakeGroup, make_line
+        from tests.test_ocr_line_provenance import FakeGroup, make_line
 
         source = make_line(raw_text, (260, 2075, 376, 33))
         group = FakeGroup("BALAO_3", [source], text=raw_text)
@@ -510,7 +510,7 @@ class RecordedPageTest(unittest.TestCase):
         self.assertIn("LOSTCONTROL", summary["missing_lexical_tokens"])
 
     def test_live_check_is_unavailable_without_a_recorder(self):
-        from test_ocr_line_provenance import FakeGroup, make_line
+        from tests.test_ocr_line_provenance import FakeGroup, make_line
 
         provenance.deactivate()
         group = FakeGroup("BALAO_3", [make_line("ANY TEXT", (0, 0, 10, 10))])
@@ -526,7 +526,7 @@ class PhysicalExpectationSourceTest(unittest.TestCase):
         self.addCleanup(provenance.deactivate)
 
     def build(self, raw_text, group_text):
-        from test_ocr_line_provenance import FakeGroup, make_line
+        from tests.test_ocr_line_provenance import FakeGroup, make_line
 
         source = make_line(raw_text, (260, 2075, 376, 33))
         group = FakeGroup("BALAO_3", [source], text=raw_text)
@@ -660,7 +660,7 @@ class PhysicalSourceTruthTest(unittest.TestCase):
         self.addCleanup(provenance.deactivate)
 
     def stub_post_render_ocr(self, observed_text):
-        from test_ocr_line_provenance import make_line
+        from tests.test_ocr_line_provenance import make_line
 
         class StubEngine:
             def __init__(self, *args, **kwargs):
@@ -682,7 +682,7 @@ class PhysicalSourceTruthTest(unittest.TestCase):
         proper_names=(),
         final_reason="ok",
     ):
-        from test_ocr_line_provenance import make_line
+        from tests.test_ocr_line_provenance import make_line
 
         self.stub_post_render_ocr(observed_text)
         source = make_line(raw_text, (260, 2075, 376, 33))

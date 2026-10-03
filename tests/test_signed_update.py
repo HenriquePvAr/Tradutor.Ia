@@ -609,7 +609,7 @@ class ReleaseSignerTests(unittest.TestCase):
 
         tracked = subprocess.run(
             ["git", "ls-files"],
-            cwd=Path(__file__).resolve().parent,
+            cwd=Path(__file__).resolve().parents[1],
             capture_output=True,
             text=True,
             check=True,
@@ -643,7 +643,7 @@ class OfflineGuaranteeTests(unittest.TestCase):
             self.assertNotIn("os.environ", source)
 
     def test_real_runtime_directories_are_untouched(self):
-        repo = Path(__file__).resolve().parent
+        repo = Path(__file__).resolve().parents[1]
         self.assertFalse((repo / "versions").exists())
         self.assertFalse((repo / "current.json").exists())
         self.assertEqual(os.environ.get("TRADUTOR_IA_HERMETIC_TEST_ENV", "1"), "1")

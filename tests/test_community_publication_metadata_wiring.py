@@ -147,7 +147,7 @@ def test_pytest_assertion_diff_does_not_reveal_synthetic_secret(tmp_path):
     )
     env = {
         **os.environ,
-        "PYTHONPATH": str(Path(__file__).resolve().parent),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
         "TRADUTOR_IA_HERMETIC_TEST_ENV": "1",
         "SUPABASE_URL": SYNTHETIC_URL,
         "SUPABASE_SECRET_KEY": SYNTHETIC_SECRET,

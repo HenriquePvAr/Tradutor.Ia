@@ -36,7 +36,7 @@ from legacy_storage_upload_reservation import (
     ReservedLegacyArtifactStorage,
     compute_storage_scope_key,
 )
-from test_legacy_publication_migrator_dry_run import _draft_fixture
+from tests.test_legacy_publication_migrator_dry_run import _draft_fixture
 
 
 def _input_and_plan(root: Path, **overrides: Any):

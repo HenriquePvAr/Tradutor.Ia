@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createAuthPresentationController } from './static/auth_presentation.js';
+import { createAuthPresentationController } from '../static/auth_presentation.js';
 
 class FakeElement {
   constructor({dataset = {}, value = ''} = {}) {
@@ -422,7 +422,7 @@ test('destroy removes every listener it registered', () => {
 test('the module owns no authentication behaviour', async () => {
   const fs = await import('node:fs/promises');
   const source = await fs.readFile(
-    new URL('./static/auth_presentation.js', import.meta.url), 'utf8');
+    new URL('../static/auth_presentation.js', import.meta.url), 'utf8');
   const code = source.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '');
   const forbidden = ['fetch(', 'XMLHttpRequest', 'localStorage', 'sessionStorage',
     'setTimeout', 'setInterval', 'MutationObserver', '.submit('];

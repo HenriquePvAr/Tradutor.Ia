@@ -84,7 +84,7 @@ def _run_worker(db: Path, runtime: Path, *, fault: str = "") -> int:
     env.pop("YOMU_TEST_REVIEW_REEXPORT_FAIL_ONCE", None)
     if fault:
         env["YOMU_TEST_REVIEW_REEXPORT_FAIL_ONCE"] = fault
-    proc = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).parent,
+    proc = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[1],
                           env=env, timeout=90, check=False, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr[-1500:]
     return proc.returncode

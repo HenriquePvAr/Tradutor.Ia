@@ -410,7 +410,7 @@ class CancelTests(unittest.TestCase):
 
 class FrontendTimerTests(unittest.TestCase):
     def setUp(self):
-        self.src = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+        self.src = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8")
 
     def test_single_polling_interval_with_cleanup(self):

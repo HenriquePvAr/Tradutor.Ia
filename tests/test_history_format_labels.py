@@ -8,7 +8,7 @@ internal canonical PDF but must still read as PSD/PNG.
 """
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
 BRIDGE = (ROOT / "ui_bridge.py").read_text(encoding="utf-8")
 

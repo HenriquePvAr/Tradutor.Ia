@@ -30,7 +30,7 @@ import process_tree
 import ui_bridge
 from job_store import JobStatus, JobStore
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 
 
 def _wait(predicate, *, timeout: float, label: str) -> bool:

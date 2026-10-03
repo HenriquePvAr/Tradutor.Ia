@@ -71,7 +71,7 @@ class ReviewDraftTests(unittest.TestCase):
 
 class BoundaryEditorUiContractTests(unittest.TestCase):
     def test_editor_has_layers_segments_opacity_and_fail_closed_copy(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         script = (root / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8")
         css = (root / "static" / "tradutor_ui.css").read_text(
@@ -87,7 +87,7 @@ class BoundaryEditorUiContractTests(unittest.TestCase):
         self.assertIn("image-rendering:pixelated", css)
 
     def test_bridge_exposes_content_addressed_conflict(self):
-        source = Path(__file__).resolve().parent.joinpath(
+        source = Path(__file__).resolve().parents[1].joinpath(
             "ui_bridge.py").read_text(encoding="utf-8")
         self.assertIn("build_conflict_artifact(", source)
         self.assertIn('"first_pending_segment_id"', source)

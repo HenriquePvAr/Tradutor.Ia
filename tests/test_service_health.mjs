@@ -7,7 +7,7 @@
 // at all. CONNECTED must now mean "a probe succeeded recently", and nothing
 // else may produce it.
 //
-// Run: node test_service_health.mjs
+// Run: node tests/test_service_health.mjs
 
 import assert from 'node:assert/strict';
 import {
@@ -19,7 +19,7 @@ import {
   PROBE_INTERVAL_MS,
   PROBE_TIMEOUT_MS,
   STALE_AFTER_MS,
-} from './static/service_health.js';
+} from '../static/service_health.js';
 
 const failures = [];
 let passed = 0;

@@ -48,14 +48,14 @@ class DiagnosticBoundaryTests(unittest.TestCase):
         self.assertEqual([row["region_id"] for row in normalize_artifact(payload)["regions"]], ["z", "a", "b"])
 
     def test_boundary_matrix_fixture_matches_classifier(self):
-        fixture = Path(__file__).parent / "test_fixtures" / "quality_regression_diagnostics" / "missed_balloon_boundary_matrix.json"
+        fixture = Path(__file__).resolve().parents[1] / "test_fixtures" / "quality_regression_diagnostics" / "missed_balloon_boundary_matrix.json"
         payload = json.loads(fixture.read_text(encoding="utf-8"))
         for case in payload["cases"]:
             with self.subTest(case=case["case"]):
                 self.assertEqual(classify_item(case["input"]), case["expected"])
 
     def test_i1_fixture_is_explicitly_post_ocr_and_contains_both_sides(self):
-        fixture = Path(__file__).parent / "test_fixtures" / "quality_regression_diagnostics" / "i_1_post_ocr_synthetic.json"
+        fixture = Path(__file__).resolve().parents[1] / "test_fixtures" / "quality_regression_diagnostics" / "i_1_post_ocr_synthetic.json"
         payload = json.loads(fixture.read_text(encoding="utf-8"))
         self.assertEqual(payload["evidence_kind"], "POST_OCR_SYNTHETIC_FIXTURE")
         self.assertEqual(len(payload["positive_contexts"]), 4)
@@ -63,7 +63,7 @@ class DiagnosticBoundaryTests(unittest.TestCase):
         self.assertEqual(payload["autocorrection"], "NOT_IMPLEMENTED")
 
     def test_outside_story_fixture_keeps_positive_contexts_and_sfx_negatives(self):
-        fixture = Path(__file__).parent / "test_fixtures" / "quality_regression_diagnostics" / "outside_balloon_post_ocr_synthetic.json"
+        fixture = Path(__file__).resolve().parents[1] / "test_fixtures" / "quality_regression_diagnostics" / "outside_balloon_post_ocr_synthetic.json"
         payload = json.loads(fixture.read_text(encoding="utf-8"))
         self.assertEqual(payload["evidence_kind"], "POST_OCR_SYNTHETIC_FIXTURE")
         self.assertEqual(len(payload["positive_story_cases"]), 4)
@@ -93,7 +93,7 @@ class DiagnosticBoundaryTests(unittest.TestCase):
         self.assertTrue(out["regions"][0]["is_manual_region"])
 
     def test_confirmed_real_slurp_fixture_runs_as_sfx_negative(self):
-        root = Path(__file__).parent / "test_fixtures" / "quality_regression_diagnostics" / "real" / "sfx_slurp_p006"
+        root = Path(__file__).resolve().parents[1] / "test_fixtures" / "quality_regression_diagnostics" / "real" / "sfx_slurp_p006"
         expectation = json.loads((root / "expectation.json").read_text(encoding="utf-8"))
         provenance = json.loads((root / "provenance.json").read_text(encoding="utf-8"))
         artifact = json.loads((root / "diagnostic_input.json").read_text(encoding="utf-8"))

@@ -37,7 +37,7 @@ from translator_deepl import (
     plan_chunks,
 )
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 TEST_KEY = "test-key-not-a-real-credential"
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from psd_tools import PSDImage
 
 from job_store import JobStatus
-from test_review_reexport_worker_e2e import _fixture, _run_worker, _wait_job
+from tests.test_review_reexport_worker_e2e import _fixture, _run_worker, _wait_job
 
 
 def _psd_layer_names(final_dir: Path):

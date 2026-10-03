@@ -44,7 +44,7 @@ from scripts.sign_release import public_key_material, sign_manifest
 
 APP_ID = "tradutor-ia"
 KEY_ID = "beta-test"
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 # --- fixtures ----------------------------------------------------------------------------

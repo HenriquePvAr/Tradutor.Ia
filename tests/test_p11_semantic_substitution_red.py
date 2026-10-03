@@ -14,7 +14,7 @@ from pathlib import Path
 from ocr_balloon import validate_and_retry_translations
 from semantic_fidelity import evaluate_local_fidelity
 from session_context import SessionContextStore
-from test_chapter_terminology_ledger import _StubTranslator, _group
+from tests.test_chapter_terminology_ledger import _StubTranslator, _group
 
 
 class P11SemanticSubstitutionRedTests(unittest.TestCase):

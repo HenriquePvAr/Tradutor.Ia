@@ -31,7 +31,7 @@ from ocr_engine import OCRLine
 # geometry below is the OCR line evidence that run recorded, kept inline so no
 # copyrighted page has to live in the repository.
 _SENTINEL_RUN = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "output", "shadow_slave_chapter_1_5",
     "72347726-3697-4357-8b77-c4b58cc8b0ea",
 )

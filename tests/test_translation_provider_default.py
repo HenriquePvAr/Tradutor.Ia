@@ -22,7 +22,7 @@ from unittest import mock
 import config
 import ui_helpers
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 LOOKISM_URL = (
     "https://m.webtoons.com/en/drama/lookism/ep-50/viewer"
     "?title_no=1049&episode_no=50"

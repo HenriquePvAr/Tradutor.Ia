@@ -185,7 +185,7 @@ def test_subprocess_runs_from_unrelated_cwd_and_cleans_successfully(tmp_path):
     workspace = tmp_path / "workspace"
     unrelated = tmp_path / "unrelated-cwd"
     unrelated.mkdir()
-    entrypoint = Path(__file__).parent / "test_support" / "synthetic_fixture_harness.py"
+    entrypoint = Path(__file__).resolve().parents[1] / "test_support" / "synthetic_fixture_harness.py"
     completed = subprocess.run(
         [sys.executable, str(entrypoint), "run-quality", "--workspace", str(workspace)],
         cwd=unrelated,

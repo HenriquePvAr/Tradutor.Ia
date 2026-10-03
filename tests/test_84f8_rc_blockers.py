@@ -31,7 +31,7 @@ from ocr_balloon import (
     translation_render_state,
 )
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 READER_JS = ROOT / "static" / "chapter_reader.js"
 SHELL_HTML = ROOT / "ui" / "ui_shell.html"
 

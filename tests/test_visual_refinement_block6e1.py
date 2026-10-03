@@ -21,7 +21,7 @@ import font_fidelity as ff
 import human_typography_decisions as htd
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _synthetic_text_region(*, text="TEXTO", outline=True, line=False,

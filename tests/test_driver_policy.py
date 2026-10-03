@@ -52,7 +52,7 @@ class DriverPolicyTests(unittest.TestCase):
     def test_single_flag_name_no_competing_alias(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
         self.assertIn("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", source)
         for alias in ("SELENIUM_MANAGER_ENABLED", "ALLOW_CHROMEDRIVER_DOWNLOAD"):
             self.assertNotIn(alias, source, alias)
@@ -60,7 +60,7 @@ class DriverPolicyTests(unittest.TestCase):
     def test_failure_message_names_every_option(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parent / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
         block = source[source.index("CHROMEDRIVER_UNAVAILABLE"):][:500]
         for hint in ("CHROMEDRIVER_PATH", "PATH", "TRADUTOR_ALLOW_DRIVER_DOWNLOAD"):
             self.assertIn(hint, block, hint)

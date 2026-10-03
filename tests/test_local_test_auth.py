@@ -260,10 +260,10 @@ def test_cli_bootstrap_is_idempotent_without_rotating_credentials(tmp_path):
         sys.executable, "-m", "local_test_auth", "bootstrap",
         "--credentials-output", str(credentials),
     ]
-    first = subprocess.run(command, cwd=Path(__file__).parent, env=values, check=False)
+    first = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], env=values, check=False)
     assert first.returncode == 0
     original = credentials.read_bytes()
-    second = subprocess.run(command, cwd=Path(__file__).parent, env=values, check=False)
+    second = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], env=values, check=False)
     assert second.returncode == 0
     assert credentials.read_bytes() == original
     payload = json.loads(original)

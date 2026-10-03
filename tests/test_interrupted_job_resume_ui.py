@@ -32,7 +32,7 @@ from unittest.mock import patch
 import ui_bridge
 from job_store import JobStatus, JobStore
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 UI_SOURCE = ROOT / "static" / "tradutor_ui.js"
 UI_SHELL = ROOT / "ui" / "ui_shell.html"
 
@@ -305,7 +305,7 @@ class ResumeBrowserHarnessTests(unittest.TestCase):
         if not node:
             self.skipTest("node is not installed")
         result = subprocess.run(
-            [node, str(ROOT / "test_interrupted_job_resume_ui.mjs")],
+            [node, str(ROOT / "tests" / "test_interrupted_job_resume_ui.mjs")],
             capture_output=True, text=True, timeout=120,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

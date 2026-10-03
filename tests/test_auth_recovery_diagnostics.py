@@ -5,7 +5,7 @@ install_offline_network_guard()
 from pathlib import Path
 
 
-AUTH_UI = Path(__file__).parent / "static" / "auth_ui.js"
+AUTH_UI = Path(__file__).resolve().parents[1] / "static" / "auth_ui.js"
 
 
 def _diagnostic_block() -> str:
@@ -71,7 +71,7 @@ def test_recovery_marker_is_not_cleared_by_auth_events():
 
 
 def test_callback_persists_recovery_event_before_redirect():
-    callback = (Path(__file__).parent / "ui" / "auth_callback.html").read_text(encoding="utf-8")
+    callback = (Path(__file__).resolve().parents[1] / "ui" / "auth_callback.html").read_text(encoding="utf-8")
     assert "PASSWORD_RECOVERY" in callback
     assert "yomu_recovery_intent" in callback
     assert "exchangeCodeForSession(code)" in callback
@@ -80,7 +80,7 @@ def test_callback_persists_recovery_event_before_redirect():
 
 
 def test_callback_diagnostic_is_sanitized_and_durable():
-    callback = (Path(__file__).parent / "ui" / "auth_callback.html").read_text(encoding="utf-8")
+    callback = (Path(__file__).resolve().parents[1] / "ui" / "auth_callback.html").read_text(encoding="utf-8")
     assert "callbackDiagnosticKey" in callback
     assert "localStorage.setItem(callbackDiagnosticKey" in callback
     assert "error?.status" in callback and "error?.code" in callback
@@ -91,14 +91,14 @@ def test_callback_diagnostic_is_sanitized_and_durable():
 
 
 def test_callback_disables_auto_url_detection_for_single_pkce_exchange():
-    callback = (Path(__file__).parent / "ui" / "auth_callback.html").read_text(encoding="utf-8")
-    auth = (Path(__file__).parent / "static" / "supabase_auth.js").read_text(encoding="utf-8")
+    callback = (Path(__file__).resolve().parents[1] / "ui" / "auth_callback.html").read_text(encoding="utf-8")
+    auth = (Path(__file__).resolve().parents[1] / "static" / "supabase_auth.js").read_text(encoding="utf-8")
     assert "getSupabaseClient({detectSessionInUrl: false})" in callback
     assert "options.detectSessionInUrl !== false" in auth
 
 
 def test_callback_auth_steps_have_bounded_waits_and_sanitized_phase_diagnostics():
-    callback = (Path(__file__).parent / "ui" / "auth_callback.html").read_text(encoding="utf-8")
+    callback = (Path(__file__).resolve().parents[1] / "ui" / "auth_callback.html").read_text(encoding="utf-8")
     assert "void (async () => {" in callback
     assert "CALLBACK_TIMEOUT_MS = 15000" in callback
     for phase in ("desktop_handoff", "client_initialization", "code_exchange", "session_confirmation"):
@@ -203,8 +203,8 @@ def test_recovery_error_messages_are_user_facing_and_specific():
 
 
 def test_auth_preview_is_multi_area_carousel():
-    shell = (Path(__file__).parent / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-    css = (Path(__file__).parent / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
+    shell = (Path(__file__).resolve().parents[1] / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+    css = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
     assert 'id="authProductCarousel"' in shell
     for label in ("Início", "Nova tradução", "Fila", "Capítulos traduzidos", "Leitor", "Comunidade"):
         assert label in shell
@@ -215,7 +215,7 @@ def test_auth_preview_is_multi_area_carousel():
 
 def test_auth_preview_clones_full_application_shell():
     source = AUTH_UI.read_text(encoding="utf-8")
-    shell = (Path(__file__).parent / "ui" / "ui_shell.html").read_text(encoding="utf-8")
+    shell = (Path(__file__).resolve().parents[1] / "ui" / "ui_shell.html").read_text(encoding="utf-8")
     assert "const shellSource = document.querySelector('.shell')" in source
     assert "slide.className = `shell auth-product-real-slide" in source
     assert 'data-preview-sources="view-inicio,view-nova,view-queue' in shell

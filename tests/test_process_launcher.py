@@ -496,7 +496,7 @@ class ProcessLauncherTests(unittest.TestCase):
         launcher = subprocess.Popen(
             [
                 sys.executable,
-                str(Path(__file__).resolve().with_name("process_launcher.py")),
+                str(Path(__file__).resolve().parents[1] / "process_launcher.py"),
                 "--runtime-directory",
                 str(runtime),
                 "--cwd",

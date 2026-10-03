@@ -14,7 +14,7 @@ import pytest
 
 import ui_bridge
 from job_store import JobStatus
-from test_review_ordering_r1 import _bridge, _review_job, _close
+from tests.test_review_ordering_r1 import _bridge, _review_job, _close
 
 
 REPORT = {"pages": [{"index": 1, "output_path": "p1.png", "translation_terminal_items": [

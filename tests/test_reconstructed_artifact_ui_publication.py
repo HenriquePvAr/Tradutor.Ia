@@ -532,7 +532,7 @@ class ReconstructedArtifactUiPublicationTests(unittest.TestCase):
 
 class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
     def test_publication_payload_uses_record_job_id_and_not_parent_fallback(self):
-        source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+        source = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8"
         )
         publish = source[source.index("async function publishToCommunity"):source.index(
@@ -544,7 +544,7 @@ class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
         self.assertNotIn("effective", publish.lower())
 
     def test_publication_eligibility_uses_server_capability_not_manifest_path(self):
-        source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+        source = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8"
         )
         eligibility = source[source.index("function publicationEligibility"):source.index(
@@ -560,7 +560,7 @@ class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
         record, so requiring one in the browser was an unsatisfiable gate.  The server
         resolves it from the trusted source lineage and fails closed when it cannot.
         """
-        source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+        source = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8"
         )
         eligibility = source[source.index("function publicationEligibility"):source.index(
@@ -580,7 +580,7 @@ class ReconstructedArtifactFrontendContractTests(unittest.TestCase):
             self.assertNotIn(field, action)
 
     def test_reconstruction_status_label_is_distinct_from_historical_review_required(self):
-        source = (Path(__file__).resolve().parent / "static" / "tradutor_ui.js").read_text(
+        source = (Path(__file__).resolve().parents[1] / "static" / "tradutor_ui.js").read_text(
             encoding="utf-8"
         )
         self.assertIn("artifact_reconstruction", source)

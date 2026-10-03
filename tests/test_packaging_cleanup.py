@@ -6,7 +6,7 @@ from source_readiness import SourceReadinessStore, default_workspace_id
 from ui_bridge import UiBridge
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 ISS = ROOT / "packaging" / "TradutorIA.iss"
 
 

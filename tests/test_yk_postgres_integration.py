@@ -33,7 +33,7 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_IMAGE = "postgres:15-alpine"
 
 # Bootstrap first, then the real migrations that build the schema this feature

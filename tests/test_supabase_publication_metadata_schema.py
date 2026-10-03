@@ -5,7 +5,7 @@ import _test_bootstrap  # noqa: F401
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "supabase" / "migrations" / "20260811120000_community_publication_artifacts.sql"
 BACKEND_ACCESS_MIGRATION = (
     ROOT

@@ -559,7 +559,7 @@ def test_end_to_end_race_closure_with_fake_drive_and_real_concurrent_connections
     """
     from legacy_publication_drive_adapter import GoogleDriveLegacyArtifactStorage
     from legacy_publication_postgres_adapter import PostgresLegacyProvenanceBackend
-    from test_legacy_publication_drive_adapter import FOLDER_ID, TEST_CREATE_DEADLINE_SECONDS, FakeDriveClient, _draft_input_and_plan
+    from tests.test_legacy_publication_drive_adapter import FOLDER_ID, TEST_CREATE_DEADLINE_SECONDS, FakeDriveClient, _draft_input_and_plan
 
     migration_input, plan = _draft_input_and_plan(tmp_path)
     owner_id = migration_input.publication.owner_id

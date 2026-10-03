@@ -34,7 +34,7 @@ from offline_test_guard import (
     _loopback_test_connect_ex,
     _loopback_test_create_connection,
 )
-from test_community_storage_core import _canonical_identity, _finished_translation_job
+from tests.test_community_storage_core import _canonical_identity, _finished_translation_job
 
 
 OWNER_ID = "owner-a"

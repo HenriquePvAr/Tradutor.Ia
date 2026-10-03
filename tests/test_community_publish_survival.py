@@ -23,7 +23,7 @@ from community_storage import FilesystemStorageProvider
 from community_store import CommunityStore, FileStatus, PostStatus
 from job_store import JobStatus, JobStore
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[1]
 OWNER = RequestPrincipal("local", True, auth_source="test", session_id="test-owner")
 
 

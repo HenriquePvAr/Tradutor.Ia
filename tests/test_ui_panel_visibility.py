@@ -3,7 +3,7 @@ import _test_bootstrap  # noqa: F401
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _css_rule(selector: str) -> str:

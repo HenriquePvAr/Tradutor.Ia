@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test_chapter_terminology_ledger import _group
+from tests.test_chapter_terminology_ledger import _group
 from session_context import SessionContextStore
 
 

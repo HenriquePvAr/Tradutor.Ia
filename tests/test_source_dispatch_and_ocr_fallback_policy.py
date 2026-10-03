@@ -26,7 +26,7 @@ import down
 import ocr_engine
 import run_webtoon
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 VORTEX_URL = "https://vortexscans.org/series/shadow-slave/chapter-1.5"
 WEBTOONS_URL = (

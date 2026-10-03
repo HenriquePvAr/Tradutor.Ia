@@ -8,7 +8,7 @@ import re
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 CSS = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
 
 

@@ -11,7 +11,7 @@ from starlette.requests import Request
 import app_ui
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _request(headers: list[tuple[bytes, bytes]]) -> Request:

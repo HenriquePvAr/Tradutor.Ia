@@ -1121,7 +1121,7 @@ class FixtureFilteringTests(unittest.TestCase):
 
 class FrontendContractTests(unittest.TestCase):
     def setUp(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         self.js = (root / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.html = (root / "ui" / "ui_shell.html").read_text(encoding="utf-8")
 
