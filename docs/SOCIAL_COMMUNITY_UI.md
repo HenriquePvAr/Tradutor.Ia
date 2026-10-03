@@ -102,7 +102,7 @@ ligação `chapter → PDF` será uma **fase separada**.
 
 ## Como testar
 
-- `pytest -q` inclui `test_social_community_ui.py` (contrato/segurança do fonte JS/HTML/CSS).
+- `pytest -q` inclui `tests/test_social_community_ui.py` (contrato/segurança do fonte JS/HTML/CSS).
 - `node --check static/tradutor_ui.js` e checagem de sintaxe ESM dos módulos novos.
 - Smoke de runtime no navegador: o gate monta, sem erros no console e **sem** chamadas a
   `/rest/v1`; o fluxo autenticado completo é coberto pelo e2e do backend (fase anterior,

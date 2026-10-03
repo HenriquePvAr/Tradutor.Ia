@@ -131,12 +131,12 @@ Os erros locais usam códigos sem incluir o caminho do usuário em DTOs ou logs 
 Os seguintes testes são herméticos: usam diretórios temporários e imagens sintéticas, sem
 Webtoon, NVIDIA, Chrome, Selenium ou downloader remoto.
 
-- `test_local_folder_source.py`: política de raízes, traversal, reparse points, formatos,
+- `tests/test_local_folder_source.py`: política de raízes, traversal, reparse points, formatos,
   limites, duplicatas, snapshot e ausência de caminhos no manifesto;
-- `test_local_folder_input.py`: revalidação do snapshot, materialização e proteção da saída;
-- `test_local_folder_cli.py`: referência opaca, rota CLI/runner e confinamento da saída;
-- `test_logical_pages.py`: passthrough do Smart Split para páginas lógicas;
-- `test_local_pipeline_e2e.py`: encadeamento sintético de pasta, snapshot, job, worker e PDF
+- `tests/test_local_folder_input.py`: revalidação do snapshot, materialização e proteção da saída;
+- `tests/test_local_folder_cli.py`: referência opaca, rota CLI/runner e confinamento da saída;
+- `tests/test_logical_pages.py`: passthrough do Smart Split para páginas lógicas;
+- `tests/test_local_pipeline_e2e.py`: encadeamento sintético de pasta, snapshot, job, worker e PDF
   com `fake_pipeline.py`.
 
 O E2E sintético comprova o contrato de encadeamento, não a qualidade de OCR/tradução nem a

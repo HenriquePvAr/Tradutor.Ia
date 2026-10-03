@@ -38,24 +38,24 @@ de arquivo.
 
 | Área | Comportamento atual | Evidência disponível | Status |
 | --- | --- | --- | --- |
-| Registro HTTP(S) | Webtoons e VortexScans são específicos; outros hosts públicos podem seguir para UniversalChapterAdapter | testes de seleção/host em test_chapter_sources.py | COBERTO_HERMETICAMENTE |
-| Contrato de adapter | hooks para espera, coletores DOM/rede/JSON, cluster, score, manifesto, comando e erro sanitizado | testes de contrato/fixtures em test_chapter_sources.py e test_universal_chapter_adapter.py | COBERTO_HERMETICAMENTE |
+| Registro HTTP(S) | Webtoons e VortexScans são específicos; outros hosts públicos podem seguir para UniversalChapterAdapter | testes de seleção/host em tests/test_chapter_sources.py | COBERTO_HERMETICAMENTE |
+| Contrato de adapter | hooks para espera, coletores DOM/rede/JSON, cluster, score, manifesto, comando e erro sanitizado | testes de contrato/fixtures em tests/test_chapter_sources.py e tests/test_universal_chapter_adapter.py | COBERTO_HERMETICAMENTE |
 | Análise específica | adapters específicos passam pelo mesmo contrato de análise e manifesto aceito, sem atalho DOM legado | inspeção de chapter_source.py e down.py; testes de adapter | IMPLEMENTADO |
-| Resolução lazy Webtoons | slots `pending_lazy` são resolvidos com o driver Selenium já aberto antes de `source_selection`; placeholders não entram no manifesto | test_webtoons_reader_bridge.py com driver falso, progresso, timeout, cancelamento e E2E sintético | COBERTO_HERMETICAMENTE |
-| VortexScans | host literal vortexscans.org, path de capítulo restrito, seletores próprios e grants de recurso por instância | fixtures/DNS falso em test_chapter_sources.py | COBERTO_HERMETICAMENTE |
-| Fallback universal | DOM, lazy attributes, JSON reconhecido, Shadow DOM aberto, iframe same-origin, canvas exportável e eventos de rede já observados | fixtures/driver fake em test_universal_chapter_adapter.py | COBERTO_HERMETICAMENTE |
+| Resolução lazy Webtoons | slots `pending_lazy` são resolvidos com o driver Selenium já aberto antes de `source_selection`; placeholders não entram no manifesto | tests/test_webtoons_reader_bridge.py com driver falso, progresso, timeout, cancelamento e E2E sintético | COBERTO_HERMETICAMENTE |
+| VortexScans | host literal vortexscans.org, path de capítulo restrito, seletores próprios e grants de recurso por instância | fixtures/DNS falso em tests/test_chapter_sources.py | COBERTO_HERMETICAMENTE |
+| Fallback universal | DOM, lazy attributes, JSON reconhecido, Shadow DOM aberto, iframe same-origin, canvas exportável e eventos de rede já observados | fixtures/driver fake em tests/test_universal_chapter_adapter.py | COBERTO_HERMETICAMENTE |
 | CDP/performance | metadados sanitizados e JSON pequeno já recebido podem contribuir; texto não é executado e corpos não são persistidos | fixtures de performance/CDP no teste do adapter universal | COBERTO_HERMETICAMENTE |
-| Revisão visual de fonte | somente data URI local e limitada derivada de imagem DOM já carregada; sem URL/fetch remoto; CORS/tainted ou fonte apenas de rede ficam sem miniatura, mas mantêm metadados | test_review_thumbnails_are_bounded_data_uris_and_never_source_urls e contrato estático de UI em test_ui_integration.py | COBERTO_HERMETICAMENTE |
-| Polling da revisão | para o mesmo job aguardando revisão, não rerenderiza o DOM e preserva exclusão/reordenação na aba atual; reload/troca de job não é persistência | contrato estático de shouldRenderSourceReview em test_ui_integration.py | COBERTO_HERMETICAMENTE |
-| Paginação genérica limitada | somente fallback universal: href same-origin/same-path com query numérica N+1, sem click; limite de 24 avanços/45 s e agregação de candidatos aceitos | PaginatedReaderSafetyTests em test_downloader_regressions.py | COBERTO_HERMETICAMENTE |
-| Perfil universal | dica por host exato, expira, não aumenta score nem concede acesso; criação depende de opt-in de configuração e seleção fresca | test_source_profile.py e lógica de job_runner.py | COBERTO_HERMETICAMENTE |
-| Pasta local | raiz permitida, validação de bytes, snapshot de nomes gerados e referência opaca | test_local_folder_source.py e test_local_folder_input.py | COBERTO_HERMETICAMENTE |
+| Revisão visual de fonte | somente data URI local e limitada derivada de imagem DOM já carregada; sem URL/fetch remoto; CORS/tainted ou fonte apenas de rede ficam sem miniatura, mas mantêm metadados | test_review_thumbnails_are_bounded_data_uris_and_never_source_urls e contrato estático de UI em tests/test_ui_integration.py | COBERTO_HERMETICAMENTE |
+| Polling da revisão | para o mesmo job aguardando revisão, não rerenderiza o DOM e preserva exclusão/reordenação na aba atual; reload/troca de job não é persistência | contrato estático de shouldRenderSourceReview em tests/test_ui_integration.py | COBERTO_HERMETICAMENTE |
+| Paginação genérica limitada | somente fallback universal: href same-origin/same-path com query numérica N+1, sem click; limite de 24 avanços/45 s e agregação de candidatos aceitos | PaginatedReaderSafetyTests em tests/test_downloader_regressions.py | COBERTO_HERMETICAMENTE |
+| Perfil universal | dica por host exato, expira, não aumenta score nem concede acesso; criação depende de opt-in de configuração e seleção fresca | tests/test_source_profile.py e lógica de job_runner.py | COBERTO_HERMETICAMENTE |
+| Pasta local | raiz permitida, validação de bytes, snapshot de nomes gerados e referência opaca | tests/test_local_folder_source.py e tests/test_local_folder_input.py | COBERTO_HERMETICAMENTE |
 | UI de pasta local | seletor URL/Pasta local; caminho aceito só com bind e peer loopback | implementação em app_ui.py, ui_bridge.py e UI estática | IMPLEMENTADO |
-| CLI de pasta local | run_webtoon.py aceita local-folder e encaminha snapshot; run_local_folder.py aceita apenas snapshot-ref opaco | test_local_folder_cli.py | COBERTO_HERMETICAMENTE |
-| Páginas lógicas | entrada local preserva ordem/dimensões e pula Smart Split | test_logical_pages.py e test_local_pipeline_e2e.py | COBERTO_HERMETICAMENTE |
+| CLI de pasta local | run_webtoon.py aceita local-folder e encaminha snapshot; run_local_folder.py aceita apenas snapshot-ref opaco | tests/test_local_folder_cli.py | COBERTO_HERMETICAMENTE |
+| Páginas lógicas | entrada local preserva ordem/dimensões e pula Smart Split | tests/test_logical_pages.py e tests/test_local_pipeline_e2e.py | COBERTO_HERMETICAMENTE |
 | Manifest de saída | versão 2 registra source_type, adapter, versão e transporte; leitor continua aceitando manifest versão 1 | output_manifest.py e testes de manifest existentes | IMPLEMENTADO |
 | Fila/UI | job local começa em staging, é snapshotado antes de entrar em queued e nunca persiste o caminho bruto | inspeção de ui_bridge.py/job_store.py; testes de fila existentes | IMPLEMENTADO |
-| Teste de ponta a ponta local | imagens sintéticas → snapshot → job → PDF de fake_pipeline | test_local_pipeline_e2e.py | COBERTO_HERMETICAMENTE |
+| Teste de ponta a ponta local | imagens sintéticas → snapshot → job → PDF de fake_pipeline | tests/test_local_pipeline_e2e.py | COBERTO_HERMETICAMENTE |
 
 “Coberto hermeticamente” significa que o cenário foi desenhado para rodar sem rede, com
 arquivos temporários, fakes ou drivers falsos. O resultado de uma execução concreta da suíte deve

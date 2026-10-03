@@ -108,12 +108,12 @@ cleanup/reconcile já existente do fluxo de comunidade; o arquivo local nunca é
 
 ## Testes
 
-- `test_social_content.py` — repositório + streaming autorizado (spy prova zero Drive em
+- `tests/test_social_content.py` — repositório + streaming autorizado (spy prova zero Drive em
   negação).
-- `test_social_pdf_publishing.py` — orquestração (local-only, idempotência, vínculo só após
+- `tests/test_social_pdf_publishing.py` — orquestração (local-only, idempotência, vínculo só após
   verified, falha mantém invisível, replace/unlink) + endpoints (401/422/HEAD/GET/Range,
   zero vazamento de Drive/path).
-- `test_social_pdf_ui.py` — contrato do frontend (sem path/Drive/JWT-na-URL, Blob revogada,
+- `tests/test_social_pdf_ui.py` — contrato do frontend (sem path/Drive/JWT-na-URL, Blob revogada,
   confirmação, controles do owner).
 
 ## Limitações

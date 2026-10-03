@@ -340,6 +340,9 @@ Página inicial da documentação: **[docs/README.md](docs/README.md)**.
 - [Política de Documentação](docs/DOCUMENTATION_POLICY.md) — regras de sincronização entre código e documentação.
 - [Arquitetura](docs/ARCHITECTURE.md) — detalhe técnico do pipeline e das fronteiras entre componentes.
 - [Desenvolvimento](docs/DEVELOPMENT.md) — setup, execução, testes, dependências externas, empacotamento e riscos conhecidos.
+- [Estrutura do projeto](docs/PROJECT_STRUCTURE.md) — localização do runtime, testes, ferramentas, pesquisa e relatórios.
+- [Política de artefatos](docs/ARTIFACT_POLICY.md) — o que pertence ao Git e o que deve permanecer externo.
+- [Contribuindo](CONTRIBUTING.md) — convenções, verificações locais e commits.
 - [Qualidade e validação](docs/QUALITY_AND_VALIDATION.md) — gates, estados terminais e limites conhecidos.
 - [Quality Freeze](docs/QUALITY_FREEZE.md) — o que está congelado, a evidência e como sair do freeze.
 - [Instalação](docs/INSTALLATION.md) · [Configuração](docs/CONFIGURATION.md) · [Testes](docs/TESTING.md) · [Adaptador universal](docs/UNIVERSAL_CHAPTER_ADAPTER.md) · [Segurança](docs/SECURITY.md) · [Troubleshooting](docs/TROUBLESHOOTING.md).
@@ -351,7 +354,7 @@ explícito e estão documentados em [Testes](docs/TESTING.md).
 
 ```powershell
 python -m pytest                                     # suíte hermética Python
-node --experimental-vm-modules test_chapter_reader.mjs   # suítes de frontend
+node --experimental-vm-modules tests/test_chapter_reader.mjs   # suítes de frontend
 ```
 
 A flag `--experimental-vm-modules` é obrigatória para as suítes `.mjs`. Comandos completos em

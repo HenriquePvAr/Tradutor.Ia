@@ -570,7 +570,7 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
 
   **Falso positivo medido, não afirmado.** Varrendo todas as regiões persistidas do run real
   de #84F9, a regra marca exatamente uma: `p046:BALAO_1`. Contrato permanente em
-  `test_84f15_word_sense_disambiguation.py`. A confirmação em execução real depende do
+  `tests/test_84f15_word_sense_disambiguation.py`. A confirmação em execução real depende do
   próximo E2E.
 - `SEMANTIC-RECOVERY-001` (**fechado offline em #84F17**): #84F14 e #84F15 ensinaram o
   pipeline a **detectar** duas classes de saída ruim que todos os outros validadores
@@ -626,7 +626,7 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   nenhum e permanecem `REVIEW_UNUSABLE` com tentativa de retry sob `preserve_meaning` —
   nenhum mapeamento literal foi adicionado; `p046:BALAO_1` (`PRECINCT`) obtém o retry de
   sentido com o contexto da cena. Contrato permanente em
-  `test_84f17_semantic_recovery.py`. Confirmação em execução real depende do próximo E2E.
+  `tests/test_84f17_semantic_recovery.py`. Confirmação em execução real depende do próximo E2E.
 - `TRANSLATION-SEMANTIC-001`: fechado localmente em #82 — ver
   [Fidelidade semântica e PT-BR natural](#fidelidade-semântica-e-pt-br-natural). Continua
   aberto para os casos em que nenhum candidato persistido alternativo existe: eles exigem
@@ -660,7 +660,7 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   `semantic_rejected`, com review e reject exigindo `review_required` no capítulo. Uma
   região com motivo semântico deixa de aparecer em `rendered_clean` e passa a
   `structured_review`, com `unaccounted = 0`. Contratos permanentes em
-  `test_semantic_runtime_acceptance.py`, incluindo o replay dos três sentinelas reais.
+  `tests/test_semantic_runtime_acceptance.py`, incluindo o replay dos três sentinelas reais.
   Pendente apenas a confirmação em novo E2E real, que só ocorrerá depois de `ART-RECON-001`.
 - `ART-RECON-001` foi fechado **offline/localmente em #84F2** para o falso-clean: outline,
   halo e corpo residual são medidos antes do português ser desenhado e não podem produzir
@@ -690,7 +690,7 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   fonte canônica reparada e a terminologia do capítulo no campo `context` da API. O validador
   semântico **não** foi enfraquecido, o candidato histórico ruim continua rejeitado e não
   existe regra específica de P068. Contratos permanentes em
-  `test_p068_semantic_recovery.py`. O candidato bom da segunda tentativa é fixture de teste:
+  `tests/test_p068_semantic_recovery.py`. O candidato bom da segunda tentativa é fixture de teste:
   **a saída real do provider para P068 continua pendente de novo E2E real.**
 - `SOURCE-ANALYSIS-OBSERVABILITY-001` / política OCR de qualidade (**fechado offline em
   #84F6R**): o preflight real posterior a #84F5 falhou antes de criar job, durante análise da
@@ -729,7 +729,7 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   = 7 = 4 narrativas comuns (acima) + 2 `source_language_residual` (`p011:BALAO_1` "TAK" e
   `p011:BALAO_2` "TUR", candidato igual à fonte) + 1 `missing_translation_candidate`
   (`p013:BALAO_3` "TRNDGE", sem candidato algum). Só as quatro primeiras passam a renderizar;
-  as outras três mantêm seus próprios vereditos. Contratos em `test_84f8_rc_blockers.py`.
+  as outras três mantêm seus próprios vereditos. Contratos em `tests/test_84f8_rc_blockers.py`.
   **A saída final visível ao usuário continua pendente de novo E2E real autorizado.**
 - `READER-SESSION-001` (**fechado offline em #84F8**): o leitor integrado abria a execução
   correta e exibia "Não foi possível abrir este PDF." O PDF era válido (72 páginas, extração
@@ -747,7 +747,7 @@ Arquivos legados ausentes, vazios ou inválidos são lidos como código desconhe
   credencial exclusiva do leitor: job_id opaco, validação de dono em SQL, vínculo exato de
   run, confinamento a `output/`, verificação `%PDF-` e bloqueio de travessia seguem intactos.
   Um 401 agora é reportado como sessão expirada, não como PDF quebrado. Contratos em
-  `test_84f8_rc_blockers.py` e `test_chapter_reader.mjs`.
+  `tests/test_84f8_rc_blockers.py` e `tests/test_chapter_reader.mjs`.
 - **Replay offline com paridade de produção (#84F2)**: as regiões reais de P5, P6 e P25
   foram reprocessadas a partir das páginas e da geometria OCR persistidas do run
   `7d64890b-e303-497b-863f-74e2cd8d5645`, sem provider e sem rede, reproduzindo os números

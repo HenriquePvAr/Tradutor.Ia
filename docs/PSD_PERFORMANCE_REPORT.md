@@ -48,7 +48,7 @@ transient process scratch outside that directory was not separately measured.
 
 ## Isolated current-writer benchmark
 
-The existing `large_strip_psd_memory_probe.py` imports `psd_exporter`, a
+The existing `tools/harnesses/large_strip_psd_memory_probe.py` imports `psd_exporter`, a
 different/legacy writer, and is not valid evidence for the current editable
 PSD implementation. Instead, a one-pass local benchmark invoked
 `editable_psd_writer.write_editable_psd` for each of the 88 pages, using the

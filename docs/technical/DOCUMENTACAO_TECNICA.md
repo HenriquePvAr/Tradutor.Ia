@@ -92,7 +92,7 @@ O produto caminha para a **primeira beta externa com Scans**. Estado por área:
 | Leitor PDF integrado | **IMPLEMENTADO** — TDD #83: **LER** é a ação primária do card do Histórico e abre o capítulo na aba **Leitor**, dentro do shell, com paginação, zoom, ajuste à largura/página, miniaturas preguiçosas, teclado e tela cheia. Sem dependência nova: as páginas são os JPEGs já contidos no PDF da execução. Abrir externamente permanece como ação secundária |
 | Comunidade social (Supabase + Drive) | **IMPLEMENTADO**, fail-closed se não configurado |
 | Licenciamento / expiração de tester | **SCHEMA/RPC REMOTOS IMPLEMENTADOS** — TDD #78 aplica Supabase schema/RLS/RPC atômica, nega usuário sem entitlement e mantém primeiro grant real pendente |
-| Retomada de job interrompido | **IMPLEMENTADO** — TDD #56: `POST /api/ui/resume` mais o painel `#interruptedJobsPanel` e o botão `Retomar`, renderizado apenas para os jobs que o backend marca `can_resume` (`static/tradutor_ui.js`, `test_interrupted_job_resume_ui.py`/`.mjs`) |
+| Retomada de job interrompido | **IMPLEMENTADO** — TDD #56: `POST /api/ui/resume` mais o painel `#interruptedJobsPanel` e o botão `Retomar`, renderizado apenas para os jobs que o backend marca `can_resume` (`static/tradutor_ui.js`, `tests/test_interrupted_job_resume_ui.py`/`.mjs`) |
 | Instalador para usuário final (Setup) | **PLANEJADO** |
 | Atualizador automático assinado | **PARCIAL** — integração remota/launcher implementada, sem canal/chave/UI de produção |
 | Validação em VM Windows limpa | **PLANEJADO** |
@@ -538,8 +538,8 @@ garante **uma requisição por ativação**. `resumeInterruptedJob()` usa o help
 autoritativo — nenhum estado é assumido otimisticamente. A UI não inicia worker algum: o
 job volta à fila canônica e o supervisor do launcher continua responsável pelo worker.
 
-Cobertura: `test_interrupted_job_resume_ui.py` (capability, transição, checkpoint,
-idempotência, reinício da aplicação) e `test_interrupted_job_resume_ui.mjs` (DOM real,
+Cobertura: `tests/test_interrupted_job_resume_ui.py` (capability, transição, checkpoint,
+idempotência, reinício da aplicação) e `tests/test_interrupted_job_resume_ui.mjs` (DOM real,
 clique real, duplo clique, rejeição do backend, exclusão mútua com **Cancelar**).
 
 ## 10. Job store (SQLite) e sistema de arquivos de runtime
@@ -1155,7 +1155,7 @@ não. A correção é de fiação, em pontos por onde todo desfecho passa:
   candidato especulativo; o veredito desse candidato descartado não sobrevive mais à região
   que manteve a tradução anterior.
 
-Contratos permanentes em `test_semantic_runtime_acceptance.py`: replay dos três sentinelas
+Contratos permanentes em `tests/test_semantic_runtime_acceptance.py`: replay dos três sentinelas
 persistidos de #84, exaustão de retry (nunca reaceita o candidato original), candidato bom
 na segunda tentativa e controle de região limpa (capítulo sem achado semântico continua
 podendo passar).
@@ -1275,7 +1275,7 @@ RapidOCR permanece; quando RapidOCR está ausente como primário, a execução f
 `_fallback_discards_source_text()` continua no caminho de produção e rejeita fallback vazio que
 apagaria texto útil. Não houve job real, rede externa nem provider nesse fechamento.
 
-Contratos permanentes em `test_p068_semantic_recovery.py`: fallback destrutivo recusado,
+Contratos permanentes em `tests/test_p068_semantic_recovery.py`: fallback destrutivo recusado,
 recuperação genérica de fronteira nas duas direções, token desconhecido e decomposição
 ambígua intocados, fonte canônica na requisição, retry estrito da DeepL com contexto e
 dedup, e o replay bad-first/good-second pelo caminho de produção. O candidato bom da segunda
@@ -1697,7 +1697,7 @@ viewport (`IntersectionObserver`). Caches são `lru_cache` limitados: 16 documen
 parseados e 256 miniaturas, ambos chaveados por `(caminho, mtime, tamanho)`.
 
 **Estado e corridas.** `createReaderState` (`static/chapter_reader.js`) é puro e
-testado em node (`test_chapter_reader.mjs`). Cada abertura incrementa um token;
+testado em node (`tests/test_chapter_reader.mjs`). Cada abertura incrementa um token;
 um resultado que chega com token antigo é descartado, então abrir A e imediatamente
 B nunca pinta uma página de A. O `renderToken` combina token + página + escala, de
 modo que nem um render de página obsoleta nem um render de zoom obsoleto podem
@@ -1977,8 +1977,8 @@ Fronteiras implementadas — e o que elas **não** garantem
 
 ### Updater assinado — PARCIAL (TDD #57/#58)
 
-**O que existe:** o núcleo de confiança e instalação (`test_signed_update.py`) e a integração
-remota de startup (`test_remote_update.py`): versão canônica do produto, transporte HTTPS
+**O que existe:** o núcleo de confiança e instalação (`tests/test_signed_update.py`) e a integração
+remota de startup (`tests/test_remote_update.py`): versão canônica do produto, transporte HTTPS
 delimitado, fetch de manifest, download de pacote, verificação por assinatura/SHA, staging,
 ativação atômica, health-check do payload, rollback e handoff pelo launcher antes de worker/UI.
 **O que ainda não existe:** canal de release de produção, chave pública de release embutida,
@@ -2293,7 +2293,7 @@ Um teste **não pode**:
 - chamar provider de tradução real;
 - alcançar Drive ou Supabase remoto de forma inesperada.
 
-Testes de crash duro (`test_worker_process_loss.py`, `test_worker_supervision.py`) usam
+Testes de crash duro (`tests/test_worker_process_loss.py`, `tests/test_worker_supervision.py`) usam
 **processos reais**, nunca booleanos mockados: um filho registra o lease com sua identidade
 real, faz heartbeat e sai por `os._exit`, exatamente como um segfault, um OOM kill ou uma
 terminação forçada parecem para o banco.
@@ -2666,8 +2666,8 @@ python worker_service.py --db <caminho>
 ```powershell
 python -m pytest -q                       # suíte hermética completa
 python -m pytest --collect-only -q        # apenas coleta
-python -m pytest -q test_worker_supervision.py test_launcher.py
-python -m pytest -q test_deepl_translation_provider.py
+python -m pytest -q tests/test_worker_supervision.py tests/test_launcher.py
+python -m pytest -q tests/test_deepl_translation_provider.py
 node --check static/tradutor_ui.js
 ```
 
@@ -2794,7 +2794,7 @@ documentação de produto, mas não executou auditoria de release nem nova regre
 | `UPDATER-RELEASE-CHANNEL-PENDING` | Alta (bloqueia Beta externa) | Transporte HTTPS, verificação remota e seam do launcher existem, mas ainda não há hospedagem/canal de release, chave pública de produção embutida nem UI. | `update_transport.py`, `update_bootstrap.py`, `start_tradutor.py`, `update_manifest.py` | Definir junto com Setup/release operacional |
 | `LAUNCHER-SELF-UPDATE-DEFERRED` | Média | Um launcher em execução não se sobrescreve; o update atual faz handoff entre payloads versionados e bloqueia payload que exige bootstrap mais novo. Self-update do bootstrap depende do formato do Setup. | `update_bootstrap.py`, `start_tradutor.py` | Resolver na missão de Setup/bootstrapper |
 | `UPDATE-TRUST-ROOT-EMPTY` | Média | `update_manifest.TRUSTED_PUBLIC_KEYS` está vazio de propósito (não existe chave de release de produção); o updater falha fechado. | `update_manifest.py` | Preencher quando a chave de release existir, fora do repositório |
-| `FIRST-TESTER-GRANT-PENDING` | Alta (bloqueia Beta externa) | Schema/RLS/RPC remotos e correção local existem; nenhum LIC-001 remoto foi concluído. | `beta_license.py`, migrations `2026082412/13/14`, `test_beta_tester_licensing.py`, `999231d` | Executar LIC-001 com uma única conta controlada |
+| `FIRST-TESTER-GRANT-PENDING` | Alta (bloqueia Beta externa) | Schema/RLS/RPC remotos e correção local existem; nenhum LIC-001 remoto foi concluído. | `beta_license.py`, migrations `2026082412/13/14`, `tests/test_beta_tester_licensing.py`, `999231d` | Executar LIC-001 com uma única conta controlada |
 | `BETA-AUTHORIZER-REMOTE-PENDING` | Alta (bloqueia Beta externa) | O authorizer local foi corrigido para resolver o entitlement ativo; deploy remoto e validação autenticada ainda não foram executados. | `ui_bridge.py`, `beta_license.py`, `999231d` | Repetir diagnóstico de Auth e executar LIC-001 após autorização |
 | `CLEAN-VM-VALIDATION-PENDING` | Alta (bloqueia Beta externa) | Nenhuma evidência de validação em VM Windows limpa. | — | Executar após o empacotamento existir |
 | `TESTER-CONFIG-PROVISIONING-PENDING` | Alta (bloqueia Beta externa) | Não há caminho de provisionamento de configuração: um tester precisa criar `.env` manualmente com `DEEPL_API_KEY`, `SUPABASE_URL` e `SUPABASE_PUBLISHABLE_KEY` para a aplicação funcionar. | `.env.example`, `config.py`, `docs/DEVELOPMENT.md#variáveis-de-ambiente` | Definir junto com o Setup: config pública embutida, provisionamento pelo login ou entrega controlada pelo owner |
@@ -2803,7 +2803,7 @@ documentação de produto, mas não executou auditoria de release nem nova regre
 | `ADS-INVENTORY-BLOCKER` | Alta (bloqueia monetização por anúncios) | Pesquisa concluída: nenhum provider entrega anúncio passivo verificável neste runtime (Win32 + WebView local, sem domínio). AdSense/Ad Manager proíbem desktop apps por política; Microsoft e AdDuplex estão mortos; Pubfinity/PubMatic são UWP; AdsJumbo é .NET sem rewarded nem SSV. Único viável: offerwall web com postback HMAC — produto diferente de "assistir anúncio". | `docs/technical/ADS_PROVIDER_RESEARCH.md`, §31 | Decisão comercial do owner: offerwall, beta sem anúncios passivos, ou monetização fora do escopo da beta |
 | `CI-JS-SUITES-NOT-RUN` | Média | A CI roda apenas `node --check` sobre `static/*.js`; as 14 suítes `.mjs` (que exigem `--experimental-vm-modules`) não são executadas em nenhum job. Regressão de frontend só é detectada localmente. | `.github/workflows/tests.yml`, `docs/DEVELOPMENT.md#ci` | Adicionar um step que itere `test_*.mjs` com a flag; barato e sem impacto no comportamento de produção |
 | `YK-POSTGRES-RUNTIME-VALIDATION` | Alta (bloqueia deploy YK) | O comportamento local de YK (reserva/settlement/recovery) passa em 70/70 unit/mock e a auditoria estática é forte (transação, advisory lock, row locks, estado terminal, idempotency key parcial única, chave de settlement determinística), mas **não houve prova em PostgreSQL real** (Docker indisponível). Sem validação de concorrência/atomicidade no runtime Postgres. | `yk_reservation.py`, `yomu_backend_provider.py`, `supabase/functions/wallet-settle-job/`, migration `20260926175232` | Validar em Postgres quando Docker estiver disponível; **não** deployar migration/functions remotas antes disso e sem autorização explícita |
-| `COMIX-DYNAMIC-DEP-PROVISIONING` | Média | A descoberta dinâmica do Comix exige `scrapling[fetchers]==0.4.15` (declarado em `requirements-beta.txt` e empacotado pelo spec). Um venv/ambiente que **não** instale as requirements-beta faz o Comix falhar fechado com `capability_unavailable` (fail-closed correto, sem output falso). | `scrapling_reader_resolver.py`, `requirements-beta.txt`, `packaging/tradutor_ia.spec` | Garantir que qualquer ambiente/venv de execução instale `requirements-beta.txt`; coberto por `test_beta_packaging_requirements.py` |
+| `COMIX-DYNAMIC-DEP-PROVISIONING` | Média | A descoberta dinâmica do Comix exige `scrapling[fetchers]==0.4.15` (declarado em `requirements-beta.txt` e empacotado pelo spec). Um venv/ambiente que **não** instale as requirements-beta faz o Comix falhar fechado com `capability_unavailable` (fail-closed correto, sem output falso). | `scrapling_reader_resolver.py`, `requirements-beta.txt`, `packaging/tradutor_ia.spec` | Garantir que qualquer ambiente/venv de execução instale `requirements-beta.txt`; coberto por `tests/test_beta_packaging_requirements.py` |
 
 ### Limitações conhecidas do produto
 
@@ -2986,7 +2986,7 @@ global e `plans.rewarded_ads_enabled` do plano), respeita `plans.rewarded_daily_
 anti-replay. Um cliente nunca pode afirmar "assisti" e receber moeda.
 
 O modelo executável dessas regras vive em `commercial_foundation.YKWallet` e é
-verificado por `test_yk_ads_foundation.py`.
+verificado por `tests/test_yk_ads_foundation.py`.
 
 ## 31. Glossário
 

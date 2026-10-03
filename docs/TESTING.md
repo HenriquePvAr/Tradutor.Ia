@@ -1,6 +1,6 @@
 # Testes herméticos e smokes manuais
 
-> `test_cleanup_fixed_mask_reconstruction_red.py` é um `KNOWN_INTENTIONAL_RED` documentado.
+> `tests/test_cleanup_fixed_mask_reconstruction_red.py` é um `KNOWN_INTENTIONAL_RED` documentado.
 > Ele permanece como alarme de qualidade visual e não deve ser interpretado como falha comum
 > da suíte de regressão.
 
@@ -94,24 +94,24 @@ separado e opt-in. Não copie `.cache/processed` para o Git para deixar a suíte
 
 ## Suítes de frontend (`.mjs`)
 
-As 14 suítes `test_*.mjs` na raiz cobrem o frontend: leitor de capítulo, ciclo de vida de
+As 18 suítes `test_*.mjs` em `tests/` cobrem o frontend: leitor de capítulo, ciclo de vida de
 sessão, comunidade, health e caminhos de publicação. Elas não usam DOM real, timers nem rede.
 
 ```powershell
-node --experimental-vm-modules test_chapter_reader.mjs
+node --experimental-vm-modules tests/test_chapter_reader.mjs
 ```
 
 Rodar todas:
 
 ```powershell
-Get-ChildItem test_*.mjs | ForEach-Object { node --experimental-vm-modules $_.Name }
+Get-ChildItem tests/test_*.mjs | ForEach-Object { node --experimental-vm-modules $_.FullName }
 ```
 
 > **A flag `--experimental-vm-modules` é obrigatória.** Onze das quatorze suítes montam os
 > módulos do frontend com `vm.SourceTextModule`, que só existe sob essa flag. Sem ela o Node
 > não falha na importação: cada teste falha individualmente com
 > `vm.SourceTextModule is not a constructor`, o que parece defeito de produto e é apenas erro
-> de invocação. `test_chapter_reader.mjs` e `test_service_health.mjs` rodam sem a flag
+> de invocação. `tests/test_chapter_reader.mjs` e `tests/test_service_health.mjs` rodam sem a flag
 > (documentam `// Run: node <arquivo>.mjs` no cabeçalho); usar a flag em todas é o caminho
 > uniforme.
 

@@ -80,9 +80,9 @@ Executados ou validados contra o commit base:
 | `python worker_service.py --help` | ✅ `--db`, `--once`, `--status`, `--poll-interval` |
 | `python process_launcher.py --help` | ✅ `--runtime-directory`, `--cwd`, `--stdout-path`, `--stderr-path` |
 | `python -m pytest --collect-only -q` | ✅ 3714 testes coletados |
-| `python -m pytest -q test_worker_supervision.py test_stale_job_reconcile.py test_launcher.py` | ✅ 63 passaram |
-| `python -m pytest -q test_worker_process_loss.py` | ✅ 18 passaram |
-| `python -m pytest -q test_async_ui_stages.py test_deepl_translation_provider.py` | ✅ 86 passaram |
+| `python -m pytest -q tests/test_worker_supervision.py tests/test_stale_job_reconcile.py tests/test_launcher.py` | ✅ 63 passaram |
+| `python -m pytest -q tests/test_worker_process_loss.py` | ✅ 18 passaram |
+| `python -m pytest -q tests/test_async_ui_stages.py tests/test_deepl_translation_provider.py` | ✅ 86 passaram |
 | `python start_tradutor.py {all,worker,ui,status,stop,stop-worker}` | ✅ conferidos no código (não executados: iniciariam runtime real) |
 
 Comandos inválidos/obsoletos removidos da documentação: nenhum comando inexistente foi
@@ -153,7 +153,7 @@ Esta missão é somente de documentação. Nenhum bug foi corrigido; todos foram
 > apenas pela capability `can_resume` derivada de `UiBridge.resume_block_reason()` — a
 > recuperabilidade continua sendo decidida pelo backend. `resume()` passou a ser idempotente
 > (`already_resumed`) e deixou de recolocar a linha original na fila. Cobertura em
-> `test_interrupted_job_resume_ui.py` e `test_interrupted_job_resume_ui.mjs`.
+> `tests/test_interrupted_job_resume_ui.py` e `tests/test_interrupted_job_resume_ui.mjs`.
 > **Capturas:** não atualizadas — a lacuna de captura autenticada descrita no TDD #54
 > permanece; a tela "capítulo interrompido com o botão Retomar" foi adicionada à lista de
 > capturas previstas em `docs/user/GUIA_DO_USUARIO.md`.
@@ -162,8 +162,8 @@ Esta missão é somente de documentação. Nenhum bug foi corrigido; todos foram
 > `hermetic_runtime.sqlite_uri_path`), `UI-HISTORY-REAL-OUTPUT-READ` (`output_root`
 > injetável em `UIHistoryStore` + guard de `scandir`/`listdir` sobre `output/` e
 > `ui_history.json`) e `STALE-RECONCILE-CLOCK-EQUALITY` (base de tempo única, com prova
-> determinística do flake). Cobertura em `test_runtime_isolation_contract.py` e
-> `test_stale_job_reconcile.py`.
+> determinística do flake). Cobertura em `tests/test_runtime_isolation_contract.py` e
+> `tests/test_stale_job_reconcile.py`.
 
 > A mensagem `UI-COPY-NAMES-NVIDIA` foi **documentada como está** no guia do usuário, com
 > nota explicativa. Alterar o texto seria mudança de comportamento de produção, fora do
@@ -712,7 +712,7 @@ distintas, aceitas e renderizadas):**
 
 **Resultado #82:** 531 de 542 regiões seguem limpas, 8 vão para revisão semântica e 3
 bloqueiam. Nenhum ramo de produção referencia página, capítulo, região ou frase; os literais
-persistidos aparecem apenas em `test_semantic_meaning_and_ptbr_quality.py`. Cobertura de
+persistidos aparecem apenas em `tests/test_semantic_meaning_and_ptbr_quality.py`. Cobertura de
 story-text continua **CLOSED**: nenhuma severidade nova retém a origem em inglês na página.
 
 **Honestidade #82:** nenhum job real, nenhum provider, nenhuma rede, nenhuma mutação remota,
@@ -944,7 +944,7 @@ renderiza); a contabilidade ganha baldes canônicos exclusivos e passa a exigir
 validador de #82 **não** foi enfraquecido, nada foi especializado por texto/página, e o
 controle P068 continua rejeitado.
 
-**Testes.** RED capturado antes da correção em `test_semantic_runtime_acceptance.py`
+**Testes.** RED capturado antes da correção em `tests/test_semantic_runtime_acceptance.py`
 (10 falhas, incluindo os três sentinelas com `quality_impact none`), verde depois. Gates
 completos: `python -m pytest` 4102 passaram / 34 pulados; `python -m unittest discover`
 3502 OK; as 14 suítes `.mjs` verdes com `node --experimental-vm-modules` — confirmando que

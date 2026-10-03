@@ -165,9 +165,9 @@ Os testes abaixo são locais e não baixam capítulos:
 
 ```powershell
 python -m py_compile run_webtoon.py app_ui.py process_launcher.py
-python test_run_webtoon.py
-python test_process_launcher.py
-python test_ocr_quality_regressions.py
+python tests/test_run_webtoon.py
+python tests/test_process_launcher.py
+python tests/test_ocr_quality_regressions.py
 ```
 
 Para uma verificação rápida das bibliotecas:

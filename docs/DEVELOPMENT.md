@@ -138,28 +138,28 @@ python -m unittest discover         # mesma base, runner unittest
 Para um teste isolado:
 
 ```powershell
-python -m pytest test_<nome>.py -q
+python -m pytest tests/test_<nome>.py -q
 ```
 
 ### JavaScript
 
-As 14 suítes `.mjs` na raiz cobrem o frontend (leitor, sessão, comunidade, health).
+As 18 suítes `.mjs` em `tests/` cobrem o frontend (leitor, sessão, comunidade, health).
 
 ```powershell
-node --experimental-vm-modules test_chapter_reader.mjs
+node --experimental-vm-modules tests/test_chapter_reader.mjs
 ```
 
 > **A flag `--experimental-vm-modules` é obrigatória.** Onze das quatorze suítes montam os
 > módulos do frontend com `vm.SourceTextModule`, que só existe sob essa flag. Sem ela o Node
 > não falha na importação — cada teste falha individualmente com
 > `vm.SourceTextModule is not a constructor`, o que parece defeito de produto e não é.
-> As duas suítes que documentam `// Run: node <arquivo>.mjs` no cabeçalho (`test_chapter_reader.mjs`,
-> `test_service_health.mjs`) rodam sem a flag; usar a flag em todas é o caminho uniforme.
+> As duas suítes que documentam `// Run: node <arquivo>.mjs` no cabeçalho (`tests/test_chapter_reader.mjs`,
+> `tests/test_service_health.mjs`) rodam sem a flag; usar a flag em todas é o caminho uniforme.
 
 Rodar todas:
 
 ```powershell
-Get-ChildItem test_*.mjs | ForEach-Object { node --experimental-vm-modules $_.Name }
+Get-ChildItem tests/test_*.mjs | ForEach-Object { node --experimental-vm-modules $_.FullName }
 ```
 
 Verificação de sintaxe (o que a CI faz):

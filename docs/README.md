@@ -44,6 +44,9 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 
 - [Arquitetura](ARCHITECTURE.md) — módulos, fluxos, descoberta de fonte, OCR, tradução, entidades, reconstrução, render e artefatos
 - [Desenvolvimento](DEVELOPMENT.md) — setup, execução, testes, dependências externas, empacotamento e riscos conhecidos
+- [Estrutura do projeto](PROJECT_STRUCTURE.md) — localização do código, testes, ferramentas e pesquisa
+- [Fluxo de desenvolvimento](DEVELOPMENT_WORKFLOW.md) — comandos de validação após mudanças
+- [Política de artefatos](ARTIFACT_POLICY.md) — conteúdo versionado e outputs externos
 - [Fila de worker persistente](WORKER_QUEUE.md) — processos, estados, cancelamento e recuperação
 
 ### Fontes de capítulo
