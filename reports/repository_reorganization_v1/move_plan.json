@@ -1,0 +1,19 @@
+{
+  "strategy": "minimal structural reorganization; keep legacy Python runtime modules at repository root",
+  "moves": [
+    {"source_pattern": "test_*.py and test_*.mjs at repository root", "destination": "tests/", "rationale": "automated suites, pytest path configuration, and existing tests directory"},
+    {"source": "execution_e2e_harness.py", "destination": "tools/harnesses/execution_e2e_harness.py", "rationale": "reusable E2E harness, not production entrypoint"},
+    {"source": "large_strip_app_e2e.py", "destination": "tools/harnesses/large_strip_app_e2e.py", "rationale": "application E2E harness"},
+    {"source": "large_strip_psd_memory_probe.py", "destination": "tools/harnesses/large_strip_psd_memory_probe.py", "rationale": "performance/memory diagnostic harness"},
+    {"source": "tools/final_gauntlet_smoke.py", "destination": "research/clean/gauntlet/final_gauntlet_smoke.py", "rationale": "experiment-specific smoke with external model/data assumptions"}
+  ],
+  "explicitly_not_moved": [
+    {"path_pattern": "root production Python modules", "reason": "flat legacy imports are used by UI, worker, command line, tests and PyInstaller; moving them would be an architecture migration outside this cleanup"},
+    {"path_pattern": "desktop entrypoints and launchers", "reason": "preserve Windows workflow and packaging compatibility"},
+    {"path_pattern": "existing scripts/ and tools/ content", "reason": "already role-organized in their established directories"},
+    {"path_pattern": "existing canonical docs/ hierarchy", "reason": "references stay stable; new structure/workflow/policy guides link from docs index"}
+  ],
+  "root_test_files_before": 381,
+  "root_loose_files_before": 604,
+  "root_loose_files_after_at_inventory": 208
+}

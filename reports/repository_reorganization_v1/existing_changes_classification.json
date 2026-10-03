@@ -1,0 +1,29 @@
+{
+  "untracked_source_and_evidence_files": 14,
+  "committed_for_preservation": 14,
+  "classification": {
+    "COMMIT_NOW_THEN_MOVE": [
+      "execution_e2e_harness.py",
+      "large_strip_app_e2e.py",
+      "large_strip_psd_memory_probe.py",
+      "tools/final_gauntlet_smoke.py"
+    ],
+    "COMMIT_NOW_KEEP_LOCATION": [
+      "experiments/kaggle_qwen_fallback_lab/{README.md,__init__.py,requirements-lab.txt,run.py,test_lab.py,worker.py}",
+      "research/qwen-visual-auditor/docs/BRANCH_RECOVERY_2026-10-01.md",
+      "reports/kaggle_qwen_fallback_lab_dry_run.json",
+      "reports/kaggle_qwen_fallback_lab_real_e2e_v1.json",
+      "reports/kaggle_qwen_output/result.json"
+    ],
+    "IGNORE_OR_KEEP_LOCAL": [
+      "experiments/kaggle_qwen_fallback_lab/.venv/**",
+      "**/__pycache__/**",
+      "reports/kaggle_qwen_output/*.log",
+      ".env",
+      ".env.local",
+      "root runtime caches and generated output directories"
+    ]
+  },
+  "security_scan": "selected 14 textual candidates had no secret-pattern hits; local env files were not read or staged",
+  "notes": "The original main checkout and its ignored/untracked local data were left in place. Only explicit source/evidence files were copied to the worktree. The official packaging logo was found in the original checkout as an ignored source asset (generic *.png ignore), verified by SHA256, copied to the isolated worktree, and allowlisted narrowly in .gitignore; the original file was not altered."
+}

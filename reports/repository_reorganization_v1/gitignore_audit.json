@@ -1,0 +1,8 @@
+{
+  "result": "PASS",
+  "existing_patterns_cover": [".env", ".env.local", "virtualenvs", "__pycache__", "pytest cache", "logs", "node_modules", "build", "dist", "runtime caches", "generated outputs"],
+  "added_patterns": ["checkpoints/", "weights/", "*.pth", "*.pt", "*.ckpt", "*.safetensors"],
+  "reason": "avoid accidentally adding local trained weights/checkpoints while preserving source and fixtures",
+  "known_local_venv": "experiments/kaggle_qwen_fallback_lab/.venv/ is ignored",
+  "no_source_code_pattern_added": true
+}

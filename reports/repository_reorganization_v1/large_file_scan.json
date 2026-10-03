@@ -1,0 +1,8 @@
+{
+  "result": "PASS",
+  "staged_added_files_over_5mb": 0,
+  "staged_files_over_20mb": 0,
+  "staged_files_over_100mb": 0,
+  "excluded": ["virtualenv", "bytecode", "run logs", "model checkpoints", "downloaded pages", "generated run output"],
+  "threshold_bytes": {"review": 5242880, "large": 20971520, "reject_without_exception": 104857600}
+}

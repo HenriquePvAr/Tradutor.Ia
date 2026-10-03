@@ -1,0 +1,21 @@
+{
+  "command": "C:/Projetos/Tradutor.Ia/.venv-beta/Scripts/python.exe -m pytest -q",
+  "python_environment": "project Beta venv; Python 3.11; psd_tools available",
+  "duration_seconds": 769.34,
+  "passed": 5691,
+  "failed": 5,
+  "skipped": 140,
+  "xfailed": 2,
+  "subtests_passed": 730,
+  "failed_ids": [
+    "test_desktop_app.py::test_official_branding_assets_are_preserved_and_ready_for_packaging",
+    "test_mission2_code_fixes.py::Mission2ValidationFixTests::test_canonical_p029_art_only_does_not_create_false_review",
+    "test_passive_ad_slot.py::test_yk_plan_snapshot_fields_are_sanitized_and_backward_compatible",
+    "test_runtime_isolation_contract.py::SqliteUriTripwireTests::test_the_real_queue_was_never_opened",
+    "test_yk_recovery_process_e2e.py::test_local_folder_recovery_crosses_real_worker_processes"
+  ],
+  "failure_classification": "packaging asset not tracked; ignored .local-audit/.cache artifacts absent in isolated worktree; existing worker E2E terminal-state mismatch",
+  "collection_exit_code": 0,
+  "collected": 5838,
+  "warning": "Starlette TestClient deprecation from installed dependencies"
+}

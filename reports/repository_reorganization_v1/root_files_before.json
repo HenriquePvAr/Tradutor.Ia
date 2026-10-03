@@ -1,0 +1,4236 @@
+{
+  "root": "C:\\Projetos\\Tradutor.Ia",
+  "files": [
+    {
+      "path": ".env",
+      "bytes": 4229,
+      "git_status": "IGNORED",
+      "purpose": "secret_or_local_credential",
+      "classification": "SECRET_DO_NOT_COMMIT",
+      "content_inspected": false
+    },
+    {
+      "path": ".env.example",
+      "bytes": 8866,
+      "git_status": "TRACKED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": ".env.local",
+      "bytes": 605,
+      "git_status": "IGNORED",
+      "purpose": "secret_or_local_credential",
+      "classification": "SECRET_DO_NOT_COMMIT",
+      "content_inspected": false
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 2055,
+      "git_status": "TRACKED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "_test_bootstrap.py",
+      "bytes": 810,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "_test_processes.py",
+      "bytes": 851,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ad_url_policy.py",
+      "bytes": 2204,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "adaptive_scheduler.py",
+      "bytes": 8545,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "advanced_art_inpainting.py",
+      "bytes": 10627,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "app_ui.py",
+      "bytes": 165294,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "app_version.py",
+      "bytes": 1877,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "art_text_inpainting.py",
+      "bytes": 46471,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "artifact_contract.py",
+      "bytes": 11548,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "audit_decisions.py",
+      "bytes": 6642,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "audit_registry.py",
+      "bytes": 5170,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ayet_rewarded.py",
+      "bytes": 2099,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "benchmark_environment.py",
+      "bytes": 4187,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "benchmark_ocr_engines.py",
+      "bytes": 32828,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "benchmark_pipeline.py",
+      "bytes": 288939,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "beta_control_plane.py",
+      "bytes": 4177,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "beta_license.py",
+      "bytes": 28044,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "browser_runtime.py",
+      "bytes": 4386,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "build_profile.py",
+      "bytes": 208,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "canonical_social_identity.py",
+      "bytes": 16180,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "canonical_source_identity.py",
+      "bytes": 10653,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "bytes": 2803,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "chapter_asset_repository.py",
+      "bytes": 23977,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "chapter_quality_revision.py",
+      "bytes": 196477,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "chapter_source.py",
+      "bytes": 62238,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "classification_profiler.py",
+      "bytes": 20139,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "CLAUDE.md",
+      "bytes": 7490,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "cleanup_forensic_capture.py",
+      "bytes": 6171,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "commercial_device.py",
+      "bytes": 7030,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "commercial_foundation.py",
+      "bytes": 17819,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_api.py",
+      "bytes": 62992,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_auth.py",
+      "bytes": 26776,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_authorization.py",
+      "bytes": 4678,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_http.py",
+      "bytes": 27646,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_publication_metadata.py",
+      "bytes": 23019,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_publish_runner.py",
+      "bytes": 27293,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_service.py",
+      "bytes": 20452,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_storage.py",
+      "bytes": 25469,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_storage_reconcile.py",
+      "bytes": 5107,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_store.py",
+      "bytes": 69122,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "config.py",
+      "bytes": 30145,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "conftest.py",
+      "bytes": 1179,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "desktop_app.py",
+      "bytes": 78890,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "desktop_identity.py",
+      "bytes": 4530,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "device_control.py",
+      "bytes": 1633,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "down.py",
+      "bytes": 158719,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "download_transport.py",
+      "bytes": 34886,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "drive_auth.py",
+      "bytes": 16522,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "dynamic_resolver_process.py",
+      "bytes": 2001,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "editable_psd_writer.py",
+      "bytes": 19147,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "execution_e2e_harness.py",
+      "bytes": 12336,
+      "git_status": "UNTRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "fake_pipeline.py",
+      "bytes": 4142,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "fast_ocr_policy.py",
+      "bytes": 6927,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "font_fidelity.py",
+      "bytes": 34117,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "generate_manual_review_report.py",
+      "bytes": 18140,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "glyph_art_boundary_review.py",
+      "bytes": 4758,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "google_drive_factory.py",
+      "bytes": 4167,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "google_drive_storage.py",
+      "bytes": 9935,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "google_drive_transport.py",
+      "bytes": 2505,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "harness.log",
+      "bytes": 53398,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "hermetic_runtime.py",
+      "bytes": 13566,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "http_source_discovery.py",
+      "bytes": 3891,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "human_mask_decisions.py",
+      "bytes": 9381,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "human_translation_decisions.py",
+      "bytes": 9182,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "human_typography_decisions.py",
+      "bytes": 9397,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "image_validation.py",
+      "bytes": 5043,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "installer_update.py",
+      "bytes": 9482,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "job_completion.py",
+      "bytes": 7692,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "job_failure_diagnostic.py",
+      "bytes": 5304,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "job_runner.py",
+      "bytes": 50442,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "job_store.py",
+      "bytes": 82445,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "json_utils.py",
+      "bytes": 1021,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "jwks_network_diagnostics.py",
+      "bytes": 5083,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "large_strip_app_e2e.py",
+      "bytes": 14336,
+      "git_status": "UNTRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "large_strip_psd_memory_probe.py",
+      "bytes": 2593,
+      "git_status": "UNTRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "lazy_slot_resolver.py",
+      "bytes": 10489,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "learned_rescue.py",
+      "bytes": 16970,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_publication_drive_adapter.py",
+      "bytes": 18281,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_publication_migration_executor.py",
+      "bytes": 38975,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_publication_migrator.py",
+      "bytes": 21729,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_publication_postgres_adapter.py",
+      "bytes": 20611,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_storage_upload_reservation.py",
+      "bytes": 16595,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "linguistic_audit.py",
+      "bytes": 14234,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "linguistic_triage.py",
+      "bytes": 35029,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_environment.py",
+      "bytes": 3226,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_folder_input.py",
+      "bytes": 15614,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_folder_job.py",
+      "bytes": 7315,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_folder_source.py",
+      "bytes": 34243,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_images_source.py",
+      "bytes": 4448,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_media_preview_harness.py",
+      "bytes": 920,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_media_registry.py",
+      "bytes": 6683,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_test_auth.py",
+      "bytes": 23342,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "main.py",
+      "bytes": 2649,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "manga_translation_pipeline.py",
+      "bytes": 2211,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "mig_test.log",
+      "bytes": 34124,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "mig_test2.log",
+      "bytes": 17205,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "multiscale_patch_synthesis.py",
+      "bytes": 11686,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "natural_ptbr_refinement.py",
+      "bytes": 23047,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "nvidia_ocr_provider.py",
+      "bytes": 12723,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_balloon.py",
+      "bytes": 651170,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_contract.py",
+      "bytes": 3095,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_engine.py",
+      "bytes": 71009,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_hybrid_scheduler.py",
+      "bytes": 14027,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_line_provenance.py",
+      "bytes": 16423,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_memory_policy.py",
+      "bytes": 3670,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_parallel.py",
+      "bytes": 21520,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_streaming.py",
+      "bytes": 4973,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "offline_replay_latest.log",
+      "bytes": 17209,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "offline_replay_test.log",
+      "bytes": 34097,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "offline_test_guard.py",
+      "bytes": 4847,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "output_manifest.py",
+      "bytes": 22167,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "p_err_test.log",
+      "bytes": 34121,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "page_manifest.py",
+      "bytes": 4468,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "page_processing_contracts.py",
+      "bytes": 7346,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pdf.py",
+      "bytes": 34546,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pdf_naming.py",
+      "bytes": 5057,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pdf_reader.py",
+      "bytes": 10817,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "performance_validation_harness.py",
+      "bytes": 25913,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pipeline_cache.py",
+      "bytes": 14455,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pipeline_streaming.py",
+      "bytes": 9157,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pipeline_telemetry.py",
+      "bytes": 6694,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "png_output.py",
+      "bytes": 2727,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pre_acc_test.log",
+      "bytes": 34125,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "preview_gates.py",
+      "bytes": 25970,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "process_launcher.py",
+      "bytes": 28160,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "process_options.py",
+      "bytes": 3516,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "process_tree.py",
+      "bytes": 4812,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "PRODUCTION_SECRETS_REQUIRED.md",
+      "bytes": 758,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "prof_test.log",
+      "bytes": 34119,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "professional_psd.py",
+      "bytes": 14789,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "progress.py",
+      "bytes": 5321,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "progression_service.py",
+      "bytes": 2031,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "prov_test.log",
+      "bytes": 17207,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "provider_execution.py",
+      "bytes": 14471,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "provider_transport.py",
+      "bytes": 6713,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "psd_exporter.py",
+      "bytes": 5953,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "publish_authorization.py",
+      "bytes": 8795,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pytest.ini",
+      "bytes": 692,
+      "git_status": "TRACKED",
+      "purpose": "configuration_or_manifest",
+      "classification": "KEEP_ROOT_IF_TOOLING_REQUIRES"
+    },
+    {
+      "path": "quality_regression_diagnostic.py",
+      "bytes": 9081,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "README.md",
+      "bytes": 27313,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "reference_guided_reconstruction.py",
+      "bytes": 8853,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "refinement_selection_decisions.py",
+      "bytes": 8808,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "region_taxonomy.py",
+      "bytes": 17364,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "request_observability.py",
+      "bytes": 2821,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "requirements-beta.txt",
+      "bytes": 1477,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-dev.txt",
+      "bytes": 189,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-optional.txt",
+      "bytes": 481,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-paddle.txt",
+      "bytes": 960,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-rapidocr.txt",
+      "bytes": 50,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-ui.txt",
+      "bytes": 149,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 1389,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "residual_analysis_artifacts.py",
+      "bytes": 16137,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "residual_component_reviews.py",
+      "bytes": 6662,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "residual_mask_revisions.py",
+      "bytes": 37033,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "resource_monitor.py",
+      "bytes": 17338,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_item.py",
+      "bytes": 6261,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_manifest.py",
+      "bytes": 21428,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_reexport.py",
+      "bytes": 20361,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_reexport_runner.py",
+      "bytes": 13535,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_rerun.py",
+      "bytes": 8107,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_rerun_runner.py",
+      "bytes": 14683,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "run_local_folder.py",
+      "bytes": 6216,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "run_webtoon.py",
+      "bytes": 26526,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "runner_start_gate.py",
+      "bytes": 880,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "runtime_contract.py",
+      "bytes": 2236,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "runtime_paths.py",
+      "bytes": 5060,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "scrapling_reader_resolver.py",
+      "bytes": 130308,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "secure_auth_context.py",
+      "bytes": 7588,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "selective_artifact_reconstruction.py",
+      "bytes": 51071,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "selective_review_retry.py",
+      "bytes": 14748,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "SEMANTIC_CLASSIFICATION_AUDIT.md",
+      "bytes": 19157,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "semantic_fidelity.py",
+      "bytes": 52851,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "server_translation_authority.py",
+      "bytes": 4155,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "session_context.py",
+      "bytes": 53478,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "sitecustomize.py",
+      "bytes": 2004,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "smart_split_incremental.py",
+      "bytes": 9940,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_asset_maintenance_cli.py",
+      "bytes": 2789,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_asset_reconcile.py",
+      "bytes": 7573,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_asset_retention.py",
+      "bytes": 10480,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_content.py",
+      "bytes": 3248,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_http.py",
+      "bytes": 11578,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_pdf_http.py",
+      "bytes": 9803,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_pdf_publishing.py",
+      "bytes": 11562,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_repository.py",
+      "bytes": 23470,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_analysis_phase.py",
+      "bytes": 17257,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_analysis_progress.py",
+      "bytes": 4599,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_completeness.py",
+      "bytes": 22089,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_glyph_envelope.py",
+      "bytes": 10868,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_profile.py",
+      "bytes": 9279,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_readiness.py",
+      "bytes": 45899,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_support_report.py",
+      "bytes": 5633,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "start_tradutor.bat",
+      "bytes": 290,
+      "git_status": "TRACKED",
+      "purpose": "launcher_or_operational_script",
+      "classification": "KEEP_ROOT_IF_ENTRYPOINT"
+    },
+    {
+      "path": "start_tradutor.py",
+      "bytes": 23523,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "state_iso_test.log",
+      "bytes": 3384,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "state_iso_test2.log",
+      "bytes": 34121,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "state_nested_test.log",
+      "bytes": 34119,
+      "git_status": "IGNORED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "supabase_auth.py",
+      "bytes": 25071,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "supabase_social.py",
+      "bytes": 11232,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "test_84f14_quality_reconciliation.py",
+      "bytes": 11528,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f15_word_sense_disambiguation.py",
+      "bytes": 13746,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f17_semantic_recovery.py",
+      "bytes": 18852,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f19_semantic_detection_hardening.py",
+      "bytes": 16365,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f22_visual_fidelity.py",
+      "bytes": 7687,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f23_review_unusable_render_fail_closed.py",
+      "bytes": 14802,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f25_production_recovery_and_ocr_policy.py",
+      "bytes": 9762,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f26_art_and_lettering_parity.py",
+      "bytes": 13674,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f27_region_exact_corpus_audit.py",
+      "bytes": 8829,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f27_render_parity_occupancy_texture.py",
+      "bytes": 21536,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f29_advanced_art_inpainting.py",
+      "bytes": 5058,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f32_role_aware_font_fidelity.py",
+      "bytes": 15666,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f32r_hierarchy_fit_regression.py",
+      "bytes": 14939,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f39_residual_story_english_gate.py",
+      "bytes": 6931,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f40_selective_review_retry.py",
+      "bytes": 15692,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f41_final_five_review_regions.py",
+      "bytes": 11548,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f42_final_three_residual_regions.py",
+      "bytes": 14690,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f43_p26_line_clearance.py",
+      "bytes": 8963,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f45_segmentation_and_residual_false_positives.py",
+      "bytes": 8879,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f47_unresolved_segmentation_semantic_fidelity.py",
+      "bytes": 4528,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_84f8_rc_blockers.py",
+      "bytes": 15976,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ad_url_policy.py",
+      "bytes": 5762,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_adapter_collection_strategy.py",
+      "bytes": 6382,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_adaptive_scheduler.py",
+      "bytes": 5427,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ambiguous_component_decomposition.py",
+      "bytes": 4566,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_art_reconstruction_fidelity.py",
+      "bytes": 22966,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_art_reconstruction_quality.py",
+      "bytes": 31843,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_artifact_contract.py",
+      "bytes": 8323,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_artifact_persistence.py",
+      "bytes": 12131,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_async_submit_contract.py",
+      "bytes": 10741,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_async_ui_stages.py",
+      "bytes": 6981,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_audit_decisions.py",
+      "bytes": 3292,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_audit_registry.py",
+      "bytes": 3990,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_audit_review_bridge.py",
+      "bytes": 7883,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_audit_trace_serialization.py",
+      "bytes": 9910,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_audit_ui_contract.py",
+      "bytes": 16586,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_auth_callback_boot_watchdog.mjs",
+      "bytes": 9607,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_auth_canonical_gating.py",
+      "bytes": 2486,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_auth_network_isolation.py",
+      "bytes": 10703,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_auth_presentation.mjs",
+      "bytes": 17198,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_auth_provider_lifecycle.py",
+      "bytes": 10710,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_auth_recovery_diagnostics.py",
+      "bytes": 10574,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ayet_rewarded.py",
+      "bytes": 1408,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_benchmark_environment.py",
+      "bytes": 1339,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta10_update_diagnostics.py",
+      "bytes": 3198,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta12_shutdown_contract.py",
+      "bytes": 998,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta17_e2e_contracts.py",
+      "bytes": 2192,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta4_hotfix_contract.py",
+      "bytes": 1791,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta5_minimal_badge.py",
+      "bytes": 679,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta6_real_powershell_handoff.py",
+      "bytes": 3702,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta8_multi_pid_handoff.py",
+      "bytes": 5760,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta_control_plane.py",
+      "bytes": 648,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta_identity_resolution.py",
+      "bytes": 1619,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta_packaging_requirements.py",
+      "bytes": 2566,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_beta_tester_licensing.py",
+      "bytes": 19790,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_better_auth_i18n_pipeline_ui.py",
+      "bytes": 32359,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_browser_runtime.py",
+      "bytes": 3556,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_build_profile.py",
+      "bytes": 1036,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_cache_translation_boundaries.py",
+      "bytes": 9095,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_candidate23_local_artifact_contract.py",
+      "bytes": 2472,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_canonical_social_identity.py",
+      "bytes": 10501,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_canonical_source_identity.py",
+      "bytes": 6159,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_chapter_character_registry.py",
+      "bytes": 28660,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_chapter_reader.mjs",
+      "bytes": 14533,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_chapter_reader.py",
+      "bytes": 16778,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_chapter_sources.py",
+      "bytes": 15174,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_chapter_terminology_ledger.py",
+      "bytes": 28095,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_clean_artifact_independence.py",
+      "bytes": 3400,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_clean_donor_reconstruction.py",
+      "bytes": 7282,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_cleanup_fixed_mask_reconstruction_red.py",
+      "bytes": 4687,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_cleanup_forensic_capture.py",
+      "bytes": 4371,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_comix_adapter.py",
+      "bytes": 2563,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_comix_download_403_fallback.py",
+      "bytes": 5735,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_comix_dynamic_fallback_contract.py",
+      "bytes": 9480,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_comix_materialization_retry.py",
+      "bytes": 10922,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_comix_reader_indexed_pages.py",
+      "bytes": 4424,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_comix_source_analysis_entrypoint.py",
+      "bytes": 4588,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_commercial_device_authority.py",
+      "bytes": 3805,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_commercial_device_start_gate.py",
+      "bytes": 3963,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_commercial_foundation.py",
+      "bytes": 2988,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_api.py",
+      "bytes": 20595,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_authorization.py",
+      "bytes": 63507,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_core.py",
+      "bytes": 15626,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_publication_metadata.py",
+      "bytes": 8609,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_publication_metadata_wiring.py",
+      "bytes": 6479,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_publish.py",
+      "bytes": 37635,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_publish_attempt_isolation_http.py",
+      "bytes": 10894,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_publish_survival.py",
+      "bytes": 8941,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_community_storage_core.py",
+      "bytes": 28139,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_control_plane_diagnostics.py",
+      "bytes": 6480,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_cv_text_stroke_compat.py",
+      "bytes": 4870,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_deepl_translation_provider.py",
+      "bytes": 30004,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_desktop_app.py",
+      "bytes": 7116,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_device_control.py",
+      "bytes": 554,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_diagnostic_log_rotation.py",
+      "bytes": 2621,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_download_gate_ordering.py",
+      "bytes": 2797,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_download_gate_partial_scope.py",
+      "bytes": 3362,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_download_local_http_e2e.py",
+      "bytes": 4835,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_download_only_feature.py",
+      "bytes": 4030,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_download_only_history.py",
+      "bytes": 3423,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_download_only_wallet_contract.py",
+      "bytes": 606,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_download_parallel_contract.py",
+      "bytes": 4036,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_download_transport.py",
+      "bytes": 23853,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_downloader_regressions.py",
+      "bytes": 90701,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_drive_auth_environment.py",
+      "bytes": 10124,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_drive_auth_reconcile.py",
+      "bytes": 10546,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_drive_auth_refresh_errors.py",
+      "bytes": 6844,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_driver_policy.py",
+      "bytes": 7673,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_editable_psd_writer.py",
+      "bytes": 9589,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_empty_retry_prefers_translation.py",
+      "bytes": 4666,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_fast_ocr_policy.py",
+      "bytes": 10598,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_final_69_forensic_ledger.py",
+      "bytes": 10230,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_first_click_event_chain.py",
+      "bytes": 2192,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_font_metadata_scorer.py",
+      "bytes": 2791,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_font_role_semantic_precedence.py",
+      "bytes": 2865,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_frontend_readiness_enablement.py",
+      "bytes": 3319,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_glyph_art_boundary_review.py",
+      "bytes": 4228,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_glyph_style_detector.py",
+      "bytes": 6358,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_google_drive_storage.py",
+      "bytes": 7580,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_google_drive_wiring.py",
+      "bytes": 13721,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_header_logout_cross_tab_sync.mjs",
+      "bytes": 21142,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_hermetic_test_boundaries.py",
+      "bytes": 11533,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_history_format_labels.py",
+      "bytes": 5852,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_history_scroll_reconciliation.py",
+      "bytes": 6668,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_hough_lines_shape_compat.py",
+      "bytes": 3315,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_http_batch_contract.py",
+      "bytes": 2075,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_http_source_discovery.py",
+      "bytes": 11934,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_human_preview_drafts.py",
+      "bytes": 26817,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_image_action_ux.py",
+      "bytes": 966,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_installer_updater.py",
+      "bytes": 3661,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_interrupted_job_resume_ui.mjs",
+      "bytes": 19420,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_interrupted_job_resume_ui.py",
+      "bytes": 14347,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_job_completion_summary.py",
+      "bytes": 16982,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_job_finalization_and_start_idempotency.py",
+      "bytes": 13886,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_job_runner_sanitization.py",
+      "bytes": 19034,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_job_store.py",
+      "bytes": 15485,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_large_chapter_download_budget.py",
+      "bytes": 5589,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_large_tall_pipeline.py",
+      "bytes": 6581,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_launcher.py",
+      "bytes": 7573,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_lazy_scroll_stability.py",
+      "bytes": 11117,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_lazy_slot_resolver.py",
+      "bytes": 11960,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_learned_rescue_shadow.py",
+      "bytes": 9502,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_legacy_artifact_owner_binding.py",
+      "bytes": 14293,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_legacy_publication_drive_adapter.py",
+      "bytes": 42161,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_legacy_publication_migration_executor.py",
+      "bytes": 21926,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_legacy_publication_migrator_dry_run.py",
+      "bytes": 20614,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_legacy_publication_postgres_adapter.py",
+      "bytes": 30166,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_legacy_storage_upload_reservation.py",
+      "bytes": 13544,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_legacy_storage_upload_reservation_postgres.py",
+      "bytes": 28976,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_lifecycle_community_regressions.py",
+      "bytes": 27249,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_linguistic_audit.py",
+      "bytes": 5231,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_linguistic_triage.py",
+      "bytes": 23874,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_live_taxonomy_routing.py",
+      "bytes": 15017,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_loading_view_ui.py",
+      "bytes": 16718,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_background_reconstruction.py",
+      "bytes": 3430,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_benchmark_pipeline_e2e.py",
+      "bytes": 19577,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_environment.py",
+      "bytes": 10047,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_folder_cli.py",
+      "bytes": 13668,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_folder_input.py",
+      "bytes": 7183,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_folder_source.py",
+      "bytes": 10657,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_images_integration.py",
+      "bytes": 3252,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_images_source.py",
+      "bytes": 3315,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_media_registry.py",
+      "bytes": 3306,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_pipeline_e2e.py",
+      "bytes": 10467,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_test_auth.py",
+      "bytes": 11558,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_test_storage.py",
+      "bytes": 6647,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_local_translation_contract.py",
+      "bytes": 4779,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_logical_pages.py",
+      "bytes": 4705,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_login_responsive_contract.py",
+      "bytes": 1634,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_main_e2e_findings_contract.py",
+      "bytes": 12069,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_missing_loop_budget.py",
+      "bytes": 3428,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_mission2_code_fixes.py",
+      "bytes": 5492,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_mission5_download_contract.py",
+      "bytes": 5923,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_multiscale_patch_synthesis.py",
+      "bytes": 2893,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_natural_ptbr_refinement.py",
+      "bytes": 8165,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_new_translation_source_policy_state.py",
+      "bytes": 37788,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_nvidia_ocr_hybrid.py",
+      "bytes": 37957,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_line_provenance.py",
+      "bytes": 19929,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_memory_policy.py",
+      "bytes": 2219,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_plausibility.py",
+      "bytes": 8371,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_production_pipeline_execution_mode.py",
+      "bytes": 8249,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_provenance_hybrid_cancellation.py",
+      "bytes": 4470,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_quality_regressions.py",
+      "bytes": 234617,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_reading_order.py",
+      "bytes": 7830,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_recovery_reconciliation.py",
+      "bytes": 21906,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ocr_streaming.py",
+      "bytes": 3050,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_offline_hybrid_replay_5pages.py",
+      "bytes": 8180,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_output_artifact_immutability.py",
+      "bytes": 2788,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_output_format_propagation.py",
+      "bytes": 5540,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_output_profile_selection.py",
+      "bytes": 4917,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_owner_scoped_ui.py",
+      "bytes": 15924,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_p068_semantic_recovery.py",
+      "bytes": 14888,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_p11_semantic_substitution_red.py",
+      "bytes": 3153,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_p19_ocr_lexical_fusion_red.py",
+      "bytes": 1434,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_p19_unresolved_recovery_disagreement_red.py",
+      "bytes": 3516,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_p24_entity_pipeline_reproduction.py",
+      "bytes": 1187,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_p27_authority_gate_red.py",
+      "bytes": 6189,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_p28_modality_tense.py",
+      "bytes": 915,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_packaging_cleanup.py",
+      "bytes": 2857,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_page_failure_quality_gate.py",
+      "bytes": 13596,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_page_manifest.py",
+      "bytes": 3242,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_page_processing_contracts.py",
+      "bytes": 7756,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_page_selection_and_terminate.py",
+      "bytes": 1166,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_passive_ad_slot.py",
+      "bytes": 12573,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_pdf_naming.py",
+      "bytes": 14037,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_pdf_split_regressions.py",
+      "bytes": 38550,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_performance_validation_harness.py",
+      "bytes": 6182,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_physical_source_residual_trust.py",
+      "bytes": 19737,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_pipeline_multi_page_full_ab.py",
+      "bytes": 7020,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_pipeline_page_workers.py",
+      "bytes": 7602,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_pipeline_review_global_contracts.py",
+      "bytes": 96182,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_pipeline_streaming.py",
+      "bytes": 6208,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_pipeline_telemetry.py",
+      "bytes": 3712,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_png_output.py",
+      "bytes": 1643,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_post_reconstruction_guards.py",
+      "bytes": 9946,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_pre_settlement_layout_retry.py",
+      "bytes": 2301,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_process_launcher.py",
+      "bytes": 29653,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_process_tree.py",
+      "bytes": 3203,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_processing_surface_ui.py",
+      "bytes": 36758,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_production_config_checker.py",
+      "bytes": 1187,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_professional_psd.py",
+      "bytes": 9796,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_professional_psd_quality_e2e.py",
+      "bytes": 4637,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_professional_psd_review_e2e.py",
+      "bytes": 5472,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_profile_media_local_absence.py",
+      "bytes": 2816,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_progression_service.py",
+      "bytes": 494,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_proper_name_routing.py",
+      "bytes": 34050,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_provider_execution.py",
+      "bytes": 10000,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_provider_provenance_command_rebuild.py",
+      "bytes": 19193,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_provider_provenance_physical_gate.py",
+      "bytes": 16952,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_provider_selection.py",
+      "bytes": 9338,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_provider_transport.py",
+      "bytes": 18360,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_psd_output.py",
+      "bytes": 4240,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ptbr_naturalization_runtime_wiring.py",
+      "bytes": 10519,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_publication_client_canonical_gate.py",
+      "bytes": 11212,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_publication_modal_event_path.mjs",
+      "bytes": 28182,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_publication_tags.py",
+      "bytes": 3041,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_publish_authorization.py",
+      "bytes": 2302,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_quality_regression_diagnostic.py",
+      "bytes": 6070,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_quality_revision_concurrency_contract.py",
+      "bytes": 7652,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_rapidocr_region_recovery.py",
+      "bytes": 21532,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_rate_limit_middleware.py",
+      "bytes": 3497,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_reader_coverage.py",
+      "bytes": 4215,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_reader_slot_states.py",
+      "bytes": 6658,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_reconstructed_artifact_ui_publication.py",
+      "bytes": 24533,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_reference_guided_reconstruction.py",
+      "bytes": 4497,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_refinement_selection_decisions.py",
+      "bytes": 4524,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_refinement_structured_repair.py",
+      "bytes": 10519,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_region_taxonomy.py",
+      "bytes": 5047,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_remote_update.py",
+      "bytes": 30263,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_request_observability.py",
+      "bytes": 3972,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_residual_analysis_identity.py",
+      "bytes": 9000,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_residual_mask_layout_repair.py",
+      "bytes": 5545,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_resource_monitor.py",
+      "bytes": 2965,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_resume_checkpoint_auth_runtime.py",
+      "bytes": 1409,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_retry_review_moderation_ui.py",
+      "bytes": 14320,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_editing_r2.mjs",
+      "bytes": 2804,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_editing_r2.py",
+      "bytes": 8498,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_item_model.py",
+      "bytes": 5416,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_manifest.py",
+      "bytes": 10110,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_ordering_r1.py",
+      "bytes": 11217,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_overlay_geometry.mjs",
+      "bytes": 3366,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_reexport_r4.py",
+      "bytes": 4888,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_reexport_worker_e2e.py",
+      "bytes": 10683,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_region_controls_r3.mjs",
+      "bytes": 3894,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_region_controls_r3.py",
+      "bytes": 11987,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_review_rerun.py",
+      "bytes": 30544,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_riva_translation_provider.py",
+      "bytes": 15984,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_run_manifest_identity.py",
+      "bytes": 1194,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_run_webtoon.py",
+      "bytes": 9091,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_runtime_contract.py",
+      "bytes": 3143,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_runtime_forensics_contract.py",
+      "bytes": 18353,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_runtime_isolation_contract.py",
+      "bytes": 21152,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_runtime_profile_guard.py",
+      "bytes": 2645,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_runtime_root_resolution.py",
+      "bytes": 9296,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_safe_exhausted_retry_policy.py",
+      "bytes": 11020,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_scrapling_reader_resolver.py",
+      "bytes": 38581,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_secure_auth_context.py",
+      "bytes": 2673,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_selective_artifact_reconstruction.py",
+      "bytes": 47706,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_selective_ptbr_naturalization.py",
+      "bytes": 9220,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_semantic_fidelity_gate.py",
+      "bytes": 30859,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_semantic_meaning_and_ptbr_quality.py",
+      "bytes": 14272,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_semantic_runtime_acceptance.py",
+      "bytes": 10941,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_server_authoritative_pricing_contract.py",
+      "bytes": 1243,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_server_translation_authority.py",
+      "bytes": 2064,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_service_health.mjs",
+      "bytes": 6044,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_settings_overlay_lifecycle.py",
+      "bytes": 11638,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_short_page_reconstruction.py",
+      "bytes": 4185,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_signed_update.py",
+      "bytes": 30310,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_smart_split_incremental.py",
+      "bytes": 4333,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_asset_retention.py",
+      "bytes": 12715,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_auth_ready_race.mjs",
+      "bytes": 14532,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_community_subtab_loading.mjs",
+      "bytes": 13797,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_community_ui.py",
+      "bytes": 7517,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_content.py",
+      "bytes": 8763,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_first_login_idempotency.mjs",
+      "bytes": 12234,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_pdf_publishing.py",
+      "bytes": 16986,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_pdf_ui.py",
+      "bytes": 6337,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_profile_save_route.mjs",
+      "bytes": 3807,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_profile_single_submit.mjs",
+      "bytes": 1020,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_restored_session_single_load.mjs",
+      "bytes": 14948,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_runtime_lifecycle.mjs",
+      "bytes": 13274,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_social_same_tab_login_single_load.mjs",
+      "bytes": 11442,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_analysis_contract.py",
+      "bytes": 4697,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_analysis_observability.py",
+      "bytes": 1697,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_analysis_progress.py",
+      "bytes": 2101,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_color_application.py",
+      "bytes": 4006,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_completeness.py",
+      "bytes": 33582,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_dispatch_and_ocr_fallback_policy.py",
+      "bytes": 20256,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_glyph_envelope.py",
+      "bytes": 5985,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_profile.py",
+      "bytes": 8093,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_readiness.py",
+      "bytes": 17480,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_source_support_report.py",
+      "bytes": 2931,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_sources_tab.py",
+      "bytes": 3516,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_stale_job_reconcile.py",
+      "bytes": 21068,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_start_retry_after_prejob_failure.py",
+      "bytes": 9226,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_story_review_to_render_closure.py",
+      "bytes": 11356,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_stroke_shadow_detection.py",
+      "bytes": 4330,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_supabase_auth.py",
+      "bytes": 18730,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_supabase_authorization.py",
+      "bytes": 13211,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_supabase_frontend.py",
+      "bytes": 14455,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_supabase_publication_metadata_schema.py",
+      "bytes": 6222,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_supabase_social.py",
+      "bytes": 17753,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_synthetic_fixture_harness.py",
+      "bytes": 7179,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_terminal_child_failure.py",
+      "bytes": 2109,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_terminal_reason_and_source_echo.py",
+      "bytes": 12542,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_terminal_toast_loop_regressions.py",
+      "bytes": 7630,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_texture_consistency_metric.py",
+      "bytes": 2893,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_textured_speech_inpainting.py",
+      "bytes": 25669,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_disabled_first_class.py",
+      "bytes": 2819,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_naturality_retry.py",
+      "bytes": 35015,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_policy_snapshot.py",
+      "bytes": 6070,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_provider_default.py",
+      "bytes": 14529,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_proxy.py",
+      "bytes": 551,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_quality_retry.py",
+      "bytes": 20135,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_region_audit.py",
+      "bytes": 4605,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_start.py",
+      "bytes": 55898,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_translation_validator_precision.py",
+      "bytes": 8390,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_triage_bridge.py",
+      "bytes": 18428,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_typesetting_mode_propagation.py",
+      "bytes": 3692,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_typography_propagation.py",
+      "bytes": 5363,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ui_helpers.py",
+      "bytes": 34085,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ui_integration.py",
+      "bytes": 48355,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ui_operational_refinement.py",
+      "bytes": 30092,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ui_panel_visibility.py",
+      "bytes": 1184,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ui_persistent_queue.py",
+      "bytes": 13284,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ui_runtime_dependency.py",
+      "bytes": 4801,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_ui_translation_provider_selection.py",
+      "bytes": 12608,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_unittest_guard_probe.py",
+      "bytes": 790,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_universal_chapter_adapter.py",
+      "bytes": 25093,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_unknown_story_adjacency_promotion.py",
+      "bytes": 6545,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_url_job_pipeline_e2e.py",
+      "bytes": 11457,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_versioning.py",
+      "bytes": 1559,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_visual_harness_contract.py",
+      "bytes": 6018,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_visual_refinement_block6e1.py",
+      "bytes": 8041,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_visual_refinement_block6e2.py",
+      "bytes": 8701,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_visual_refinement_block6e3.py",
+      "bytes": 6106,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_visual_refinement_safety.py",
+      "bytes": 6308,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_visual_segmentation_block6e1.py",
+      "bytes": 3258,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_vortex_reader_pipeline.py",
+      "bytes": 7288,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_wallet_reserve_error_mapping.py",
+      "bytes": 3127,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_webtoons_preflight_regression.py",
+      "bytes": 14566,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_webtoons_reader_bridge.py",
+      "bytes": 21776,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_worker_ownership_contract.py",
+      "bytes": 1770,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_worker_process_loss.py",
+      "bytes": 20728,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_worker_runner.py",
+      "bytes": 15079,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_worker_shutdown.py",
+      "bytes": 6431,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_worker_source_failure_diagnostic.py",
+      "bytes": 12062,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_worker_source_phase.py",
+      "bytes": 23246,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_worker_supervision.py",
+      "bytes": 25467,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_worker_survival.py",
+      "bytes": 6870,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_workspace_source_policy.py",
+      "bytes": 23568,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_world_memory_phase7c_red.py",
+      "bytes": 2271,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_yk_ads_foundation.py",
+      "bytes": 26240,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_yk_atomicity.py",
+      "bytes": 4573,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_yk_job_runner_settlement.py",
+      "bytes": 13184,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_yk_postgres_integration.py",
+      "bytes": 54691,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_yk_recovery_process_e2e.py",
+      "bytes": 17113,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_yk_reservation_settlement.py",
+      "bytes": 7488,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_yomu_backend_pipeline_wiring.py",
+      "bytes": 4881,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_yomu_backend_provider.py",
+      "bytes": 24201,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "test_zero_denominator_physical_gate.py",
+      "bytes": 14202,
+      "git_status": "TRACKED",
+      "purpose": "automated_test",
+      "classification": "MOVE_AND_COMMIT"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.txt",
+      "bytes": 1494,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "translation_proxy.py",
+      "bytes": 1515,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "translation_region_audit.py",
+      "bytes": 5380,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "translator_deepl.py",
+      "bytes": 21857,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "translator_nllb.py",
+      "bytes": 6725,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "translator_nvidia.py",
+      "bytes": 106906,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ui_bridge.py",
+      "bytes": 381051,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ui_helpers.py",
+      "bytes": 34711,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ui_history.py",
+      "bytes": 26231,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "universal_chapter_adapter.py",
+      "bytes": 62245,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "update_bootstrap.py",
+      "bytes": 13090,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "update_installer.py",
+      "bytes": 11747,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "update_manifest.py",
+      "bytes": 23218,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "update_transport.py",
+      "bytes": 9288,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "visual_refinement_provider_guard.py",
+      "bytes": 743,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "visual_review_decisions.py",
+      "bytes": 6066,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "webtoons_reader_bridge.py",
+      "bytes": 5668,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "worker_service.py",
+      "bytes": 61964,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "worker_supervisor.py",
+      "bytes": 7851,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "yk_reservation.py",
+      "bytes": 8314,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "yomu_backend_provider.py",
+      "bytes": 44744,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    }
+  ],
+  "count": 604
+}

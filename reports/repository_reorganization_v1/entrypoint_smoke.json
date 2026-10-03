@@ -1,0 +1,7 @@
+{
+  "result": "PASS",
+  "compiled": ["app_ui.py", "desktop_app.py", "start_tradutor.py", "run_webtoon.py", "process_launcher.py", "worker_service.py", "moved E2E/performance harnesses", "research clean gauntlet smoke"],
+  "imported": ["app_ui", "desktop_app"],
+  "network_or_provider_started": false,
+  "desktop_main_guard_preserved": true
+}

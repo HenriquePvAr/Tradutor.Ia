@@ -1,0 +1,1469 @@
+{
+  "root": "C:\\Projetos\\Tradutor.Ia-worktrees\\repository-structure-cleanup-v1",
+  "files": [
+    {
+      "path": ".env.example",
+      "bytes": 8866,
+      "git_status": "TRACKED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": ".git",
+      "bytes": 79,
+      "git_status": "UNCLASSIFIED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": ".gitattributes",
+      "bytes": 179,
+      "git_status": "UNTRACKED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 2206,
+      "git_status": "TRACKED",
+      "purpose": "other_root_file",
+      "classification": "REVIEW"
+    },
+    {
+      "path": "_test_bootstrap.py",
+      "bytes": 810,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "_test_processes.py",
+      "bytes": 851,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ad_url_policy.py",
+      "bytes": 2261,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "adaptive_scheduler.py",
+      "bytes": 8545,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "advanced_art_inpainting.py",
+      "bytes": 10627,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "app_ui.py",
+      "bytes": 165326,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "app_version.py",
+      "bytes": 1877,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "art_text_inpainting.py",
+      "bytes": 46471,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "artifact_contract.py",
+      "bytes": 11808,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "audit_decisions.py",
+      "bytes": 6642,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "audit_registry.py",
+      "bytes": 5170,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ayet_rewarded.py",
+      "bytes": 2099,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "benchmark_environment.py",
+      "bytes": 4187,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "benchmark_ocr_engines.py",
+      "bytes": 32828,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "benchmark_pipeline.py",
+      "bytes": 289163,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "beta_control_plane.py",
+      "bytes": 4177,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "beta_license.py",
+      "bytes": 28044,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "browser_runtime.py",
+      "bytes": 4490,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "build_profile.py",
+      "bytes": 208,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "canonical_social_identity.py",
+      "bytes": 16180,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "canonical_source_identity.py",
+      "bytes": 10929,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "bytes": 2803,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "chapter_asset_repository.py",
+      "bytes": 23977,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "chapter_quality_revision.py",
+      "bytes": 196479,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "chapter_source.py",
+      "bytes": 62238,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "classification_profiler.py",
+      "bytes": 20139,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "CLAUDE.md",
+      "bytes": 7490,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "cleanup_forensic_capture.py",
+      "bytes": 6171,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "commercial_device.py",
+      "bytes": 7030,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "commercial_foundation.py",
+      "bytes": 17820,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_api.py",
+      "bytes": 63003,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_auth.py",
+      "bytes": 26776,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_authorization.py",
+      "bytes": 4680,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_http.py",
+      "bytes": 27646,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_publication_metadata.py",
+      "bytes": 23019,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_publish_runner.py",
+      "bytes": 27293,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_service.py",
+      "bytes": 20452,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_storage.py",
+      "bytes": 25469,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_storage_reconcile.py",
+      "bytes": 5107,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "community_store.py",
+      "bytes": 69136,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "config.py",
+      "bytes": 30145,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "conftest.py",
+      "bytes": 1179,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "bytes": 1447,
+      "git_status": "UNTRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "desktop_app.py",
+      "bytes": 78901,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "desktop_identity.py",
+      "bytes": 4530,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "device_control.py",
+      "bytes": 1633,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "down.py",
+      "bytes": 158719,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "download_transport.py",
+      "bytes": 34890,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "drive_auth.py",
+      "bytes": 16522,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "dynamic_resolver_process.py",
+      "bytes": 2053,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "editable_psd_writer.py",
+      "bytes": 19594,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "fake_pipeline.py",
+      "bytes": 4142,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "fast_ocr_policy.py",
+      "bytes": 7112,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "font_fidelity.py",
+      "bytes": 34117,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "generate_manual_review_report.py",
+      "bytes": 18140,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "glyph_art_boundary_review.py",
+      "bytes": 4885,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "google_drive_factory.py",
+      "bytes": 4167,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "google_drive_storage.py",
+      "bytes": 9935,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "google_drive_transport.py",
+      "bytes": 2505,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "hermetic_runtime.py",
+      "bytes": 13566,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "http_source_discovery.py",
+      "bytes": 3891,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "human_mask_decisions.py",
+      "bytes": 9590,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "human_translation_decisions.py",
+      "bytes": 9381,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "human_typography_decisions.py",
+      "bytes": 9598,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "image_validation.py",
+      "bytes": 5047,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "installer_update.py",
+      "bytes": 9482,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "job_completion.py",
+      "bytes": 7873,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "job_failure_diagnostic.py",
+      "bytes": 5304,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "job_runner.py",
+      "bytes": 50692,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "job_store.py",
+      "bytes": 82607,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "json_utils.py",
+      "bytes": 1021,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "jwks_network_diagnostics.py",
+      "bytes": 5130,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "lazy_slot_resolver.py",
+      "bytes": 10489,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "learned_rescue.py",
+      "bytes": 16970,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_publication_drive_adapter.py",
+      "bytes": 18281,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_publication_migration_executor.py",
+      "bytes": 38975,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_publication_migrator.py",
+      "bytes": 21729,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_publication_postgres_adapter.py",
+      "bytes": 20611,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "legacy_storage_upload_reservation.py",
+      "bytes": 16595,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "linguistic_audit.py",
+      "bytes": 14234,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "linguistic_triage.py",
+      "bytes": 35029,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_environment.py",
+      "bytes": 3226,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_folder_input.py",
+      "bytes": 15614,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_folder_job.py",
+      "bytes": 7315,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_folder_source.py",
+      "bytes": 34250,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_images_source.py",
+      "bytes": 4448,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_media_preview_harness.py",
+      "bytes": 920,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_media_registry.py",
+      "bytes": 6683,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "local_test_auth.py",
+      "bytes": 23929,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "main.py",
+      "bytes": 2649,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "manga_translation_pipeline.py",
+      "bytes": 2211,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "multiscale_patch_synthesis.py",
+      "bytes": 11977,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "natural_ptbr_refinement.py",
+      "bytes": 23047,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "nvidia_ocr_provider.py",
+      "bytes": 12723,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_balloon.py",
+      "bytes": 651170,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_contract.py",
+      "bytes": 3095,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_engine.py",
+      "bytes": 71154,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_hybrid_scheduler.py",
+      "bytes": 14027,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_line_provenance.py",
+      "bytes": 16423,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_memory_policy.py",
+      "bytes": 3772,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_parallel.py",
+      "bytes": 21520,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ocr_streaming.py",
+      "bytes": 4973,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "offline_test_guard.py",
+      "bytes": 4847,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "output_manifest.py",
+      "bytes": 22167,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "page_manifest.py",
+      "bytes": 4468,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "page_processing_contracts.py",
+      "bytes": 7346,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pdf.py",
+      "bytes": 34546,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pdf_naming.py",
+      "bytes": 5057,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pdf_reader.py",
+      "bytes": 10817,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "performance_validation_harness.py",
+      "bytes": 25913,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pipeline_cache.py",
+      "bytes": 14455,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pipeline_streaming.py",
+      "bytes": 9157,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pipeline_telemetry.py",
+      "bytes": 6694,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "png_output.py",
+      "bytes": 2727,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "preview_gates.py",
+      "bytes": 26513,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "process_launcher.py",
+      "bytes": 28173,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "process_options.py",
+      "bytes": 3620,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "process_tree.py",
+      "bytes": 4812,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "PRODUCTION_SECRETS_REQUIRED.md",
+      "bytes": 758,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "professional_psd.py",
+      "bytes": 15127,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "progress.py",
+      "bytes": 5321,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "progression_service.py",
+      "bytes": 2031,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "provider_execution.py",
+      "bytes": 14471,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "provider_transport.py",
+      "bytes": 6910,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "psd_exporter.py",
+      "bytes": 5953,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "publish_authorization.py",
+      "bytes": 8795,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "pytest.ini",
+      "bytes": 719,
+      "git_status": "TRACKED",
+      "purpose": "configuration_or_manifest",
+      "classification": "KEEP_ROOT_IF_TOOLING_REQUIRES"
+    },
+    {
+      "path": "quality_regression_diagnostic.py",
+      "bytes": 9295,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "README.md",
+      "bytes": 27722,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "reference_guided_reconstruction.py",
+      "bytes": 9069,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "refinement_selection_decisions.py",
+      "bytes": 8990,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "region_taxonomy.py",
+      "bytes": 17364,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "request_observability.py",
+      "bytes": 2821,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "requirements-beta.txt",
+      "bytes": 1483,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-dev.txt",
+      "bytes": 189,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-optional.txt",
+      "bytes": 481,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-paddle.txt",
+      "bytes": 960,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-rapidocr.txt",
+      "bytes": 50,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements-ui.txt",
+      "bytes": 149,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 1389,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "residual_analysis_artifacts.py",
+      "bytes": 16137,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "residual_component_reviews.py",
+      "bytes": 6833,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "residual_mask_revisions.py",
+      "bytes": 37790,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "resource_monitor.py",
+      "bytes": 17338,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_item.py",
+      "bytes": 6414,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_manifest.py",
+      "bytes": 21839,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_reexport.py",
+      "bytes": 20734,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_reexport_runner.py",
+      "bytes": 13775,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_rerun.py",
+      "bytes": 8107,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "review_rerun_runner.py",
+      "bytes": 14683,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "run_local_folder.py",
+      "bytes": 6216,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "run_webtoon.py",
+      "bytes": 26530,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "runner_start_gate.py",
+      "bytes": 880,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "runtime_contract.py",
+      "bytes": 2236,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "runtime_paths.py",
+      "bytes": 5060,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "scrapling_reader_resolver.py",
+      "bytes": 131234,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "secure_auth_context.py",
+      "bytes": 7588,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "selective_artifact_reconstruction.py",
+      "bytes": 51071,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "selective_review_retry.py",
+      "bytes": 14748,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "SEMANTIC_CLASSIFICATION_AUDIT.md",
+      "bytes": 19157,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "semantic_fidelity.py",
+      "bytes": 53014,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "server_translation_authority.py",
+      "bytes": 4155,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "session_context.py",
+      "bytes": 53478,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "sitecustomize.py",
+      "bytes": 2015,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "smart_split_incremental.py",
+      "bytes": 9940,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_asset_maintenance_cli.py",
+      "bytes": 2789,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_asset_reconcile.py",
+      "bytes": 7573,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_asset_retention.py",
+      "bytes": 10480,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_content.py",
+      "bytes": 3248,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_http.py",
+      "bytes": 11578,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_pdf_http.py",
+      "bytes": 9803,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_pdf_publishing.py",
+      "bytes": 11562,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "social_repository.py",
+      "bytes": 23470,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_analysis_phase.py",
+      "bytes": 17257,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_analysis_progress.py",
+      "bytes": 4726,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_completeness.py",
+      "bytes": 22089,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_glyph_envelope.py",
+      "bytes": 11127,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_profile.py",
+      "bytes": 9376,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_readiness.py",
+      "bytes": 45899,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "source_support_report.py",
+      "bytes": 5633,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "start_tradutor.bat",
+      "bytes": 290,
+      "git_status": "TRACKED",
+      "purpose": "launcher_or_operational_script",
+      "classification": "KEEP_ROOT_IF_ENTRYPOINT"
+    },
+    {
+      "path": "start_tradutor.py",
+      "bytes": 23527,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "supabase_auth.py",
+      "bytes": 25071,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "supabase_social.py",
+      "bytes": 11238,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.txt",
+      "bytes": 1494,
+      "git_status": "TRACKED",
+      "purpose": "documentation_or_project_metadata",
+      "classification": "KEEP_ROOT_IF_CANONICAL"
+    },
+    {
+      "path": "translation_proxy.py",
+      "bytes": 1515,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "translation_region_audit.py",
+      "bytes": 5380,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "translator_deepl.py",
+      "bytes": 21857,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "translator_nllb.py",
+      "bytes": 6725,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "translator_nvidia.py",
+      "bytes": 106906,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ui_bridge.py",
+      "bytes": 381172,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ui_helpers.py",
+      "bytes": 34883,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "ui_history.py",
+      "bytes": 26231,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "universal_chapter_adapter.py",
+      "bytes": 62245,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "update_bootstrap.py",
+      "bytes": 13090,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "update_installer.py",
+      "bytes": 11747,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "update_manifest.py",
+      "bytes": 23218,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "update_transport.py",
+      "bytes": 9288,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "visual_refinement_provider_guard.py",
+      "bytes": 770,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "visual_review_decisions.py",
+      "bytes": 6203,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "webtoons_reader_bridge.py",
+      "bytes": 5814,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "worker_service.py",
+      "bytes": 62019,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "worker_supervisor.py",
+      "bytes": 7851,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "yk_reservation.py",
+      "bytes": 8490,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    },
+    {
+      "path": "yomu_backend_provider.py",
+      "bytes": 45189,
+      "git_status": "TRACKED",
+      "purpose": "python_or_frontend_source",
+      "classification": "KEEP_ROOT_LEGACY_RUNTIME"
+    }
+  ],
+  "count": 209
+}

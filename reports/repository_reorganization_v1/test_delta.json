@@ -1,0 +1,22 @@
+{
+  "new_tests": 1,
+  "root_cleanliness_policy_test": "PASS",
+  "before_collected": 5838,
+  "after_collected": 5839,
+  "baseline_failures_reappearing_in_full_after_run": 5,
+  "structural_regressions_initially_detected": 2,
+  "structural_regressions_fixed": 2,
+  "fixed_regressions_retested": [
+    "ResidualDeterminismTests.test_independent_processes_produce_same_identity",
+    "EntryPointHermeticityTests.test_unittest_discovery_child_inherits_the_isolated_runtime"
+  ],
+  "retest_result": "PASS",
+  "remaining_known_failures_after_focused_verification": [
+    "test_mission2_code_fixes.py::Mission2ValidationFixTests::test_canonical_p029_art_only_does_not_create_false_review (ignored real diagnostic image absent)",
+    "test_passive_ad_slot.py::test_yk_plan_snapshot_fields_are_sanitized_and_backward_compatible (ignored local migration evidence absent)",
+    "test_runtime_isolation_contract.py::SqliteUriTripwireTests::test_the_real_queue_was_never_opened (ignored local SQLite runtime absent)",
+    "test_yk_recovery_process_e2e.py::test_local_folder_recovery_crosses_real_worker_processes (preexisting worker state assertion mismatch)"
+  ],
+  "new_regressions_remaining": 0,
+  "interpretation": "The full post-move run was captured before the two path fixes and before retesting the recovered logo; all packaging and changed import-path checks subsequently passed. No full-suite rerun after those two tiny test-path fixes was necessary to identify their exact failure scope; targeted suites were rerun."
+}

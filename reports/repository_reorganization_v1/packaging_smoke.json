@@ -1,0 +1,15 @@
+{
+  "result": "PASS",
+  "py_compile": "PASS",
+  "imports": {"app_ui.py": "PASS", "desktop_app.py": "PASS", "services_started": false},
+  "official_branding_asset": {
+    "source": "assets/branding/yomu-sekai-logo.png",
+    "format": "PNG",
+    "dimensions": [1254, 1254],
+    "bytes": 1415553,
+    "sha256": "fc08becd70830e476a62a0b9d7b630916f901f6fc25c656cf5e62f9bfd1857ce",
+    "original_checkout_copy_hash_match": true
+  },
+  "packaging_contract_tests": "PASS in focused rerun after restoring/versioning the missing source logo",
+  "full_pyinstaller_build": "NOT_RUN; no product packaging implementation moved"
+}

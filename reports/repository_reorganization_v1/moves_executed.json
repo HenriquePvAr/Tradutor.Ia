@@ -1,0 +1,11 @@
+{
+  "git_mv_test_suites": 381,
+  "git_mv_harnesses": 3,
+  "git_mv_research_smoke": 1,
+  "production_runtime_modules_moved": 0,
+  "docs_reference_files_updated": 13,
+  "docs_test_filename_references_updated": true,
+  "pytest_roots": ["tests", "experiments"],
+  "tests_package_added": true,
+  "root_test_cleanliness_regression_test_added": true
+}

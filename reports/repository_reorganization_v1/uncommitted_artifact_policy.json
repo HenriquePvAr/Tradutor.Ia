@@ -1,0 +1,8 @@
+{
+  "committed_small_canonical_reports": ["reports/kaggle_qwen_fallback_lab_dry_run.json", "reports/kaggle_qwen_fallback_lab_real_e2e_v1.json", "reports/kaggle_qwen_output/result.json"],
+  "excluded_generated": ["reports/kaggle_qwen_output/qwen-fallback-lab-20261001-d-job.log", "virtualenv", "Python bytecode"],
+  "excluded_secrets": [".env", ".env.local"],
+  "excluded_large_user_data": ["downloaded pages", "datasets", "model weights", "review image dumps", "run output"],
+  "policy_document": "docs/ARTIFACT_POLICY.md",
+  "reports_directory_policy": "reports/README.md"
+}

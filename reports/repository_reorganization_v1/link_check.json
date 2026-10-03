@@ -1,0 +1,7 @@
+{
+  "checker": "local markdown link resolution (README plus docs/**/*.md; relative links resolved from each document)",
+  "broken_before": 0,
+  "broken_after": 0,
+  "new_broken_links": 0,
+  "result": "PASS"
+}

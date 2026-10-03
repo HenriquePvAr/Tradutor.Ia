@@ -1,0 +1,272 @@
+{
+  "root": "C:\\Projetos\\Tradutor.Ia",
+  "moved_test_name_count": 382,
+  "files_with_references": 35,
+  "matches": [
+    {
+      "source": "README.md",
+      "references": [
+        "test_chapter_reader.mjs"
+      ]
+    },
+    {
+      "source": "app_version.py",
+      "references": [
+        "test_remote_update.py"
+      ]
+    },
+    {
+      "source": "docs/DEVELOPMENT.md",
+      "references": [
+        "test_chapter_reader.mjs",
+        "test_service_health.mjs"
+      ]
+    },
+    {
+      "source": "docs/DOCUMENTATION_AUDIT.md",
+      "references": [
+        "test_async_ui_stages.py",
+        "test_deepl_translation_provider.py",
+        "test_interrupted_job_resume_ui.mjs",
+        "test_interrupted_job_resume_ui.py",
+        "test_launcher.py",
+        "test_runtime_isolation_contract.py",
+        "test_semantic_meaning_and_ptbr_quality.py",
+        "test_semantic_runtime_acceptance.py",
+        "test_stale_job_reconcile.py",
+        "test_worker_process_loss.py",
+        "test_worker_supervision.py"
+      ]
+    },
+    {
+      "source": "docs/EXPLICIT_SOCIAL_PDF_PUBLISHING.md",
+      "references": [
+        "test_social_content.py",
+        "test_social_pdf_publishing.py",
+        "test_social_pdf_ui.py"
+      ]
+    },
+    {
+      "source": "docs/FULL_FUNCTIONAL_AUDIT.md",
+      "references": [
+        "test_chapter_sources.py",
+        "test_downloader_regressions.py",
+        "test_local_folder_cli.py",
+        "test_local_folder_input.py",
+        "test_local_folder_source.py",
+        "test_local_pipeline_e2e.py",
+        "test_logical_pages.py",
+        "test_source_profile.py",
+        "test_ui_integration.py",
+        "test_universal_chapter_adapter.py",
+        "test_webtoons_reader_bridge.py"
+      ]
+    },
+    {
+      "source": "docs/INSTALLATION.md",
+      "references": [
+        "test_ocr_quality_regressions.py",
+        "test_process_launcher.py",
+        "test_run_webtoon.py"
+      ]
+    },
+    {
+      "source": "docs/LOCAL_FOLDER_INPUT.md",
+      "references": [
+        "test_local_folder_cli.py",
+        "test_local_folder_input.py",
+        "test_local_folder_source.py",
+        "test_local_pipeline_e2e.py",
+        "test_logical_pages.py"
+      ]
+    },
+    {
+      "source": "docs/QUALITY_AND_VALIDATION.md",
+      "references": [
+        "test_84f15_word_sense_disambiguation.py",
+        "test_84f17_semantic_recovery.py",
+        "test_84f8_rc_blockers.py",
+        "test_chapter_reader.mjs",
+        "test_p068_semantic_recovery.py",
+        "test_semantic_runtime_acceptance.py"
+      ]
+    },
+    {
+      "source": "docs/SOCIAL_COMMUNITY_UI.md",
+      "references": [
+        "test_social_community_ui.py"
+      ]
+    },
+    {
+      "source": "docs/TESTING.md",
+      "references": [
+        "test_chapter_reader.mjs",
+        "test_cleanup_fixed_mask_reconstruction_red.py",
+        "test_service_health.mjs"
+      ]
+    },
+    {
+      "source": "docs/technical/DOCUMENTACAO_TECNICA.md",
+      "references": [
+        "test_beta_packaging_requirements.py",
+        "test_beta_tester_licensing.py",
+        "test_chapter_reader.mjs",
+        "test_deepl_translation_provider.py",
+        "test_interrupted_job_resume_ui.mjs",
+        "test_interrupted_job_resume_ui.py",
+        "test_launcher.py",
+        "test_p068_semantic_recovery.py",
+        "test_remote_update.py",
+        "test_semantic_runtime_acceptance.py",
+        "test_signed_update.py",
+        "test_worker_process_loss.py",
+        "test_worker_supervision.py",
+        "test_yk_ads_foundation.py"
+      ]
+    },
+    {
+      "source": "legacy_storage_upload_reservation.py",
+      "references": [
+        "test_legacy_publication_drive_adapter.py"
+      ]
+    },
+    {
+      "source": "ocr_hybrid_scheduler.py",
+      "references": [
+        "test_nvidia_ocr_hybrid.py"
+      ]
+    },
+    {
+      "source": "static/service_health.js",
+      "references": [
+        "test_service_health.mjs"
+      ]
+    },
+    {
+      "source": "test_84f32r_hierarchy_fit_regression.py",
+      "references": [
+        "test_84f32_role_aware_font_fidelity.py"
+      ]
+    },
+    {
+      "source": "test_84f41_final_five_review_regions.py",
+      "references": [
+        "test_physical_source_residual_trust.py",
+        "test_story_review_to_render_closure.py"
+      ]
+    },
+    {
+      "source": "test_auth_provider_lifecycle.py",
+      "references": [
+        "test_owner_scoped_ui.py",
+        "test_provider_selection.py",
+        "test_ui_runtime_dependency.py"
+      ]
+    },
+    {
+      "source": "test_beta_tester_licensing.py",
+      "references": [
+        "test_beta_tester_licensing.py"
+      ]
+    },
+    {
+      "source": "test_chapter_reader.mjs",
+      "references": [
+        "test_chapter_reader.mjs"
+      ]
+    },
+    {
+      "source": "test_chapter_reader.py",
+      "references": [
+        "test_chapter_reader.mjs"
+      ]
+    },
+    {
+      "source": "test_comix_materialization_retry.py",
+      "references": [
+        "test_scrapling_reader_resolver.py"
+      ]
+    },
+    {
+      "source": "test_commercial_device_start_gate.py",
+      "references": [
+        "test_wallet_reserve_error_mapping.py"
+      ]
+    },
+    {
+      "source": "test_interrupted_job_resume_ui.py",
+      "references": [
+        "test_interrupted_job_resume_ui.mjs"
+      ]
+    },
+    {
+      "source": "test_legacy_storage_upload_reservation.py",
+      "references": [
+        "test_legacy_storage_upload_reservation_postgres.py"
+      ]
+    },
+    {
+      "source": "test_legacy_storage_upload_reservation_postgres.py",
+      "references": [
+        "test_legacy_publication_postgres_adapter.py"
+      ]
+    },
+    {
+      "source": "test_review_editing_r2.mjs",
+      "references": [
+        "test_review_editing_r2.mjs"
+      ]
+    },
+    {
+      "source": "test_review_overlay_geometry.mjs",
+      "references": [
+        "test_review_overlay_geometry.mjs"
+      ]
+    },
+    {
+      "source": "test_service_health.mjs",
+      "references": [
+        "test_service_health.mjs"
+      ]
+    },
+    {
+      "source": "test_social_auth_ready_race.mjs",
+      "references": [
+        "test_social_first_login_idempotency.mjs",
+        "test_social_runtime_lifecycle.mjs"
+      ]
+    },
+    {
+      "source": "test_social_first_login_idempotency.mjs",
+      "references": [
+        "test_social_runtime_lifecycle.mjs"
+      ]
+    },
+    {
+      "source": "test_social_same_tab_login_single_load.mjs",
+      "references": [
+        "test_social_first_login_idempotency.mjs",
+        "test_social_restored_session_single_load.mjs"
+      ]
+    },
+    {
+      "source": "test_ui_integration.py",
+      "references": [
+        "test_provider_selection.py",
+        "test_service_health.mjs"
+      ]
+    },
+    {
+      "source": "test_url_job_pipeline_e2e.py",
+      "references": [
+        "test_translation_start.py"
+      ]
+    },
+    {
+      "source": "test_yk_postgres_integration.py",
+      "references": [
+        "test_yk_ads_foundation.py"
+      ]
+    }
+  ]
+}

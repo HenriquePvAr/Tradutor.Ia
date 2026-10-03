@@ -1,0 +1,17 @@
+{
+  "repository": "C:/Projetos/Tradutor.Ia",
+  "worktree": "C:/Projetos/Tradutor.Ia-worktrees/repository-structure-cleanup-v1",
+  "start_branch": "main",
+  "base_head": "6ff0b87158d18c75108ce4bdfa827ef452961e97",
+  "origin_main": "121d6285a487a3e2b1a43bc5b504f79e696a75ed",
+  "base_ahead_of_origin_main": 25,
+  "base_behind_origin_main": 0,
+  "work_branch": "chore/repository-structure-cleanup-v1",
+  "preexisting_tracked_modified": 0,
+  "preexisting_tracked_deleted": 0,
+  "preexisting_staged": 0,
+  "preexisting_untracked_files": 14,
+  "ignored_local_secrets_or_credentials": [".env", ".env.local"],
+  "push": "NO",
+  "worktree_strategy": "dedicated worktree; original checkout preserved"
+}

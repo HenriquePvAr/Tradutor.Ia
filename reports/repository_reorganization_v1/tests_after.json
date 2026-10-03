@@ -1,0 +1,35 @@
+{
+  "command": "C:/Projetos/Tradutor.Ia/.venv-beta/Scripts/python.exe -m pytest -q",
+  "python_environment": "project Beta venv; Python 3.11; psd_tools available",
+  "duration_seconds": 553.06,
+  "passed": 5690,
+  "failed": 7,
+  "skipped": 140,
+  "xfailed": 2,
+  "subtests_passed": 730,
+  "collected": 5839,
+  "failed_ids": [
+    "tests/test_desktop_app.py::test_official_branding_assets_are_preserved_and_ready_for_packaging",
+    "tests/test_mission2_code_fixes.py::Mission2ValidationFixTests::test_canonical_p029_art_only_does_not_create_false_review",
+    "tests/test_passive_ad_slot.py::test_yk_plan_snapshot_fields_are_sanitized_and_backward_compatible",
+    "tests/test_residual_analysis_identity.py::ResidualDeterminismTests::test_independent_processes_produce_same_identity",
+    "tests/test_runtime_isolation_contract.py::SqliteUriTripwireTests::test_the_real_queue_was_never_opened",
+    "tests/test_runtime_isolation_contract.py::EntryPointHermeticityTests::test_unittest_discovery_child_inherits_the_isolated_runtime",
+    "tests/test_yk_recovery_process_e2e.py::test_local_folder_recovery_crosses_real_worker_processes"
+  ],
+  "failure_classification": "The five baseline IDs recurred; two new subprocess module-name failures were traced to moving tests into the tests package and fixed afterward. The suite started before the local ignored logo asset was copied into this worktree.",
+  "post_suite_focused_verification": {
+    "command": "pytest the residual-identity subprocess test, unittest child test, and official branding packaging test",
+    "passed": 3,
+    "failed": 0,
+    "duration_seconds": 4.28
+  },
+  "broader_affected_file_rerun": {
+    "files": ["tests/test_residual_analysis_identity.py", "tests/test_runtime_isolation_contract.py", "tests/test_packaging_cleanup.py", "tests/test_beta_packaging_requirements.py"],
+    "passed": 59,
+    "failed": 1,
+    "failure": "SqliteUriTripwireTests expects an ignored .cache/runtime/jobs.sqlite3 file absent from this isolated worktree; same failure existed before moves"
+  },
+  "frontend": {"command": "node --experimental-vm-modules on each tests/test_*.mjs", "passed": 18, "failed": 0},
+  "collection_after": {"command": "pytest --collect-only -q", "exit_code": 0, "collected": 5839}
+}

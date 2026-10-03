@@ -1,0 +1,8 @@
+{
+  "core_autocrlf": true,
+  "before": "no repository .gitattributes; Git normalized text through local core.autocrlf and auto-detected common binaries",
+  "change": "added * text=auto and explicit binary attributes for raster images, ICO, PSD, PDF, ZIP, and model-weight formats",
+  "purpose": "make line-ending and binary treatment repository-declared, especially for byte-hashed artifacts",
+  "observed_existing_text_index": "LF; working copies were CRLF or mixed on this Windows machine",
+  "repository_wide_rewrite": false
+}

@@ -1,0 +1,9 @@
+{
+  "result": "No external bulky artifact was staged or copied into the repository worktree.",
+  "items": [
+    {"category": "environment secrets", "path": "original checkout .env and .env.local (names only)", "bytes_or_hash": "not inspected", "purpose": "local runtime credentials", "git_action": "ignored; not copied or committed"},
+    {"category": "experiment environment", "path": "experiments/kaggle_qwen_fallback_lab/.venv/", "bytes_or_hash": "not enumerated into Git", "purpose": "local Python runtime", "git_action": "ignored"},
+    {"category": "generated logs and caches", "path": "local runtime directories and *.log", "bytes_or_hash": "not captured", "purpose": "ephemeral execution state", "git_action": "ignored/excluded"}
+  ],
+  "large_artifact_staged": false
+}
