@@ -1,0 +1,77 @@
+{
+  "mission": "YOMU_CLEAN_TYPESET_DECOUPLING_AND_EXECUTABLE_OUTPUT_PLANS_V1",
+  "audit_phase": "STAGE_1_LOCATE_COUPLING_BEFORE_EDIT",
+  "base_head": "1d92d9e",
+  "branch": "feat/output-modes-selective-pipeline-v1",
+  "audited_at": "2026-10-03",
+  "root_cause": "render_analyzed_image (yomu/ocr/ocr_balloon.py) produces BOTH the clean page and the typeset page in one pass: `inpainted` is the text-removed art (captured as capture['cleaned_bgr']), and `final` is `inpainted` + redrawn translated glyphs. The pipeline then writes `final` -> output_path (translated working file) and `cleaned_bgr` -> *_cleaned.png (clean working file) from that single call, and the whole finalize tail (persist, PDF, manifest, return) assumes a typeset page exists. There is no way to run clean without the typeset machinery, and no way to run translate without rendering.",
+  "symbols": [
+    {
+      "file": "yomu/ocr/ocr_balloon.py",
+      "symbol": "render_analyzed_image / _render_analyzed_image (2266/2295)",
+      "responsibility": "clean (inpaint) + typeset (redraw) in one pass",
+      "currently_cleans": true,
+      "currently_typesets": true,
+      "side_effects": "builds inpainted + final; capture['cleaned_bgr']=inpainted; VISUAL_DIFF validation of final vs original",
+      "clean_path": "per-group _clean_source_for_clean_artifact + the clean_only_groups loop (2748) already clean WITHOUT drawing text",
+      "typeset_path": "the valid_groups loop redraw/typography/quality/overflow (2345-2744)",
+      "can_split_safely": "YES -- add typeset flag; when False, route all cleanable groups through the existing clean-only path and set final=inpainted (reuses existing clean machinery, no duplication)",
+      "called_by": ["benchmark_pipeline.process_post_translation_page:514 (parallel)", "benchmark_pipeline run_benchmark serial loop:2677"]
+    },
+    {
+      "file": "yomu/pipeline/benchmark_pipeline.py",
+      "symbol": "run_benchmark serial render loop (2664-2727)",
+      "responsibility": "call render, write final->output_path, cleaned_bgr->*_cleaned.png, mark state completed",
+      "can_split_safely": "YES -- pass typeset flag from plan; for translate-only skip the whole render stage"
+    },
+    {
+      "file": "yomu/pipeline/benchmark_pipeline.py",
+      "symbol": "process_post_translation_page (497) / process_post_translation_pages (584)",
+      "responsibility": "parallel render path, same clean+typeset coupling",
+      "can_split_safely": "YES -- thread typeset flag through"
+    },
+    {
+      "file": "yomu/pipeline/benchmark_pipeline.py",
+      "symbol": "_persist_canonical_artifacts (262)",
+      "responsibility": "copy output_path->images/translated (always) and cleaned_path->images/clean (profile-gated)",
+      "coupling": "TRANSLATED is persisted unconditionally; CLEAN only for PROFESSIONAL_QC",
+      "can_split_safely": "YES -- add typeset flag: when False, persist CLEAN only and do not persist (phantom) TRANSLATED"
+    },
+    {
+      "file": "yomu/pipeline/benchmark_pipeline.py",
+      "symbol": "PDF build (2839-2886) + PNG/PSD export (2894-2932)",
+      "responsibility": "always builds the canonical PDF from output_paths; PNG/PSD by output_format",
+      "coupling": "PDF is unconditional and sets artifact_sha256/size used by the return dict",
+      "can_split_safely": "YES with care -- gate generate_pdf by want_pdf and default artifact_sha256=''/size=0; pdf_path stays a Path, pdf_path.is_file()==False keeps manifest truthful"
+    },
+    {
+      "file": "yomu/pipeline/benchmark_pipeline.py",
+      "symbol": "completed_states guard (2820-2826)",
+      "responsibility": "raises if no rendered pages",
+      "coupling": "translate-only produces no rendered pages -> would raise; needs an early branch BEFORE this",
+      "can_split_safely": "YES -- early translate-only finish after settlement"
+    },
+    {
+      "file": "yomu/runtime/artifact_contract.py",
+      "symbol": "build_artifact_manifest requested = profile_artifacts(profile) (219)",
+      "responsibility": "declares requested artifacts from the PROFILE",
+      "coupling": "clean-only runs under AUTOMATIC profile would be reported as owing FINAL_PDF+TRANSLATED_IMAGE -> false 'missing'. The requested set must come from the PLAN (effective_operations), not the profile.",
+      "can_split_safely": "YES -- accept an explicit requested_artifacts override derived from the plan; legacy (no override) keeps profile-derived behaviour"
+    }
+  ],
+  "ocr_reuse": "OCR/grouping run before the translation barrier (process_pre_translation) and are shared by clean and typeset. No OCR duplication is introduced by splitting render; translate-only and traducao_clean reuse the same detected regions.",
+  "clean_duplication_risk": "render cleans once into `inpainted`; typeset draws on top of the SAME inpainted buffer. Splitting (typeset flag) does not re-clean. clean+typeset = 1 clean, 0 duplicate.",
+  "yk_provider_coupling": "provider boundary + YK commit are BEFORE render (2515-2636), gated by translation_enabled. Render has no provider calls except layout-overflow retries, which are already closed at settlement. So clean-only (translation off) = 0 provider/0 YK regardless of render; typeset-off removes even the overflow-retry typeset work.",
+  "implementation_plan": [
+    "render_analyzed_image: add typeset=True; when False route cleanable groups through clean-only path, final=inpainted, skip visual-diff.",
+    "A single env-derived flag helper (_plan_pipeline_flags) in benchmark_pipeline reads YOMU_EFFECTIVE_OPS: want_typeset/want_clean/want_pdf/want_render. Empty env = legacy = everything on (ZERO regression for existing jobs).",
+    "Thread typeset into both render call sites.",
+    "_persist_canonical_artifacts(typeset=): clean-only persists CLEAN only, TRANSLATED reported not-requested.",
+    "Gate PDF build by want_pdf; default artifact_sha256/size.",
+    "build_artifact_manifest(requested_artifacts=): plan-derived requested set via output_plan.plan_artifact_types; legacy uses profile.",
+    "translate-only: early finish after settlement emitting the translation/run manifest, no render/persist/pdf.",
+    "Flip output_plan presets apenas_traducao + traducao_clean to executable=true ONLY after the E2E harness proves the matrix."
+  ],
+  "safety_property": "Every new branch keys off YOMU_EFFECTIVE_OPS, which is unset for every legacy/automatic/professional job (set only when a payload carries output_plan). Existing flows therefore take the identical code path they do today -- proven by the unchanged test_local_benchmark_pipeline_e2e.py automatic + professional cases."
+}
+

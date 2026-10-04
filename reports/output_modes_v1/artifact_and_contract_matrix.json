@@ -1,0 +1,27 @@
+{
+  "artifact_matrix": {
+    "apenas_clean":    {"clean_image": "YES", "translated_image": "NO", "final_pdf": "NO", "psd": "NO", "qc": "NO", "png": "YES (clean)"},
+    "traducao_clean":  {"clean_image": "YES", "translated_image": "NO", "final_pdf": "NO", "psd": "NO", "qc": "NO", "png": "YES (clean)", "translation_data": "persisted in progress/run manifest"},
+    "traducao_pronta": {"clean_image": "internal", "translated_image": "YES", "final_pdf": "YES", "psd": "NO", "qc": "NO"},
+    "profissional":    {"clean_image": "YES", "translated_image": "YES", "final_pdf": "YES", "psd": "YES", "qc": "YES"},
+    "apenas_traducao": {"status": "NOT_EXECUTABLE_YET"}
+  },
+  "provider_call_matrix": {
+    "apenas_clean": 0,
+    "traducao_clean": "1 per untranslated batch",
+    "traducao_pronta": "1 per untranslated batch",
+    "profissional": "1 per untranslated batch",
+    "reexport_with_persisted_target": 0
+  },
+  "yk_matrix": {
+    "download": 0, "apenas_clean": 0,
+    "traducao_clean": "1 after provider success + valid persisted translation",
+    "traducao_pronta": "same contract", "profissional": "same contract",
+    "reexport_persisted": 0,
+    "rule": "YK is tied to provider success + valid translation persistence, NOT to render/clean"
+  },
+  "phantom_artifacts": 0,
+  "manifest_matches_filesystem": "YES (clean-only manifest requests CLEAN only; translated/pdf not in requested set)",
+  "proven_by": ["tests/test_selective_pipeline_execution.py", "tests/test_local_benchmark_pipeline_e2e.py", "tests/test_output_plan.py"]
+}
+

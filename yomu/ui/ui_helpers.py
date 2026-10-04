@@ -312,9 +312,11 @@ def build_run_command(
     if provider:
         command.extend(["--translation-provider", provider])
     normalized_output_format = str(output_format or "pdf").casefold()
-    if normalized_output_format not in {"pdf", "png", "psd"}:
+    if normalized_output_format not in {"pdf", "png", "psd", "translation"}:
         raise ValueError("unsupported_output_format")
-    if normalized_output_format in {"png", "psd"}:
+    # "translation" is the translate-only textual deliverable (no image/PDF). Like png/psd it
+    # is carried explicitly on the command so a rebuild cannot silently fall back to pdf.
+    if normalized_output_format in {"png", "psd", "translation"}:
         command.extend(["--output-format", normalized_output_format])
     if normalized_output_format == "psd":
         normalized_typesetting = str(typesetting_mode or "on").casefold()
@@ -380,7 +382,7 @@ def command_output_format(command: object) -> str:
         return "pdf"
     index = args.index("--output-format") + 1
     value = args[index].strip().lower() if index < len(args) else "pdf"
-    return value if value in {"pdf", "png", "psd"} else "pdf"
+    return value if value in {"pdf", "png", "psd", "translation"} else "pdf"
 
 
 def assert_command_output_format(command: list[str], configuration: object) -> list[str]:
@@ -392,7 +394,7 @@ def assert_command_output_format(command: list[str], configuration: object) -> l
     """
     config = configuration if isinstance(configuration, dict) else {}
     requested = str(config.get("output_format") or "pdf").strip().lower()
-    if requested not in {"pdf", "png", "psd"}:
+    if requested not in {"pdf", "png", "psd", "translation"}:
         requested = "pdf"
     actual = command_output_format(command)
     if actual != requested:

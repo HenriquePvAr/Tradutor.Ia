@@ -208,7 +208,9 @@ def artifact_path(output_root, artifact_type: str, *, page: int | None = None,
 # --- manifest ----------------------------------------------------------------------------
 def build_artifact_manifest(*, output_profile: str, output_root, logical_page_count: int,
                             produced: dict | None = None, run_id: str = "",
-                            status: str = "", created_at=None) -> dict:
+                            status: str = "", created_at=None,
+                            output_plan: str = "", requested_operations=None,
+                            effective_operations=None, requested_artifacts=None) -> dict:
     """Build the per-run artifact manifest (contract V2).
 
     ``produced`` maps artifact_type -> True when that artifact was actually written this run.
@@ -216,7 +218,9 @@ def build_artifact_manifest(*, output_profile: str, output_root, logical_page_co
     a PROFESSIONAL_QC run before Mission 6 truthfully shows editable_psd as requested +
     unavailable rather than pretending it was produced.
     """
-    requested = profile_artifacts(output_profile)
+    # The requested artifact set comes from the output plan when supplied (so a clean-only run
+    # does not falsely owe a translated image / PDF); legacy callers fall back to the profile.
+    requested = tuple(requested_artifacts) if requested_artifacts is not None else profile_artifacts(output_profile)
     produced = produced or {}
     produced_artifacts, unavailable_artifacts, statuses = [], [], {}
     for art in requested:
@@ -241,6 +245,14 @@ def build_artifact_manifest(*, output_profile: str, output_root, logical_page_co
         "run_id": str(run_id or ""),
         "status": str(status or ""),
     }
+    # Output-plan provenance: what the user asked to produce vs what the pipeline ran.
+    # Absent (empty) on legacy runs that predate the output-plan contract.
+    if output_plan:
+        manifest["output_plan"] = str(output_plan)
+    if requested_operations is not None:
+        manifest["requested_operations"] = sorted(str(o) for o in requested_operations)
+    if effective_operations is not None:
+        manifest["effective_operations"] = sorted(str(o) for o in effective_operations)
     if created_at is not None:
         manifest["created_at"] = created_at
     return manifest

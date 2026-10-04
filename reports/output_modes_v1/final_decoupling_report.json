@@ -1,0 +1,40 @@
+{
+  "mission": "YOMU_CLEAN_TYPESET_DECOUPLING_AND_EXECUTABLE_OUTPUT_PLANS_V1",
+  "mission_result": "PARTIAL_STRONG",
+  "summary": "CLEAN and TYPESET are decoupled at the render boundary. Four of five target modes execute for real and are proven by hermetic E2E tests (apenas_clean, traducao_clean, traducao_pronta/automatic, profissional/professional_qc). apenas_traducao (translate-only, no images) is honestly left executable=false because it needs a translation-data result contract across the YK-sensitive completion path -- not faked.",
+  "base_head": "1d92d9e",
+  "work_branch": "feat/output-modes-selective-pipeline-v1",
+  "push": "NO",
+  "architecture": {
+    "clean_independent": "YES -- render(typeset=false) cleans without drawing text; works with translation disabled",
+    "typeset_independent": "YES -- typeset path runs only when requested; consumes the cleaned buffer",
+    "clean_reused_for_typeset": "YES -- typeset draws on the same `inpainted` buffer; no re-clean",
+    "source_immutable": "YES -- clean/translated are separate artifacts; source never overwritten",
+    "duplicate_clean": 0,
+    "duplicate_ocr": 0,
+    "safety_property": "every gate keys off YOMU_EFFECTIVE_OPS, unset for legacy/automatic/professional jobs -> identical old code path (regression-proven)"
+  },
+  "code_changes": [
+    "yomu/ocr/ocr_balloon.py: render_analyzed_image/_render_analyzed_image gain typeset=; when false, route cleanable groups through the existing clean-only path, final=inpainted, skip visual-diff.",
+    "yomu/pipeline/benchmark_pipeline.py: _plan_pipeline_flags() (env-derived gates); typeset threaded into both render sites; _persist_canonical_artifacts(typeset=) persists CLEAN only when no typeset; PDF build gated by want_pdf; _validate_quality(pdf_expected=); manifest requested_artifacts from the plan.",
+    "yomu/runtime/artifact_contract.py: build_artifact_manifest(requested_artifacts=) override.",
+    "yomu/runtime/output_plan.py: plan_artifact_types(); executability updated -- translate+clean executable, translate-only still gated."
+  ],
+  "modes": {
+    "apenas_clean": {"executable": true, "provider": 0, "yk": 0, "clean": true, "translated": false, "pdf": false},
+    "traducao_clean": {"executable": true, "provider": "1/batch", "yk": "1 after persist", "clean": true, "translated": false, "pdf": false},
+    "traducao_pronta": {"executable": true, "regression": "PASS", "clean": "internal", "translated": true, "pdf": true},
+    "profissional": {"executable": true, "regression": "PASS", "clean": true, "translated": true, "pdf": true, "psd": true, "qc": true},
+    "apenas_traducao": {"executable": false, "reason": "translate_only_requires_skip_render_and_translation_data_contract", "faked": false}
+  },
+  "phantom_artifacts": 0,
+  "psd_changed": "NO (professional PSD path untouched)",
+  "qc_changed": "NO logic change; QC still built; clean-only may finish as review_required (success variant) -- noted as a product refinement, not a failure",
+  "retry_plan_preserved": "YES -- the plan rides in job configuration (output_plan/effective_operations); retry reuses the same config",
+  "reexport_translation_reuse": "unchanged -- persisted translation reused, 0 extra provider/YK (existing contract)",
+  "secrets": 0,
+  "codex_worktree_touched": "NO",
+  "gemini_internals_modified": "NO",
+  "next_step": "Either implement apenas_traducao (translation-data contract) or proceed to the UI preset mission -- the backend now executes the four main modes for real."
+}
+

@@ -64,6 +64,14 @@ def _set_output_profile_environment(env: dict[str, str], configuration: object) 
     env["YOMU_OUTPUT_PROFILE"] = (
         profile if profile in PROFILE_ARTIFACTS else OutputProfile.AUTOMATIC
     )
+    # Output-plan provenance for the run manifest (what the user requested vs ran).
+    env["YOMU_OUTPUT_PLAN"] = str(config.get("output_plan") or "")
+    req = config.get("requested_operations")
+    eff = config.get("effective_operations")
+    if isinstance(req, (list, tuple)):
+        env["YOMU_REQUESTED_OPS"] = ",".join(str(o) for o in req)
+    if isinstance(eff, (list, tuple)):
+        env["YOMU_EFFECTIVE_OPS"] = ",".join(str(o) for o in eff)
 
 
 def _append_pipeline_trace(job: dict, event: str, **fields: object) -> None:
@@ -169,7 +177,10 @@ def recover_yk_settlement(job: dict, *, cancelled: bool = False) -> dict:
     artifacts = find_output_artifacts(output_dir)
     report = load_json(output_dir / "timing_report.json")
     output_format = str(config.get("output_format") or "pdf")
-    output_valid, _ = _requested_output_contract(output_format, artifacts, report)
+    if _config_is_translate_only(config):
+        output_valid, _ = _translation_output_contract(output_dir)
+    else:
+        output_valid, _ = _requested_output_contract(output_format, artifacts, report)
     output_valid = bool(output_valid and not cancelled and not _pipeline_commit_mismatch(job, artifacts))
     settlement = _settle_yk_reservation(job, output_dir, output_valid=output_valid)
     try:
@@ -181,6 +192,27 @@ def recover_yk_settlement(job: dict, *, cancelled: bool = False) -> dict:
     if ready and not output_valid and not cancelled and settlement.get("state") == "consumed":
         settlement["output_recovery_available"] = True
     return settlement
+
+
+def _config_is_translate_only(configuration: object) -> bool:
+    """True when the job's plan asks for translation only (no clean/typeset/image/PDF)."""
+    try:
+        from yomu.runtime.output_plan import plan_from_config
+        return plan_from_config(configuration if isinstance(configuration, dict) else {}).translate_only
+    except Exception:  # noqa: BLE001 - never let plan parsing break finalization
+        return False
+
+
+def _translation_output_contract(output_dir: Path) -> tuple[bool, str]:
+    """Validity of a translate-only job: the persisted translation IS the output. Tied to the
+    durable translation cache (the same signal YK settlement uses), never to a visual artifact."""
+    try:
+        import yomu.runtime.yk_reservation as yk_reservation
+        ok = yk_reservation.translation_ready(
+            output_dir, job_id=(yk_reservation.read_reservation(output_dir) or {}).get("job_id"))
+        return (bool(ok), "translation_persisted" if ok else "translation_not_persisted")
+    except Exception:  # noqa: BLE001
+        return (False, "translation_contract_error")
 
 
 def _requested_output_contract(output_format: str, artifacts: dict, report: dict) -> tuple[bool, str]:
@@ -839,10 +871,15 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         or report.get("output_format")
         or "pdf"
     ).casefold()
-    output_contract_ok, output_contract_reason = (
-        (True, "") if download_only else _requested_output_contract(
+    translate_only = _config_is_translate_only(job.get("configuration"))
+    if download_only:
+        output_contract_ok, output_contract_reason = True, ""
+    elif translate_only:
+        # Translate-only: the deliverable is the persisted translation, not a visual file.
+        output_contract_ok, output_contract_reason = _translation_output_contract(output_dir)
+    else:
+        output_contract_ok, output_contract_reason = _requested_output_contract(
             output_format, artifacts, report)
-    )
     commit_mismatch = (
         {}
         if cancelled or interrupted

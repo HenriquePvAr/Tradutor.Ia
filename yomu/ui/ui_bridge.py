@@ -891,6 +891,10 @@ class UiBridge:
             ),
             "mode": config.get("mode") or "fast",
             "output_profile": self._output_profile_from_config(config),
+            # Output plan: what was requested vs what actually ran. Inferred for legacy
+            # jobs so the finish screen can always mark un-requested outputs NOT_REQUESTED
+            # instead of reporting them as missing/failed.
+            **self._plan_record_fields(config),
             "scope": "full" if config.get("full", True) else "partial",
             "cache_mode": "force" if config.get("force") else "cache",
             "status": display_status,
@@ -7267,6 +7271,21 @@ class UiBridge:
         # Translation is a server/control-plane decision. Absence is fail-closed
         # (disabled), so a legacy provider value cannot enable DeepL implicitly.
         translation_enabled = payload.get("translation_enabled") is True
+        # Unified output plan (optional). When the caller picks a preset/custom set of
+        # operations, the plan is the single source of truth and overrides the scattered
+        # knobs above, mapping onto them so all existing plumbing is reused. Legacy
+        # payloads without "output_plan" keep the historical behaviour untouched.
+        output_plan = None
+        if payload.get("output_plan") is not None:
+            from yomu.runtime.output_plan import normalize_output_plan
+            output_plan = normalize_output_plan(
+                payload.get("output_plan"), operations=payload.get("operations"))
+            if not output_plan.executable:
+                raise ValueError(f"output_plan_not_executable:{output_plan.not_executable_reason}")
+            download_only = output_plan.download_only
+            translation_enabled = output_plan.translation_enabled
+            output_profile = output_plan.output_profile
+            output_format = output_plan.output_format
         slug = sanitize_output_name(str(payload.get("slug") or details["slug"]))
         build_run_command(
             url=url,
@@ -7299,6 +7318,40 @@ class UiBridge:
             "translation_enabled": translation_enabled,
             "output_format": output_format,
             "output_profile": output_profile,
+            # Output-plan provenance: what the user asked to produce vs what will run.
+            # Present for every job (inferred for legacy payloads) so the manifest and
+            # finish screen can filter truthfully by requested operations.
+            "output_plan": (output_plan.preset if output_plan is not None
+                            else self._infer_plan_preset(download_only, translation_enabled,
+                                                         output_profile, output_format)),
+            "requested_operations": (sorted(output_plan.requested_operations)
+                                     if output_plan is not None else None),
+            "effective_operations": (sorted(output_plan.operations)
+                                     if output_plan is not None else None),
+        }
+
+    @staticmethod
+    def _infer_plan_preset(download_only: bool, translation_enabled: bool,
+                           output_profile: str, output_format: str) -> str:
+        from yomu.runtime.output_plan import plan_from_config
+        return plan_from_config({
+            "download_only": download_only, "translation_enabled": translation_enabled,
+            "output_profile": output_profile, "output_format": output_format,
+        }).preset
+
+    @staticmethod
+    def _plan_record_fields(config: dict[str, Any]) -> dict[str, Any]:
+        """Output-plan fields for a job record: stored preset when present, else inferred
+        from the historical knobs. ``effective_operations`` is what the finish screen
+        filters its artifact list against."""
+        from yomu.runtime.output_plan import PRESETS, plan_from_config
+        plan = plan_from_config(config if isinstance(config, dict) else {})
+        label = PRESETS.get(plan.preset, (None, plan.preset))[1]
+        return {
+            "output_plan": plan.preset,
+            "output_plan_label": label,
+            "requested_operations": sorted(plan.requested_operations),
+            "effective_operations": sorted(plan.operations),
         }
 
     @staticmethod

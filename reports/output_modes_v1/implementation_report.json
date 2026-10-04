@@ -1,0 +1,63 @@
+{
+  "mission": "YOMU_OUTPUT_MODES_AND_SELECTIVE_PIPELINE_V1",
+  "base_commit": "e16a99a",
+  "branch": "feat/output-modes-selective-pipeline-v1",
+  "completed_at": "2026-10-03",
+  "discipline": "AUDIT-FIRST. Audited the reorganized HEAD, reused every existing primitive, implemented only genuine gaps, and did NOT report any preset as implemented unless its execution is wired and test-proven on this HEAD.",
+  "delivered": [
+    {
+      "item": "Mandatory capability audit",
+      "path": "reports/output_modes_v1/current_capability_audit.json",
+      "note": "16 capabilities classified DONE/PARTIAL/MISSING with file:line evidence. Key finding: ~half the selective primitives already existed (two profiles, download-only, translation kill-switch, output_format, re-export YK reuse)."
+    },
+    {
+      "item": "Unified OutputPlan contract (single source of truth)",
+      "path": "yomu/runtime/output_plan.py",
+      "note": "Operations {translate,clean,typeset,pdf,psd,qc} + 7 presets + normalize_output_plan() with transitive dependency rules, mapping each plan onto the EXISTING config knobs (translation_enabled/download_only/output_profile/output_format). CLEAN is provider-agnostic (no gemini/oracle/chrome branching). Runnable demo() self-check."
+    },
+    {
+      "item": "Honest executability gate",
+      "note": "Render couples clean-capture and text burn-in, so translation-without-typeset cannot run yet. apenas_traducao and traducao_clean are valid plans with executable=false and are rejected at submission with a clear error. They are NOT reported as implemented."
+    },
+    {
+      "item": "ui_bridge integration",
+      "path": "yomu/ui/ui_bridge.py",
+      "note": "_normalize_payload honours an optional output_plan preset, overriding the scattered knobs and reusing all proven plumbing; rejects non-executable plans. Every job record carries output_plan/requested_operations/effective_operations (inferred for legacy jobs via plan_from_config) for truthful finish-screen filtering."
+    },
+    {
+      "item": "Manifest provenance",
+      "path": "yomu/runtime/artifact_contract.py + benchmark_pipeline.py + job_runner.py",
+      "note": "build_artifact_manifest records output_plan/requested_operations/effective_operations (omitted on legacy runs); job_runner propagates them via env (YOMU_OUTPUT_PLAN/REQUESTED_OPS/EFFECTIVE_OPS); the pipeline reads them at manifest build."
+    },
+    {
+      "item": "Tests",
+      "path": "tests/test_output_plan.py",
+      "note": "22 tests: dependency rules, knob mapping, executability, legacy round-trip, ui_bridge override+rejection, manifest fields, and the decisive guarantee — CLEAN-only initializes NO provider and the YK commit is guarded by translation_enabled (provider-spy + YK-invariant proof at the real boundary)."
+    },
+    {
+      "item": "Docs",
+      "path": "docs/product/output_modes.md",
+      "note": "Preset table with honest state (IMPLEMENTADO vs PLANEJADO), dependency rules, the 0-YK rationale, provider-agnostic CLEAN note, legacy compatibility, and the scoped next steps."
+    }
+  ],
+  "firewalls_honored": {
+    "push": "NO",
+    "destructive_git": "NONE (git worktree add only)",
+    "real_deepl": "NO", "real_yk": "NO", "production_supabase": "NO",
+    "gemini": "NO", "oracle": "NO", "modal": "NO",
+    "codex_worktree_untouched": "research/gemini-vps-web-worker-v1 not touched",
+    "new_modules_in_yomu_not_root": "yes (yomu/runtime/output_plan.py)",
+    "clean_only_cost": "TRANSLATION_PROVIDER_CALLS=0, YK_CONSUMED=0 (proved by test_output_plan.py)",
+    "sfx_policy_unchanged": "no clean/erase behaviour was modified"
+  },
+  "scoped_followups_not_faked": [
+    "UI preset surface + custom selector (backend already accepts output_plan from any client).",
+    "Execution for apenas_traducao (skip-render + translation manifest) and traducao_clean (clean without typeset burn) -- both need the render stage decoupled.",
+    "Finish-screen NOT_REQUESTED filtering and progress NOT_REQUESTED semantics (job records now carry effective_operations to drive it)."
+  ],
+  "tests_run": {
+    "focused": "tests/test_output_plan.py -> 22 passed",
+    "regression_slice": "test_output_profile_selection + test_artifact_contract + test_output_format_propagation + test_runtime_profile_guard -> 45 passed"
+  }
+}
+

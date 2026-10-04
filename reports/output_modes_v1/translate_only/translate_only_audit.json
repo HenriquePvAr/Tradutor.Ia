@@ -1,0 +1,30 @@
+{
+  "mission": "YOMU_TRANSLATE_ONLY_EXECUTION_AND_YK_COMPLETION_CONTRACT_V1",
+  "audit_phase": "STAGE_1",
+  "base_head": "c163f9f",
+  "branch": "feat/output-modes-selective-pipeline-v1",
+  "audited_at": "2026-10-03",
+  "blocker": "translate-only has translation but no visual artifact. Three layers assume a visual output: (1) run_benchmark raises 'Nenhuma pagina valida' when no page was rendered; (2) job_runner finalize gates completion + YK on _requested_output_contract which requires pdf/png/psd on disk; (3) run_webtoon prints success from pdf_path|png_path. None of these recognizes 'translation persisted' as a valid result.",
+  "key_insight": "A canonical 'translation validly persisted' signal ALREADY EXISTS: yk_reservation.translation_ready(output_dir) checks the .translation_ready marker + .translation_results/*.json durable cache written by the backend provider on success. Finalize already computes it (translation_is_recoverable) for crash recovery. Reusing it as translate-only's output contract ties YK to translation persistence, NOT to any visual artifact -- exactly the required contract. No new YK plumbing, no fake artifact.",
+  "symbols": [
+    {"file": "yomu/pipeline/benchmark_pipeline.py", "symbol": "run_benchmark completed_states guard (~2866)", "current": "raises if no rendered pages", "why_fails": "translate-only renders nothing", "yk_sensitive": false, "fix": "early finish before the guard when not _pipeline_flags['want_render'] and translate op present"},
+    {"file": "yomu/runtime/job_runner.py", "symbol": "_finalize ... output_contract_ok (851) / yk_output_valid (898)", "current": "download_only bypasses; else _requested_output_contract (visual)", "why_fails": "translate-only has no visual artifact -> contract False -> YK released despite valid translation", "yk_sensitive": true, "fix": "add a translate_only branch: output_contract_ok = translation_ready(output_dir); keeps yk_output_valid tied to translation persistence"},
+    {"file": "yomu/runtime/job_runner.py", "symbol": "_requested_output_contract (194)", "current": "pdf/png/psd only", "why_fails": "no translation format", "yk_sensitive": true, "fix": "NOT modified for translate-only (bypassed like download_only); recover_yk_settlement gets the same translate_only branch for crash-recovery parity"},
+    {"file": "yomu/commands/run_webtoon.py", "symbol": "success print (199) + final_status technical_success (210)", "current": "pdf_path|png_path", "why_fails": "cosmetic failure label", "yk_sensitive": false, "fix": "plan-aware: also accept translation_manifest_path"},
+    {"file": "yomu/runtime/output_plan.py", "symbol": "output_format + executability + plan_artifact_types", "current": "translate-only output_format=png, executable=false", "why_fails": "png is wrong format; not executable", "yk_sensitive": false, "fix": "output_format='translation' for translate-only; executable=true; plan_artifact_types -> translation_manifest"}
+  ],
+  "visual_success_assumptions": [
+    {"loc": "job_runner.py:_requested_output_contract", "class": "LEGITIMATE_FOR_VISUAL_MODES"},
+    {"loc": "job_runner.py:851 download_only bypass", "class": "SHOULD_BE_PLAN_AWARE (add translate_only)"},
+    {"loc": "run_webtoon.py:199/210", "class": "SHOULD_BE_PLAN_AWARE"},
+    {"loc": "benchmark_pipeline.completed_states guard", "class": "SHOULD_BE_PLAN_AWARE (skip for translate-only)"},
+    {"loc": "benchmark_pipeline._validate_quality pdf_pages==expected", "class": "already pdf_expected-gated last mission"}
+  ],
+  "translation_output_contract": {
+    "deliverable": "output_folder/translation/translation.json (per-page source->target + provider provenance), a user-facing rendering of the already-persisted translation data",
+    "validity_signal_for_yk": "yk_reservation.translation_ready(output_dir) (durable backend result cache) -- unchanged economic contract",
+    "no_fake": "no clean/translated image, no empty PDF, no placeholder; completion succeeds on translation persistence alone"
+  },
+  "yk_contract_preserved": "YK consumed only when translation_ready (provider success + durable persist). pre-provider failure / provider failure -> no ready marker -> output_valid False -> YK released. retry/re-export with persisted target -> provider not called, no extra YK (existing contract, unchanged)."
+}
+

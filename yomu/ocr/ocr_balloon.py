@@ -2275,6 +2275,7 @@ def render_analyzed_image(
     stage_timings=None,
     forensic_capture_root=None,
     capture=None,
+    typeset=True,
 ):
     with ocr_line_provenance.page(page_index):
         return _render_analyzed_image(
@@ -2289,6 +2290,7 @@ def render_analyzed_image(
             stage_timings=stage_timings,
             forensic_capture_root=forensic_capture_root,
             capture=capture,
+            typeset=typeset,
         )
 
 
@@ -2304,6 +2306,7 @@ def _render_analyzed_image(
     stage_timings=None,
     forensic_capture_root=None,
     capture=None,
+    typeset=True,
 ):
     def timed_substage(name, fn, *args, **kwargs):
         started = time.perf_counter()
@@ -2324,13 +2327,21 @@ def _render_analyzed_image(
         else None
     )
     original = original_bgr.copy()
-    valid_groups = get_translatable_groups(groups)
-    render_group_ids = {id(group) for group in valid_groups}
-    clean_only_groups = [
-        group
-        for group in get_cleanable_translatable_groups(groups)
-        if id(group) not in render_group_ids
-    ]
+    if typeset:
+        valid_groups = get_translatable_groups(groups)
+        render_group_ids = {id(group) for group in valid_groups}
+        clean_only_groups = [
+            group
+            for group in get_cleanable_translatable_groups(groups)
+            if id(group) not in render_group_ids
+        ]
+    else:
+        # CLEAN-only render: erase the owned source text and draw NO translated glyphs.
+        # Every cleanable group goes through the existing clean-only path (below), so the
+        # clean artwork is produced without duplicating any cleanup logic. final is set to
+        # the cleaned buffer after the loop.
+        valid_groups = []
+        clean_only_groups = list(get_cleanable_translatable_groups(groups))
     final = original.copy()
     inpainted = original.copy()
     text_mask = np.zeros(original.shape[:2], dtype=np.uint8)
@@ -2752,6 +2763,10 @@ def _render_analyzed_image(
         if clean_ok and clean_mask is not None:
             text_mask = cv2.bitwise_or(text_mask, clean_mask)
 
+    if not typeset:
+        # No glyphs were drawn: the cleaned buffer IS the page the caller receives.
+        final = inpainted
+
     if stage_timings is not None:
         stage_timings["inpainting"] = stage_timings.get("inpainting", 0.0) + inpaint_seconds
         stage_timings["redraw"] = stage_timings.get("redraw", 0.0) + redraw_seconds
@@ -2761,7 +2776,9 @@ def _render_analyzed_image(
         stage_timings["render"] = stage_timings.get("render", 0.0) + (time.perf_counter() - render_started)
 
     page_visual_summary = {}
-    if config.VISUAL_DIFF_VALIDATION:
+    # Visual-diff compares drawn glyphs against their allowed bounds; with no typeset there
+    # is nothing to validate and an empty allowed_mask would wrongly roll back the clean.
+    if typeset and config.VISUAL_DIFF_VALIDATION:
         validated, page_visual_summary = timed_substage("enforce_visual_bounds", _enforce_visual_bounds,
             original,
             final,

@@ -235,6 +235,69 @@ def _resolve_output_profile(args=None) -> str:
     return raw if raw in ac.PROFILE_ARTIFACTS else ac.OutputProfile.AUTOMATIC
 
 
+def _plan_pipeline_flags():
+    """Resolve what the output plan asks the pipeline to execute, from ``YOMU_EFFECTIVE_OPS``.
+
+    An UNSET/empty env is the legacy case: every stage runs exactly as before (zero behaviour
+    change for automatic/professional/legacy jobs). Only a job created from an explicit output
+    plan carries the env, and only then do the selective gates activate.
+
+    Returns a dict with: ``legacy`` (no plan), ``want_typeset``, ``want_clean``, ``want_pdf``,
+    ``want_render`` (any image output at all), and ``effective_ops`` (the raw set).
+    """
+    raw = os.getenv("YOMU_EFFECTIVE_OPS")
+    ops = {o for o in (raw or "").split(",") if o}
+    legacy = raw is None or not ops
+    if legacy:
+        return {"legacy": True, "want_typeset": True, "want_clean": True,
+                "want_pdf": True, "want_render": True, "effective_ops": ops}
+    want_typeset = "typeset" in ops
+    want_clean = "clean" in ops or want_typeset  # typeset consumes a clean page
+    want_pdf = "pdf" in ops
+    return {"legacy": False, "want_typeset": want_typeset, "want_clean": want_clean,
+            "want_pdf": want_pdf, "want_render": want_typeset or want_clean,
+            "effective_ops": ops}
+
+
+def _plan_requested_artifacts(effective_ops):
+    """Artifact types a plan's operation set is expected to produce (manifest requested set)."""
+    from yomu.runtime.output_plan import plan_artifact_types
+    return plan_artifact_types(effective_ops)
+
+
+def _build_translation_only_manifest(page_states):
+    """User-facing translation deliverable for a translate-only job: per-page source->target
+    from the already-translated groups. No image is produced; this JSON *is* the output."""
+    pages = []
+    total = translated = 0
+    for state in sorted(page_states, key=lambda s: int(s.get("index") or 0)):
+        regions = []
+        for group in state.get("groups", []) or []:
+            source = str(getattr(group, "text", "") or "")
+            target = str(getattr(group, "translation", "") or "")
+            if not source and not target:
+                continue
+            total += 1
+            final_state = str(getattr(group, "translation_final_state", "") or "")
+            if final_state == "translated" and target:
+                translated += 1
+            regions.append({
+                "region_id": str(getattr(group, "group_id", "") or ""),
+                "classification": str(getattr(group, "classification", "") or ""),
+                "source": source,
+                "target": target,
+                "translation_final_state": final_state,
+                "translation_valid": bool(getattr(group, "translation_valid", False)),
+            })
+        pages.append({"page_index": int(state.get("index") or 0), "regions": regions})
+    return {
+        "schema_version": 1,
+        "kind": "translation_only",
+        "pages": pages,
+        "summary": {"pages": len(pages), "regions": total, "translated_regions": translated},
+    }
+
+
 def _copy_canonical_artifact(src, dst) -> int | None:
     """Atomically copy one already-rendered page image to its canonical Artifact-Contract v2
     slot. Returns bytes written, or None when the source is missing/unreadable/degenerate
@@ -259,7 +322,7 @@ def _copy_canonical_artifact(src, dst) -> int | None:
     return os.path.getsize(dst)
 
 
-def _persist_canonical_artifacts(output_root, completed_states, total_pages, profile):
+def _persist_canonical_artifacts(output_root, completed_states, total_pages, profile, *, typeset=True):
     """Persist CLEAN and TRANSLATED as canonical per-page artifacts (Artifact Contract v2).
 
     Additive: the legacy ``pages/page_NNN.png`` (translated) and ``*_cleaned.png`` are left in
@@ -276,7 +339,11 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
     Identity is the logical page index, never a directory listing (§12). Returns a coverage +
     I/O report; it never fabricates a page it could not actually write (§21/§23).
     """
-    want_clean = ac.ArtifactType.CLEAN_IMAGE in ac.profile_artifacts(profile)
+    # When typeset did not run (clean-only / translate+clean) there is no translated page to
+    # persist -- the rendered buffer IS the clean art. Persist CLEAN only and never write a
+    # phantom translated image. Clean becomes mandatory regardless of profile.
+    want_clean = (not typeset) or ac.ArtifactType.CLEAN_IMAGE in ac.profile_artifacts(profile)
+    want_translated = typeset
     requested = sorted(int(s["index"]) for s in completed_states)
     translated_ok, clean_ok = {}, {}
     translated_failed, clean_failed = [], []
@@ -285,16 +352,23 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
     started = time.perf_counter()
     for state in completed_states:
         idx = int(state["index"])
-        dst = ac.artifact_path(output_root, ac.ArtifactType.TRANSLATED_IMAGE,
-                               page=idx, total_pages=total_pages)
-        n = _copy_canonical_artifact(state.get("output_path"), dst)
-        if n is None:
-            translated_failed.append(idx)
-        else:
-            translated_ok[idx] = str(dst)
-            translated_bytes += n
+        if want_translated:
+            dst = ac.artifact_path(output_root, ac.ArtifactType.TRANSLATED_IMAGE,
+                                   page=idx, total_pages=total_pages)
+            n = _copy_canonical_artifact(state.get("output_path"), dst)
+            if n is None:
+                translated_failed.append(idx)
+            else:
+                translated_ok[idx] = str(dst)
+                translated_bytes += n
         # SOURCE -> CLEAN -> TRANSLATED chain for this logical page (§22).
         chain = {"source": state.get("image_path"), "translated": translated_ok.get(idx)}
+        clean_result = state.get("clean_result")
+        if isinstance(clean_result, dict):
+            chain["clean_strategy"] = {
+                key: value for key, value in clean_result.items()
+                if key not in {"image", "raw_image"}
+            }
         if want_clean:
             cdst = ac.artifact_path(output_root, ac.ArtifactType.CLEAN_IMAGE,
                                     page=idx, total_pages=total_pages)
@@ -332,9 +406,11 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
         "profile": profile,
         "logical_page_count": int(total_pages),
         "requested_pages": requested,
+        "translated_requested": want_translated,
         "translated_produced": sorted(produced_translated),
         "translated_failed": sorted(translated_failed),
-        "translated_missing": sorted(all_pages - produced_translated - set(translated_failed)),
+        "translated_missing": (sorted(all_pages - produced_translated - set(translated_failed))
+                               if want_translated else []),
         "translated_total_bytes": int(translated_bytes),
         "clean_requested": want_clean,
         "clean_produced": sorted(produced_clean),
@@ -510,12 +586,13 @@ def process_post_translation_page(state, *, diagnostic_folder=None, targeted_reg
             debug_folder = str(Path(diagnostic_folder) / f"page_{int(local['index']):03}")
         layout_retry_attempt = 0
         cleaned_capture: dict = {}
+        _want_typeset = _plan_pipeline_flags()["want_typeset"]
         while True:
             final, debug_data = render_analyzed_image(
                 local["original_bgr"], local.get("raw_lines", []), local["candidates"],
                 local["groups"], font_path=config.FONT_PATH, debug_folder=debug_folder,
                 page_index=local["index"], image_path=local["image_path"], stage_timings=timings,
-                capture=cleaned_capture,
+                capture=cleaned_capture, typeset=_want_typeset,
             )
             overflow_groups = [
                 group for group in local["groups"]
@@ -2635,6 +2712,72 @@ def run_benchmark(args):
         translator_stats["wallet_commit_state"] = str(settlement.get("state") or "unknown")
         translator_stats["wallet_commit_net_yk"] = int(settlement.get("net_yk") or 0)
 
+    # Output-plan gates. Empty for legacy/automatic/professional jobs -> full pipeline,
+    # identical behaviour. Only a plan-driven job (clean-only, translate+clean, ...) narrows
+    # what render/persist/PDF produce.
+    _pipeline_flags = _plan_pipeline_flags()
+
+    if not _pipeline_flags["legacy"] and not _pipeline_flags["want_render"]:
+        # TRANSLATE-ONLY: translation is the deliverable. OCR + translation + settlement have
+        # already run above. No clean, no typeset, no image, no PDF -- the persisted
+        # translation (durable .translation_ready cache) is the economic result; this JSON is
+        # the user-facing rendering of it. YK was settled on translation persistence, never on
+        # a visual artifact.
+        resource_monitor.set_stage("reports")
+        tm = _build_translation_only_manifest(page_states)
+        tm_dir = output_folder / "translation"
+        tm_dir.mkdir(parents=True, exist_ok=True)
+        tm_path = tm_dir / "translation.json"
+        atomic_write_json(tm_path, tm)
+        quality = {
+            "passed": True, "mode": "translation_only",
+            "translation_regions": tm["summary"]["regions"],
+            "translated_regions": tm["summary"]["translated_regions"],
+        }
+        final_status = derive_final_run_status(technical_success=True, quality_validation=quality)
+        eff = sorted(_pipeline_flags["effective_ops"])
+        req_ops_env = os.getenv("YOMU_REQUESTED_OPS")
+        manifest = ac.build_artifact_manifest(
+            output_profile=_resolve_output_profile(args), output_root=output_folder,
+            logical_page_count=len(image_paths), produced={},
+            run_id=str(run_signature), status=final_status,
+            output_plan=os.getenv("YOMU_OUTPUT_PLAN", ""),
+            requested_operations=([o for o in req_ops_env.split(",") if o]
+                                  if req_ops_env is not None else None),
+            effective_operations=eff,
+            requested_artifacts=_plan_requested_artifacts(_pipeline_flags["effective_ops"]),
+        )
+        manifest["produced_artifacts"] = (
+            ["translation_manifest"] if tm["summary"]["regions"] else [])
+        manifest["translation_manifest_path"] = str(tm_path)
+        atomic_write_json(output_folder / "artifact_manifest.json", manifest)
+        atomic_write_json(output_folder / "run_manifest.json", {
+            "output_plan": os.getenv("YOMU_OUTPUT_PLAN", ""), "effective_operations": eff,
+            "status": final_status, "translation_manifest_path": str(tm_path)})
+        atomic_write_json(output_folder / "timing_report.json", {
+            "status": final_status, "output_format": "translation",
+            "quality_validation": quality,
+            "logical_page_count": len(image_paths)})
+        print(f"TRANSLATION_ONLY_RESULT status={final_status} "
+              f"regions={tm['summary']['regions']} "
+              f"translated={tm['summary']['translated_regions']}", flush=True)
+        return {
+            "status": final_status, "output_format": "translation",
+            "translation_manifest_path": str(tm_path),
+            "pdf_path": "", "png_path": "", "psd_path": "",
+            "result_kind": "directory", "result_path": str(output_folder),
+            "quality_validation": quality,
+            "artifact_manifest_path": str(output_folder / "artifact_manifest.json"),
+            "run_manifest_path": str(output_folder / "run_manifest.json"),
+            "timing_report_txt": "",
+            "artifact_export": {
+                "translate_only": True,
+                "translation_regions": tm["summary"]["regions"],
+                "translated_regions": tm["summary"]["translated_regions"],
+            },
+            "translator": translator_stats,
+        }
+
     resource_monitor.set_stage("rendering")
     # Page completion is reduced by the serial/job owner.  The page body only
     # records a local event; this keeps future out-of-order workers from
@@ -2685,6 +2828,7 @@ def run_benchmark(args):
                     image_path=state["image_path"],
                     stage_timings=render_timings,
                     capture=cleaned_capture,
+                    typeset=_pipeline_flags["want_typeset"],
                 )
                 overflow_groups = [
                     group
@@ -2714,6 +2858,23 @@ def run_benchmark(args):
                     Path(state["output_path"]).stem + "_cleaned.png")
                 if cv2.imwrite(str(cleaned_path), cleaned_bgr):
                     state["cleaned_path"] = str(cleaned_path)
+            if _pipeline_flags["want_clean"]:
+                # The strategy boundary is deliberately inside Clean, not OutputPlan:
+                # local cleanup is accepted first; only an explicitly eligible hard case
+                # may later provide an adapter for the Gemini safe fallback.
+                from yomu.clean.orchestrator import CleanRequest, LOCAL_SAFE, run_clean_strategy
+                local_image = cleaned_capture.get("cleaned_bgr")
+                if local_image is None:
+                    local_image = state.get("original_bgr")
+                strategy = run_clean_strategy(
+                    CleanRequest(original=state["original_bgr"], job_id=str(getattr(args, "job_id", "") or ""),
+                                 page_id=str(state["index"])),
+                    {"status": LOCAL_SAFE, "image": local_image},
+                )
+                state["clean_result"] = {
+                    key: value for key, value in strategy.items()
+                    if key not in {"image", "raw_image"}
+                }
             save_elapsed = time.perf_counter() - save_started
             state["timings"]["image_save"] = save_elapsed
             stage_seconds["image_save"] += save_elapsed
@@ -2828,6 +2989,7 @@ def run_benchmark(args):
     output_profile = _resolve_output_profile(args)
     artifact_export = _persist_canonical_artifacts(
         output_folder, completed_states, len(image_paths), output_profile,
+        typeset=_pipeline_flags["want_typeset"],
     )
     editable_psd_export = None
     if ac.ArtifactType.EDITABLE_PSD in ac.profile_artifacts(output_profile):
@@ -2852,34 +3014,40 @@ def run_benchmark(args):
     pdf_temp_path = output_folder / f".{pdf_filename}.{os.getpid()}.{time.time_ns()}.tmp"
     resource_monitor.set_stage("pdf")
     pdf_started = time.perf_counter()
-    try:
-        existing_pdf_valid = False
-        if bool(getattr(args, "resume_checkpoint", False)) and pdf_path.is_file():
-            try:
-                if pdf_path.stat().st_size > 5:
-                    with pdf_path.open("rb") as existing_pdf:
-                        existing_pdf_valid = existing_pdf.read(5) == b"%PDF-"
-            except OSError:
-                existing_pdf_valid = False
-        if (
-            bool(getattr(args, "resume_checkpoint", False))
-            and existing_pdf_valid
-        ):
-            # A prior attempt may have completed the immutable PDF and then
-            # failed while publishing an additional format (PNG/PSD). Reuse
-            # that valid canonical artifact rather than regenerate timestamp-
-            # dependent bytes and collide with the immutable path.
-            existing_hash, existing_size = _sha256_and_size(pdf_path)
-            artifact = {"status": "reused", "sha256": existing_hash, "size": existing_size}
-        else:
-            generate_pdf([state["output_path"] for state in completed_states], str(pdf_temp_path))
-            artifact = _finalize_immutable_file(pdf_temp_path, pdf_path)
-    finally:
+    if not _pipeline_flags["want_pdf"]:
+        # The plan did not request a PDF (e.g. clean-only / translate+clean). Never build a
+        # translated PDF from clean pages; pdf_path stays a non-existent path so the manifest
+        # truthfully reports FINAL_PDF as not produced.
+        artifact = {"status": "not_requested", "sha256": "", "size": 0}
+    else:
         try:
-            if pdf_temp_path.exists():
-                pdf_temp_path.unlink()
-        except OSError:
-            pass
+            existing_pdf_valid = False
+            if bool(getattr(args, "resume_checkpoint", False)) and pdf_path.is_file():
+                try:
+                    if pdf_path.stat().st_size > 5:
+                        with pdf_path.open("rb") as existing_pdf:
+                            existing_pdf_valid = existing_pdf.read(5) == b"%PDF-"
+                except OSError:
+                    existing_pdf_valid = False
+            if (
+                bool(getattr(args, "resume_checkpoint", False))
+                and existing_pdf_valid
+            ):
+                # A prior attempt may have completed the immutable PDF and then
+                # failed while publishing an additional format (PNG/PSD). Reuse
+                # that valid canonical artifact rather than regenerate timestamp-
+                # dependent bytes and collide with the immutable path.
+                existing_hash, existing_size = _sha256_and_size(pdf_path)
+                artifact = {"status": "reused", "sha256": existing_hash, "size": existing_size}
+            else:
+                generate_pdf([state["output_path"] for state in completed_states], str(pdf_temp_path))
+                artifact = _finalize_immutable_file(pdf_temp_path, pdf_path)
+        finally:
+            try:
+                if pdf_temp_path.exists():
+                    pdf_temp_path.unlink()
+            except OSError:
+                pass
     stage_seconds["pdf"] = time.perf_counter() - pdf_started
     _record_perf_event("pdf", "pdf", int((pdf_started - started) * 1_000_000_000), int((time.perf_counter() - started) * 1_000_000_000))
     artifact_sha256 = artifact["sha256"]
@@ -2944,6 +3112,7 @@ def run_benchmark(args):
         completed_states,
         pdf_path,
         full=args.full,
+        pdf_expected=_pipeline_flags["want_pdf"],
     )
     split_audit = smart_split_audit(smart_split_report)
     quality["smart_split_unsafe_count"] = split_audit["unsafe_count"]
@@ -3415,6 +3584,16 @@ def run_benchmark(args):
         },
         run_id=str(run_signature),
         status=final_status,
+        output_plan=os.getenv("YOMU_OUTPUT_PLAN", ""),
+        requested_operations=(
+            [o for o in os.getenv("YOMU_REQUESTED_OPS", "").split(",") if o]
+            if os.getenv("YOMU_REQUESTED_OPS") is not None else None),
+        effective_operations=(
+            [o for o in os.getenv("YOMU_EFFECTIVE_OPS", "").split(",") if o]
+            if os.getenv("YOMU_EFFECTIVE_OPS") is not None else None),
+        # Plan-driven requested set so a clean-only run owes CLEAN only, not a translated PDF.
+        requested_artifacts=(None if _pipeline_flags["legacy"]
+                             else _plan_requested_artifacts(_pipeline_flags["effective_ops"])),
     )
     artifact_manifest["coverage"] = {
         ac.ArtifactType.TRANSLATED_IMAGE: {
@@ -6424,7 +6603,7 @@ def _create_preview_compare_sheet(selected_states, target):
     canvas.save(target, "JPEG", quality=82, optimize=True, progressive=True)
 
 
-def _validate_quality(states, pdf_path, expected_page_count=None, full=False):
+def _validate_quality(states, pdf_path, expected_page_count=None, full=False, *, pdf_expected=True):
     invalid_pages = []
     for state in states:
         if not _reconstructed_page_is_valid(state.get("output_path"), state.get("image_path", "")):
@@ -6437,7 +6616,9 @@ def _validate_quality(states, pdf_path, expected_page_count=None, full=False):
     # (``pdf.pdf_page_manifest``), so the gate compares physical against physical.
     page_manifest = pdf_page_manifest([state["output_path"] for state in states])
     expected_page_count = int(page_manifest["pdf_physical_page_count"])
-    pdf_pages = _count_pdf_pages(pdf_path)
+    # A plan without a PDF (clean-only / translate+clean) must not be failed for a missing
+    # PDF: the page-count gate is satisfied by construction when no PDF was requested.
+    pdf_pages = _count_pdf_pages(pdf_path) if pdf_expected else expected_page_count
     high_translation_pages = sorted(
         states,
         key=lambda state: state.get("debug_data", {}).get(

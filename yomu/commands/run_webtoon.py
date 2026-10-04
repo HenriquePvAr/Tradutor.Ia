@@ -61,9 +61,9 @@ def build_parser():
     )
     parser.add_argument(
         "--output-format",
-        choices=("pdf", "png", "psd"),
+        choices=("pdf", "png", "psd", "translation"),
         default="pdf",
-        help="Formato do resultado final (padrao: pdf).",
+        help="Formato do resultado final (padrao: pdf; 'translation' = apenas dados de traducao).",
     )
     parser.add_argument(
         "--typesetting-mode",
@@ -195,8 +195,13 @@ def main(argv=None):
     print(f"Saida: {output_folder}")
 
     report = _run_benchmark(benchmark_args)
+    # Success signal is plan-aware: a translate-only job's deliverable is the persisted
+    # translation (translation_manifest_path), not a PDF/PNG.
+    _produced_output = bool(
+        report.get("pdf_path") or report.get("png_path")
+        or report.get("translation_manifest_path"))
     print(
-        f"PIPELINE_MAIN_RESULT status={'success' if (report.get('pdf_path') or report.get('png_path')) else 'failed'} "
+        f"PIPELINE_MAIN_RESULT status={'success' if _produced_output else 'failed'} "
         f"report_type={type(report).__name__}", flush=True,
     )
     pdf_path = Path(report.get("pdf_path") or "")
@@ -207,7 +212,7 @@ def main(argv=None):
     from yomu.ui.ui_helpers import derive_final_run_status
 
     final_status = derive_final_run_status(
-        technical_success=bool(report.get("pdf_path") or report.get("png_path")),
+        technical_success=_produced_output,
         quality_validation=report.get("quality_validation") or {},
     )
     if final_status == "review_required":

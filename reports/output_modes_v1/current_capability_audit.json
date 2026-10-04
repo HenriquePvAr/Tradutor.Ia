@@ -1,0 +1,126 @@
+{
+  "mission": "YOMU_OUTPUT_MODES_AND_SELECTIVE_PIPELINE_V1",
+  "audit_phase": "PART_1_AUDIT_BEFORE_IMPLEMENTATION",
+  "base_commit": "e16a99a",
+  "base_branch": "chore/repository-structure-cleanup-v2",
+  "work_branch": "feat/output-modes-selective-pipeline-v1",
+  "audited_at": "2026-10-03",
+  "method": "Read HEAD source only. No assumption that the old roadmap still represents the code. Every claim cites a file:line verified in this worktree.",
+  "headline_finding": "About half of the selective-pipeline primitives ALREADY EXIST and are correct: two full output profiles (automatic/professional_qc) with UI + env propagation, an end-to-end download-only mode (0 OCR/translate/clean/typeset/YK), a translation kill-switch (translation_enabled) that provably skips the provider and YK, a per-run artifact manifest, and output_format (pdf/png/psd). The genuine gaps are (1) NO unifying OutputPlan contract - the knobs are scattered independent booleans; (2) the two named presets that need the render step decoupled (translate-only-data, translate+clean-without-typeset) do not exist; (3) 'Apenas Clean' exists only as a dev kill-switch, not a product mode; (4) no UI presets beyond download-only + the two profiles; (5) the manifest records a profile-derived artifact set, not a requested_outputs/effective_operations contract.",
+  "key_execution_facts": {
+    "pipeline_entry": "yomu/pipeline/benchmark_pipeline.py::run_benchmark (line 1659); spawned as a child of yomu/runtime/job_runner.py which passes env.",
+    "render_couples_clean_and_typeset": "render_analyzed_image typesets translated text AND captures the cleaned background in the same pass (benchmark_pipeline.py ~2675, cleaned_capture). CLEAN is a by-product of the render/typeset stage, not an independent stage today.",
+    "translation_gate": "translation_enabled (env TRANSLATION_ENABLED, benchmark_pipeline.py:2021) hard-gates the provider boundary: when false -> 'PROVIDER_GATE_CHECKED translation_enabled=false', translations=['']*n, no provider init, no YK commit (benchmark_pipeline.py:2515-2528).",
+    "yk_commit_point": "YK is committed exactly once, only when translation_enabled AND translation_targets AND commit_translation callable (benchmark_pipeline.py:2633-2636). download_only and translation-disabled runs commit 0 YK.",
+    "config_normalization_chokepoint": "yomu/ui/ui_bridge.py::UiBridge._normalize_payload (line 7237) is the single server-side place that sanitizes download_only / output_profile / output_format / translation_enabled into the job configuration dict.",
+    "config_knobs_today": ["download_only", "translation_enabled", "output_profile", "output_format", "mode", "translation_provider"],
+    "clean_only_is_latent": "translation_enabled=false already yields OCR + text-erased (clean) pages with 0 provider/0 YK. It is a kill-switch for OCR-only/testing, NOT surfaced as a user 'Apenas Clean' product mode, still typesets empty strings + builds a PDF, and persists as translated_image rather than clean_image."
+  },
+  "capabilities": [
+    {
+      "capability": "Full automatic pipeline (translate+clean+typeset+pdf) == preset 'Traducao pronta'",
+      "status": "DONE",
+      "evidence": "OutputProfile.AUTOMATIC -> (final_pdf, translated_image); artifact_contract.py:68-76; UI radio automatic (static/tradutor_ui.js:1309); env propagation job_runner._set_output_profile_environment:56.",
+      "gap": "None. This preset maps 1:1 to the existing automatic profile."
+    },
+    {
+      "capability": "Full professional pipeline (+PSD +QC +review) == preset 'Profissional'",
+      "status": "DONE",
+      "evidence": "OutputProfile.PROFESSIONAL_QC -> final_pdf+translated_image+clean_image+editable_psd+quality_report+review_manifest; artifact_contract.py:72-75. UI radio professional_qc; psd gated to professional (tradutor_ui.js:1335).",
+      "gap": "None. Maps 1:1 to professional_qc."
+    },
+    {
+      "capability": "Download-only (collect+validate pages, 0 OCR/translate/clean/typeset/pdf/YK)",
+      "status": "DONE",
+      "evidence": "download_only threaded through commands/run_webtoon.py, review/source_readiness.py, runtime/job_runner.py:835-1010, job_completion.py:53; UI #modeSelect option value='download_only' (tradutor_ui.js:1123); forces output_profile=automatic (ui_bridge _normalize_payload:7258).",
+      "gap": "Exists but is modeled as a separate processing-mode, not as one option in a unified output-plan. Reuse as-is."
+    },
+    {
+      "capability": "Translation kill-switch -> 0 provider call, 0 YK",
+      "status": "DONE",
+      "evidence": "translation_enabled fail-closed (ui_bridge:7269); env TRANSLATION_ENABLED (job_runner:724); hard provider gate + no YK commit (benchmark_pipeline.py:2515-2528, 2633).",
+      "gap": "It is the primitive that makes CLEAN-only cost 0 provider/0 YK. Not itself a product mode."
+    },
+    {
+      "capability": "Preset 'Apenas Clean' (clean images only, no translation, 0 provider/0 YK)",
+      "status": "PARTIAL",
+      "evidence": "Latent via translation_enabled=false (produces text-erased pages, 0 provider/0 YK). But: not exposed in UI; still typesets empty + builds PDF; persists result as translated_image not clean_image; no requested-outputs marker.",
+      "gap": "Needs: a product mode that sets translation off, persists the pages as CLEAN_IMAGE, and marks typeset/pdf as NOT_REQUESTED. Achievable on existing primitives (no deep render rewrite)."
+    },
+    {
+      "capability": "Preset 'Apenas traducao' (translation data only, no clean/typeset/images)",
+      "status": "MISSING",
+      "evidence": "No path skips render entirely. run_benchmark always renders when not download_only. Translation text is produced but there is no 'emit translation manifest and stop' output.",
+      "gap": "Needs a skip-render path emitting a translation manifest artifact. Real pipeline change (medium)."
+    },
+    {
+      "capability": "Preset 'Traducao + Clean' (translate + clean, NO typeset burn)",
+      "status": "MISSING",
+      "evidence": "render_analyzed_image couples clean capture and text burn-in in one pass (~2675). There is no flag to clean + produce translation data without burning text onto the image.",
+      "gap": "Needs render decoupled: clean-without-burn while translation is enabled. Real pipeline change (medium/high)."
+    },
+    {
+      "capability": "Preset 'Personalizado' (user-chosen combination of operations)",
+      "status": "MISSING",
+      "evidence": "No custom operation selector in UI; no contract to validate an arbitrary combination.",
+      "gap": "Needs the OutputPlan contract (below) + a UI custom selector."
+    },
+    {
+      "capability": "Unified OutputPlan / ProcessingPlan DTO (single source of truth)",
+      "status": "MISSING",
+      "evidence": "Selective behaviour is scattered across independent booleans (download_only, translation_enabled, output_profile, output_format) resolved ad hoc in _normalize_payload:7247-7302. No normalize_output_plan(), no operation enumeration.",
+      "gap": "Core gap. Build yomu/runtime/output_plan.py: presets + operations {TRANSLATE,CLEAN,TYPESET,PDF,PSD,QC} + normalize_output_plan() with dependency rules, mapping each plan onto the EXISTING knobs so all proven plumbing is reused."
+    },
+    {
+      "capability": "Dependency rules (TYPESET=>TRANSLATE, PDF=>TYPESET|CLEAN, PSD/QC=>PROFESSIONAL)",
+      "status": "PARTIAL",
+      "evidence": "Some implicit guards exist: psd requires professional_qc (ui_bridge:7261), download_only forces automatic (7258). But there is no explicit operation dependency graph; invalid combinations are only partially caught.",
+      "gap": "Centralize all dependency rules in normalize_output_plan()."
+    },
+    {
+      "capability": "Manifest requested_outputs / effective_operations",
+      "status": "MISSING",
+      "evidence": "build_artifact_manifest records requested_artifacts derived from the profile only (artifact_contract.py:219-243). No field states which operations the USER asked for vs which actually ran.",
+      "gap": "Add requested_outputs + effective_operations to the manifest so retry/re-export and the finish screen can filter truthfully."
+    },
+    {
+      "capability": "Retry / re-export reuses persisted translation (0 extra provider/YK)",
+      "status": "DONE",
+      "evidence": "YK contract from prior missions: translation persisted on success, re-export reuses it; YK committed once at 2633. Settlement provider returns None for download-only/non-YK (job_runner:116-127).",
+      "gap": "No change needed; new modes must not regress it (covered by a spy test)."
+    },
+    {
+      "capability": "Finish-screen filtering by requested outputs / NOT_REQUESTED semantics",
+      "status": "PARTIAL",
+      "evidence": "Finish/completion keys off output_profile + output_format + download_only (ui_bridge _job_record:893-903, job_completion.py). Action buttons shown by profile (tradutor_ui.js:100). No per-operation 'nao solicitado' state.",
+      "gap": "Finish screen must show only requested artifacts and mark the rest NOT_REQUESTED (not FAILED/missing)."
+    },
+    {
+      "capability": "Provider-agnostic CLEAN (abstract capability, no gemini/oracle/chrome branching)",
+      "status": "DONE_BY_ABSENCE",
+      "evidence": "CLEAN today is the local render cleanup (render_analyzed_image). No provider branching for clean exists anywhere in UI/output planning. yomu/clean package exists as the home for clean logic.",
+      "gap": "Keep it abstract: the output plan must express CLEAN as one operation with no provider conditionals, so a future remote clean (Gemini/VPS, Codex line) swaps the implementation without touching the plan/UI."
+    },
+    {
+      "capability": "Progress emission respecting NOT_REQUESTED stages",
+      "status": "MISSING",
+      "evidence": "Progress aggregation is per-page render (benchmark_pipeline PageProgressAggregator:2642). Stages are not reported as requested/not-requested.",
+      "gap": "When a stage is not in the plan, progress should mark it NOT_REQUESTED rather than 0%/stuck."
+    }
+  ],
+  "implementation_decision": {
+    "do_not_reimplement": ["automatic profile", "professional_qc profile", "download_only mode", "translation kill-switch", "output_format", "retry/re-export YK reuse", "artifact manifest base"],
+    "build_this_mission": [
+      "yomu/runtime/output_plan.py: presets + operations + normalize_output_plan() with dependency rules, mapping to existing knobs (provider-agnostic CLEAN).",
+      "Manifest: requested_outputs + effective_operations fields.",
+      "Execute the presets that map onto existing primitives truthfully (Traducao pronta=automatic, Profissional=professional_qc, Apenas Clean=translation-off+clean-persist, Download=download_only)."
+    ],
+    "scoped_followups_not_faked": [
+      "Apenas traducao (skip-render + translation-manifest output): needs a real pipeline path; will be marked contract-defined, execution PLANNED - NOT reported as implemented.",
+      "Traducao + Clean without typeset burn: needs render decoupled; contract-defined, execution PLANNED.",
+      "Full UI preset surface + custom selector + finish-screen NOT_REQUESTED: needs design-system reuse + browser verification."
+    ],
+    "honesty_rule": "No preset will be reported IMPLEMENTED unless its execution is wired and test-proven on this HEAD. Contract-only presets are labelled PLANNED."
+  }
+}
+

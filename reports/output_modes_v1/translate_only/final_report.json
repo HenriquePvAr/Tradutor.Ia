@@ -1,0 +1,37 @@
+{
+  "mission": "YOMU_TRANSLATE_ONLY_EXECUTION_AND_YK_COMPLETION_CONTRACT_V1",
+  "mission_result": "PASS (build smoke blocked: PyInstaller not installed in this env)",
+  "base_head": "c163f9f",
+  "work_branch": "feat/output-modes-selective-pipeline-v1",
+  "push": "NO",
+  "translate_only": {
+    "executable": true, "ocr": "yes", "provider": "when target absent",
+    "translation_persisted": "yes (.translation_ready durable cache)",
+    "clean": "NO", "typeset": "NO", "translated_image": "NO", "clean_image": "NO",
+    "pdf": "NO", "psd": "NO",
+    "textual_artifact": "translation/translation.json", "status": "finished (or review_required)"
+  },
+  "yk": {
+    "first_successful_translation": "1 after provider success + valid persisted translation",
+    "pre_provider_failure": 0, "provider_failure": 0,
+    "retry_extra": 0, "reexport_extra": 0,
+    "tied_to": "translation_ready (persisted translation), NOT visual artifacts"
+  },
+  "other_modes": {"clean_only": "PASS", "translate_clean": "PASS", "automatic": "PASS", "professional": "PASS", "download_only": "PASS (unchanged)"},
+  "phantom_visual_artifacts": 0,
+  "code_changes": [
+    "yomu/pipeline/benchmark_pipeline.py: translate-only early branch (skip render) + _build_translation_only_manifest; writes translation/translation.json + plan-aware artifact/run/timing manifests.",
+    "yomu/runtime/job_runner.py: _config_is_translate_only + _translation_output_contract; finalize & recover_yk_settlement use translation_ready for translate-only (YK tied to translation persistence).",
+    "yomu/commands/run_webtoon.py: plan-aware success signal (translation_manifest_path).",
+    "yomu/ui/ui_helpers.py: 'translation' is a first-class output_format (build/validate/assert).",
+    "yomu/commands/run_webtoon.py: --output-format choices += translation.",
+    "yomu/runtime/output_plan.py: translate_only property, output_format='translation', plan_artifact_types->translation_manifest, executability all-true."
+  ],
+  "tests": {"focused_new": "test_translate_only_completion.py (4) + test_selective_pipeline_execution.py (8) + test_output_plan.py (22)", "focused_regression": "799 passed, 86 skipped (environmental), 0 failures"},
+  "build_smoke": "BLOCKED: PyInstaller not installed in this environment. Mitigations run: fresh-process import of all 9 entry modules OK; spec bundles yomu via collect_submodules('yomu') so yomu.runtime.output_plan is auto-included; tests/test_build_profile.py passed.",
+  "desktop_smoke": "BLOCKED: same (no frozen binary without PyInstaller)",
+  "secrets": 0, "codex_worktrees_touched": "NO", "main_checkout_modified": "NO",
+  "five_modes_executable": true,
+  "next_step": "UI de presets (cards + custom + finish-screen/progress filtering) over this now-complete backend."
+}
+

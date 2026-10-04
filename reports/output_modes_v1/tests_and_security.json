@@ -1,0 +1,16 @@
+{
+  "focused": {
+    "test_output_plan.py": "22 passed",
+    "test_selective_pipeline_execution.py": "7 (incl. subtests) passed -- clean-family E2E",
+    "test_local_benchmark_pipeline_e2e.py": "automatic + professional regression passed"
+  },
+  "broad_regression": "1766 passed, 39 skipped, 1 xfailed, 537 subtests passed, exit 0 (pipeline/render/artifact/clean/quality/completion/psd/png/profile/manifest/selective)",
+  "build_smoke": "NOT_RUN_THIS_TURN",
+  "desktop_smoke": "NOT_RUN_THIS_TURN",
+  "frontend": "NOT_APPLICABLE (no UI change this mission)",
+  "secret_scan": {"passwords": 0, "tokens": 0, "deepl_keys": 0, "supabase_service_role": 0, "ssh_keys": 0, "google_auth": 0, "result": "PASS"},
+  "codex_worktree_touched": "NO",
+  "gemini_internals_modified": "NO",
+  "push": "NO"
+}
+

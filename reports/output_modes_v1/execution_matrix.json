@@ -1,0 +1,49 @@
+{
+  "mission": "YOMU_CLEAN_TYPESET_DECOUPLING_AND_EXECUTABLE_OUTPUT_PLANS_V1",
+  "generated_at": "2026-10-03",
+  "legend": "Proven by tests/test_selective_pipeline_execution.py (clean-family) and tests/test_local_benchmark_pipeline_e2e.py (automatic/professional). YOMU_EFFECTIVE_OPS drives the gates; unset = legacy = full pipeline.",
+  "modes": {
+    "apenas_clean": {
+      "effective_ops": ["clean"], "translation_enabled": false,
+      "render": "typeset=false (clean only)", "executable": true,
+      "provider_calls": 0, "yk": 0,
+      "clean_artifact": true, "translated_artifact": false, "pdf": false, "png": true,
+      "proof": "test_clean_only_produces_clean_no_translated_no_provider"
+    },
+    "traducao_clean": {
+      "effective_ops": ["clean", "translate"], "translation_enabled": true,
+      "render": "typeset=false (clean only)", "executable": true,
+      "provider_calls": "1 per untranslated batch", "yk": "1 after valid persisted translation",
+      "clean_artifact": true, "translated_artifact": false, "pdf": false, "png": true,
+      "proof": "test_translate_clean_translates_and_cleans_without_typeset"
+    },
+    "traducao_pronta": {
+      "effective_ops": ["translate", "clean", "typeset", "pdf"], "translation_enabled": true,
+      "render": "typeset=true (full)", "executable": true,
+      "provider_calls": "1 per untranslated batch", "yk": "1 after valid persisted translation",
+      "clean_artifact": "internal", "translated_artifact": true, "pdf": true,
+      "proof": "test_local_snapshot_runs_through_validation_render_and_pdf_offline (automatic, unchanged)"
+    },
+    "profissional": {
+      "effective_ops": ["translate", "clean", "typeset", "pdf", "psd", "qc"], "translation_enabled": true,
+      "render": "typeset=true (full)", "executable": true,
+      "clean_artifact": true, "translated_artifact": true, "pdf": true, "psd": true, "qc": true,
+      "proof": "test_professional_qc_persists_clean_and_translated_and_manifest (unchanged)"
+    },
+    "apenas_traducao": {
+      "effective_ops": ["translate"], "translation_enabled": true,
+      "render": "skip (not wired)", "executable": false,
+      "reason": "translate_only_requires_skip_render_and_translation_data_contract",
+      "status": "SCOPED_NEXT -- needs a translation-data result contract in job_completion/run_webtoon (YK-sensitive); NOT faked"
+    },
+    "download": {
+      "effective_ops": [], "executable": true,
+      "note": "handled before run_benchmark by the runner/commands; unchanged this mission"
+    }
+  },
+  "no_duplication": {
+    "ocr": "run once pre-translation, shared by clean and typeset; splitting render introduces 0 extra OCR",
+    "clean": "render cleans once into `inpainted`; typeset draws on the SAME buffer; clean+typeset = 1 clean"
+  }
+}
+

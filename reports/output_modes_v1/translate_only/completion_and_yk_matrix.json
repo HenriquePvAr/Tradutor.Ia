@@ -1,0 +1,23 @@
+{
+  "completion_test_matrix": {
+    "apenas_clean":    {"success_signal": "png clean + status finished/review", "required_artifacts": ["clean_image"], "visual_required": false, "provider": 0, "yk": 0},
+    "apenas_traducao": {"success_signal": "translation_manifest + translation_ready", "required_artifacts": ["translation_manifest"], "visual_required": false, "provider": "1 when target absent", "yk": "1 after valid persisted translation"},
+    "traducao_clean":  {"success_signal": "png clean", "required_artifacts": ["clean_image"], "visual_required": true, "provider": "1 when target absent", "yk": "1 after persist"},
+    "traducao_pronta": {"success_signal": "pdf", "required_artifacts": ["translated_image","final_pdf"], "visual_required": true, "provider": "1 when target absent", "yk": "1 after persist"},
+    "profissional":    {"success_signal": "pdf+psd+qc", "required_artifacts": ["translated_image","clean_image","final_pdf","editable_psd","quality_report","review_manifest"], "visual_required": true, "provider": "1 when target absent", "yk": "1 after persist"}
+  },
+  "translate_only_yk_contract": {
+    "pre_provider_failure": "0 YK (no reservation consumed)",
+    "provider_failure": "0 YK (no .translation_ready marker -> output_valid False -> released)",
+    "provider_success_persisted": "output_valid True (translation_ready) -> YK consumed",
+    "retry_with_persisted_target": "provider 0, additional YK 0 (existing durable-cache contract)",
+    "reexport_with_persisted_target": "provider 0, additional YK 0",
+    "critical_invariant": "YK is NEVER tied to clean/translated/pdf artifacts; only to provider success + valid persisted translation (yk_reservation.translation_ready)"
+  },
+  "proven_by": [
+    "tests/test_translate_only_completion.py (contract validity follows translation_ready, never visual artifact)",
+    "tests/test_selective_pipeline_execution.py::test_translate_only_* (pipeline: provider once, manifest produced, zero visual artifacts)",
+    "tests/test_output_plan.py (executability + translation format + artifact types)"
+  ]
+}
+
