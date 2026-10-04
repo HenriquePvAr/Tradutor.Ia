@@ -36,9 +36,11 @@ def test_history_card_shows_type_and_format():
     assert '<span class="badge ${engine}">${engine === \'rapid\' ? \'Rápido\' : \'Qualidade\'}</span>' not in JS
 
 
-def test_open_pdf_action_is_gated_on_pdf_format():
-    # The external "open" action must only offer the PDF for a pdf job; png/psd open the folder.
-    assert "outputFormat === 'PDF' ? actionButton('Abrir PDF', 'pdf', record.pdf_path) : ''" in JS
+def test_open_pdf_action_is_gated_on_produced_artifact():
+    # Artifact-driven cards (imported feature): the "Abrir PDF" action appears only when the
+    # final_pdf artifact was actually produced, not merely because output_format=='pdf'.
+    assert "artifactIsAvailable(record, 'final_pdf', record.pdf_path)" in JS
+    assert "actionButton('Abrir ' + 'PDF', 'pdf', record.pdf_path)" in JS
     assert "actionButton('Abrir pasta', 'folder', record.output_folder)" in JS
 
 
