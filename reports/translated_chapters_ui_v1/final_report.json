@@ -19,7 +19,11 @@
   "build": "BLOCKED (PyInstaller not installed in this env)",
   "exe_started": "NOT_RUN",
   "owner_physical_review": "AWAITING",
-  "secrets": 0, "root_policy": "PASS", "providers_called": "NONE", "push": "NO",
+  "secrets": 0,
+  "root_policy": "PASS",
+  "providers_called": "NONE",
+  "push": "NO",
   "preset_ui_reopened": "NO",
-  "next_step": "Owner runs the EXE and confirms scroll; then Discord observability."
+  "next_step": "Owner runs the EXE and confirms scroll; then Discord observability.",
+  "full_regression": "5782 passed, 141 skipped, 2 xfailed; 1 unrelated pre-existing flake (test_ocr_provenance_hybrid_cancellation; passes in isolation) -> 0 real regressions from this UI change"
 }
