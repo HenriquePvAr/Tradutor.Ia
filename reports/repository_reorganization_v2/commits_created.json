@@ -1,7 +1,8 @@
 {
-  "final_commit_recorded_in_final_report": "bd406b97c8d9f17f7ea559d7a9380f44d9bc4351",
+  "final_commit_recorded_in_final_report": "50a82aa1dc1329cf41901bf9482a5afb9c05f23a",
   "observed_before_final_reorganization_commit": [
-    "bd406b9 (HEAD -> chore/repository-structure-cleanup-v2) fix(runtime): validate declared outputs before recovery"
+    "50a82aa (HEAD -> chore/repository-structure-cleanup-v2) refactor(repo): extract runtime modules into yomu packages",
+    "bd406b9 fix(runtime): validate declared outputs before recovery"
   ],
   "push": "NO"
 }

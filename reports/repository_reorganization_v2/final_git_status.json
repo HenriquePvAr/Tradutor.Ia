@@ -1,6 +1,6 @@
 {
   "branch": "chore/repository-structure-cleanup-v2",
-  "head_at_report_generation": "bd406b97c8d9f17f7ea559d7a9380f44d9bc4351",
+  "head_at_report_generation": "50a82aa1dc1329cf41901bf9482a5afb9c05f23a",
   "push": "NO",
   "worktree_clean_after_committing_report_bundle": true
 }

@@ -47,10 +47,11 @@ def main() -> None:
     top_before = sorted(git("ls-tree", "--name-only", BASE).splitlines())
     top_after = sorted(path.name for path in ROOT.iterdir() if path.is_dir())
     current_head = git("rev-parse", "HEAD")
-    changed_entries = git("status", "--short", "--untracked-files=all").splitlines()
+    # Audit the complete mission diff, not just the report refresh's working tree.
+    changed_entries = git("diff", "--name-only", BASE, current_head).splitlines()
     changed_files: list[tuple[str, int]] = []
     for entry in changed_entries:
-        rel = entry[3:]
+        rel = entry
         if " -> " in rel:
             rel = rel.split(" -> ", 1)[1]
         candidate = ROOT / rel
