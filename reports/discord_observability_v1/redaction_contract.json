@@ -1,0 +1,1 @@
+{"status":"IMPLEMENTED_AND_TESTED","forbidden":["webhook","token","cookie","password","email","SSH key","raw prompt","absolute sensitive path"],"safe_identity_fallback":"opaque sha256 prefix","client_behavior":"best_effort_non_blocking_bounded_queue_deduplicated_progress"}

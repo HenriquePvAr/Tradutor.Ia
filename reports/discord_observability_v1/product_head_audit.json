@@ -1,0 +1,13 @@
+{
+  "latest_product_head": "3f38715814569ace15e0d9e1d3f88a874171bef5",
+  "selection_reason": "single ancestry contains all requested product milestones and current history/auth polish",
+  "ancestry": {
+    "e16a99a": true,
+    "b4da199": true,
+    "0d4f79c": true,
+    "996bae4": true,
+    "e288fee": true,
+    "bdf7b83": true
+  },
+  "reconciliation": "not required"
+}

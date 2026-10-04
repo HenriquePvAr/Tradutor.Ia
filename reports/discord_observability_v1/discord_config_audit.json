@@ -1,0 +1,8 @@
+{
+  "status": "BLOCKED_VPS_ACCESS",
+  "discord_webhook_configured": "UNKNOWN",
+  "config_source": "UNKNOWN",
+  "webhook_value_recorded": false,
+  "webhook_value_printed": false,
+  "windows_repo_webhook_secret": "NOT_FOUND"
+}

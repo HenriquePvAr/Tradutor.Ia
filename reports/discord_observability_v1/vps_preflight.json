@@ -1,0 +1,11 @@
+{
+  "host": "129.153.96.102",
+  "user": "ubuntu",
+  "status": "SSH_PASS",
+  "result": "host yomu-vnic reachable; API loopback health PASS",
+  "read_only_attempt": true,
+  "key_content_printed": false,
+  "chrome_profile_preserved": true,
+  "worker_service_preserved": true,
+  "webhook_configured": false
+}

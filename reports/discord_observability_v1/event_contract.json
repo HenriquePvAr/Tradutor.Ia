@@ -1,0 +1,5 @@
+{
+  "status": "IMPLEMENTED_AND_TESTED",
+  "required_event_types":["WORKER_READY","JOB_CREATED","JOB_STARTED","JOB_ANALYZED","REMOTE_FALLBACK_QUEUED","REMOTE_FALLBACK_STARTED","REMOTE_PROGRESS","REVIEW_REQUIRED","JOB_COMPLETED","JOB_FAILED","REMOTE_AUTH_REQUIRED","WORKER_DEGRADED"],
+  "reason":"loopback FastAPI ingress added to the existing private VPS API; desktop contract tests passed"
+}

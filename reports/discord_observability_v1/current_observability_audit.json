@@ -1,0 +1,12 @@
+{
+  "pipeline_telemetry": "DONE/REUSABLE: opt-in privacy-safe JSONL sink with bounded event count",
+  "job_ids_run_ids_request_ids": "PARTIAL: present across job/control-plane records",
+  "job_lifecycle_events": "PARTIAL: local traces/state transitions exist; no Discord event contract",
+  "remote_gemini_client": "DONE/REUSABLE: existing loopback HardCleanRemoteClient",
+  "windows_to_vps_observability_client": "MISSING",
+  "vps_observability_endpoint": "UNKNOWN until VPS access",
+  "discord_formatter_transport": "MISSING locally",
+  "dedupe_and_progress_throttle": "MISSING for Discord",
+  "webhook_location": "UNKNOWN until VPS access; no webhook found in Windows repo scan",
+  "classification": "PARTIAL"
+}
