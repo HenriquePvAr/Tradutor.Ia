@@ -1,0 +1,7 @@
+{
+  "strategy": "manual_selective_port",
+  "root_implementation_reintroduced": false,
+  "case_specific_rules": false,
+  "new_package_imports": ["yomu.ocr.ocr_balloon", "yomu.ocr.ocr_engine"],
+  "secrets_or_cookies_added": false
+}

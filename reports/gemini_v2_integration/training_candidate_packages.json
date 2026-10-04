@@ -1,0 +1,9 @@
+{
+  "package_format": "metadata_manifest_only",
+  "candidates": [
+    {"id": "case02", "source": "external_runtime_artifact", "binary_committed": false, "metadata_version": "SAFE_CLEAN_QUALITY_V1"},
+    {"id": "case03", "source": "external_runtime_artifact", "binary_committed": false, "metadata_version": "SAFE_CLEAN_QUALITY_V1"}
+  ],
+  "drive_upload": "NOT_REQUIRED_YET",
+  "large_artifacts_committed": false
+}

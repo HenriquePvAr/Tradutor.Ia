@@ -1,0 +1,14 @@
+{
+  "mission": "YOMU_GEMINI_V2_RECONCILIATION_AND_TRAINING_CANDIDATE_METADATA_V1",
+  "branch": "research/gemini-safe-fallback-v2-integration",
+  "base": "e16a99ab237f6c349951ebe7eb749e6ae264a805",
+  "result": "READY_FOR_REVIEW",
+  "ported_package": "yomu.clean.gemini_fallback",
+  "training_candidates": ["case02", "case03"],
+  "review_only": ["case01", "case01_crop"],
+  "offline_v2_recomputed_pass": "7/10",
+  "drive_upload": "NOT_REQUIRED_YET",
+  "full_tests": "5717 passed, 141 skipped, 2 xfailed",
+  "push": false,
+  "production_checkout_changed": false
+}

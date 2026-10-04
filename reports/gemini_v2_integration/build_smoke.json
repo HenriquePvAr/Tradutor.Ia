@@ -1,0 +1,1 @@
+{"status": "PASS", "checks": ["python_import", "python_compileall", "candidate_evaluator", "pytest_focused", "pytest_full"]}

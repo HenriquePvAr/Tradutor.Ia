@@ -1,0 +1,10 @@
+{
+  "status": "COMPATIBILITY_EVIDENCE_FROM_EXISTING_WORKER",
+  "job_id": "case02-v2-promoted",
+  "job_status": "COMPLETED",
+  "outside_mask_changed_pixels": 0,
+  "seam_status": "SEAM_PASS",
+  "visual_quality": "ACCEPTABLE",
+  "new_generation_requested": false,
+  "note": "The new package was validated offline; this evidence records the existing compatible VPS result without changing authentication or production configuration."
+}

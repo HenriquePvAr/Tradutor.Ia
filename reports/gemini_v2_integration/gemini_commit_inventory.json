@@ -1,0 +1,12 @@
+{
+  "old_commits_reviewed": 11,
+  "cherry_picked": 0,
+  "selected_capabilities": [
+    "authorized_mask_generator_v2",
+    "safe_compositing_contract",
+    "hard_clean_remote_client",
+    "seam_and_outside_mask_quality_evidence"
+  ],
+  "excluded": ["old_root_research_package", "browser_worker_infrastructure", "UI_changes"],
+  "source_head": "c75db107c92d48a89a2410756fda10dc6ccd159a"
+}

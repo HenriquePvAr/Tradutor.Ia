@@ -1,0 +1,7 @@
+{
+  "evaluator": "deterministic_fail_closed",
+  "candidate_count": 2,
+  "candidate_ids": ["case02", "case03"],
+  "rejected_or_review_ids": ["case01", "case01_crop"],
+  "reason": "case02 and case03 satisfy all recorded quality gates after explicit technical review metadata; unresolved cases remain review-only."
+}

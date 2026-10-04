@@ -1,0 +1,9 @@
+{
+  "base_reorganized_commit": "e16a99ab237f6c349951ebe7eb749e6ae264a805",
+  "source_gemini_commit": "c75db107c92d48a89a2410756fda10dc6ccd159a",
+  "common_ancestor": "04858724e98f5c56a2e12d070b1c833e4821101b",
+  "cherry_picks": 0,
+  "working_branch": "research/gemini-safe-fallback-v2-integration",
+  "old_gemini_branch_merged": false,
+  "production_checkout_modified": false
+}

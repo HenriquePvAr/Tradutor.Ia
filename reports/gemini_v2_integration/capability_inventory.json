@@ -1,0 +1,7 @@
+{
+  "package": "yomu.clean.gemini_fallback",
+  "implemented": ["authorized_mask", "quality", "remote_client"],
+  "preserved_gates": ["AUTHORIZED_MASK_GENERATOR_V2", "SEAM_PASS_THRESHOLD_0_80", "OUTSIDE_MASK_CHANGED_PIXELS_EQ_0", "SFX_FIREWALL"],
+  "not_implemented": ["Drive_upload", "new_browser_auth", "UI_output_modes"],
+  "status": "PORTED_SELECTIVELY"
+}

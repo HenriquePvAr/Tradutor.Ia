@@ -1,0 +1,9 @@
+{
+  "command": "python -m pytest -q",
+  "passed": 5717,
+  "skipped": 141,
+  "xfailed": 2,
+  "subtests_passed": 730,
+  "warnings": 1,
+  "status": "PASS"
+}

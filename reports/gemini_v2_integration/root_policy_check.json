@@ -1,0 +1,6 @@
+{
+  "implementation_modules_at_repository_root": false,
+  "new_modules_under_yomu": true,
+  "legacy_research_imports_in_new_package": false,
+  "status": "PASS"
+}

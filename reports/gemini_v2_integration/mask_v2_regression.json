@@ -1,0 +1,7 @@
+{
+  "deterministic": true,
+  "case02": {"confidence": 0.834085, "coverage": 0.05396094, "core_pixels": 15894, "fringe_pixels": 18641, "effective_pixels": 34535, "expansion_ratio": 2.172833, "sha256": "4aa067a22664efa1d27fb55c9034127414a4ca0b810e31d3ef9559c4e998534a"},
+  "case03": {"confidence": 0.886704, "coverage": 0.01150583, "sha256": "2f376e74e8f2916932823f88d1b1a471609f370f173fb5a57621a8d630cd6a82"},
+  "case01": {"status": "REVIEW", "reasons": ["TEXT_TOUCHING_LINE_ART", "GLYPH_MASK_OVEREXPANSION"]},
+  "case01_crop": {"status": "REVIEW", "reasons": ["BACKGROUND_TEXTURE_COMPLEX", "GLYPH_MASK_LOW_SUPPORT", "TEXT_TOUCHING_LINE_ART", "EMPTY_OUTLINED_MASK"]}
+}

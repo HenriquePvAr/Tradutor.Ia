@@ -1,0 +1,6 @@
+{
+  "mask_generator": {"module": "yomu.clean.gemini_fallback.authorized_mask", "version": "AUTHORIZED_MASK_GENERATOR_V2"},
+  "quality_metadata": {"module": "yomu.clean.gemini_fallback.quality", "version": "SAFE_CLEAN_QUALITY_V1"},
+  "remote_client": {"module": "yomu.clean.gemini_fallback.remote_client", "default_transport": "loopback_http"},
+  "status": "READY_FOR_RECONCILIATION_REVIEW"
+}

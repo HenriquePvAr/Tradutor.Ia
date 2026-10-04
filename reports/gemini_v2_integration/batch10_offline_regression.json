@@ -1,0 +1,10 @@
+{
+  "dataset": "frozen_batch10_job_records",
+  "total": 10,
+  "recomputed_v2_pass": 7,
+  "reconstructed_v1_pass_from_job_records": 4,
+  "previously_reported_v1_pass": 5,
+  "previously_reported_v2_pass": 8,
+  "discrepancy": "The narrative report does not match the ten recorded job IDs; this report preserves both values and uses the reconstructed records for the new baseline.",
+  "delta_on_reconstructed_records": 3
+}

@@ -1,0 +1,7 @@
+{
+  "version": "SAFE_CLEAN_QUALITY_V1",
+  "required_fields": ["status", "transport_status", "mask_status", "alignment_status", "outside_mask_changed_pixels", "seam_status", "ocr_removal_status", "sfx_status", "non_target_status", "visual_quality", "visual_quality_provenance"],
+  "promotion_rule": "all required gates pass",
+  "fail_closed": true,
+  "training_candidate_evaluator": "yomu.clean.gemini_fallback.quality.evaluate_training_candidate"
+}

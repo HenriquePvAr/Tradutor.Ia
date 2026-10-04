@@ -1,0 +1,6 @@
+{
+  "case02": {"status": "COMPLETED", "transport_status": "PASS", "mask_status": "PASS", "alignment_status": "PASS", "seam_status": "SEAM_PASS", "outside_mask_changed_pixels": 0, "ocr_text_removal": "PASS", "sfx_preserved": "NOT_APPLICABLE", "non_target_text_preserved": "PASS", "visual_quality": "ACCEPTABLE", "visual_quality_provenance": "OWNER_DELEGATED_TO_CODEX_TECHNICAL_REVIEW"},
+  "case03": {"status": "COMPLETED", "transport_status": "PASS", "mask_status": "PASS", "alignment_status": "PASS", "seam_status": "SEAM_PASS", "outside_mask_changed_pixels": 0, "ocr_before": ["ARE YOU LOST,", "BOY?"], "ocr_after": [], "ocr_text_removal": "PASS", "sfx_preserved": "NOT_APPLICABLE", "non_target_text_preserved": "PASS", "visual_quality": "ACCEPTABLE", "visual_quality_provenance": "OWNER_DELEGATED_TO_CODEX_TECHNICAL_REVIEW"},
+  "case01": {"status": "REVIEW", "training_candidate": false},
+  "case01_crop": {"status": "REVIEW", "training_candidate": false}
+}

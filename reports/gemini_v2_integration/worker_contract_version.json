@@ -1,0 +1,7 @@
+{
+  "client": "HardCleanRemoteClient",
+  "contract": "loopback_http_submit_status_wait_download",
+  "new_authentication_flow": false,
+  "existing_vps_worker_reused": true,
+  "production_worker_reconfiguration": false
+}

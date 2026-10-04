@@ -1,0 +1,7 @@
+{
+  "base": "e16a99ab237f6c349951ebe7eb749e6ae264a805",
+  "old_line": "c75db107c92d48a89a2410756fda10dc6ccd159a",
+  "common_ancestor": "04858724e98f5c56a2e12d070b1c833e4821101b",
+  "decision": "port_selected_capabilities_only",
+  "reason": "The reorganized base and old Gemini line diverged; blind merge would reintroduce legacy layout."
+}

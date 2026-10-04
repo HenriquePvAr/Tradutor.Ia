@@ -1,0 +1,6 @@
+{
+  "research/gemini_vps_web_worker/authorized_mask.py": "yomu/clean/gemini_fallback/authorized_mask.py",
+  "research/gemini_vps_web_worker/quality_metadata.py": "yomu/clean/gemini_fallback/quality.py",
+  "research/gemini_vps_web_worker/remote_client.py": "yomu/clean/gemini_fallback/remote_client.py",
+  "old_worker_entrypoint": "excluded_until_runtime_contract_is_explicit"
+}
