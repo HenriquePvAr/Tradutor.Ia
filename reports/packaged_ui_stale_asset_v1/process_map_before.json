@@ -1,0 +1,15 @@
+{
+  "preexisting_backend": {
+    "pid": 13440,
+    "parent_pid": 16440,
+    "name": "python.exe",
+    "executable": "C:/Users/henri/AppData/Local/Programs/Python/Python311/python.exe",
+    "command_line": "C:/Users/henri/AppData/Local/Programs/Python/Python311/python.exe -s C:/Projetos/Tradutor.Ia/app_ui.py",
+    "source_checkout": "C:/Projetos/Tradutor.Ia"
+  },
+  "validation_exe_before_fix": {
+    "pid": 57224,
+    "path": "C:/Users/henri/YomuExperimental/ui-packaged-smoke-v1/dist/YomuSekai/YomuSekai.exe"
+  },
+  "external_webview2": "not modified"
+}

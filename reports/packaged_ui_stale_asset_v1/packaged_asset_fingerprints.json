@@ -1,0 +1,11 @@
+{
+  "dist": "C:/Users/henri/YomuExperimental/ui-packaged-smoke-v1/dist/YomuSekai",
+  "bundle_assets_match_source": true,
+  "assets": {
+    "_internal/ui/ui_shell.html": {"sha256":"4B34E2E2AC2010B1FFE5561DED82776C798523FB612E43EA743CFEF542A20AF3","bytes":121459},
+    "_internal/static/tradutor_ui.js": {"sha256":"9765BD0249086AD3382A4E51C08A899D5B3BB77FCC816C60CD5A92CB61E6938B","bytes":541656},
+    "_internal/static/tradutor_ui.css": {"sha256":"A24C4425C869825DBD822A842E431A0B73FF3D4A3D192399638A8DDC219D18B8","bytes":282270}
+  },
+  "bundle_contains_new_ui": true,
+  "conclusion": "Not stale packaged assets."
+}

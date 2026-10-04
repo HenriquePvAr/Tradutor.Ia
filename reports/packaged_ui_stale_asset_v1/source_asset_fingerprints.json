@@ -1,0 +1,11 @@
+{
+  "source_checkout": "C:/Users/henri/.codex/worktrees/ui-packaged-desktop-smoke-v1/Tradutor.Ia",
+  "source_head": "84a937de1d40b896c31a7269dc86c435bbec9441",
+  "assets": {
+    "ui/ui_shell.html": {"sha256":"4B34E2E2AC2010B1FFE5561DED82776C798523FB612E43EA743CFEF542A20AF3","bytes":121459},
+    "static/tradutor_ui.js": {"sha256":"9765BD0249086AD3382A4E51C08A899D5B3BB77FCC816C60CD5A92CB61E6938B","bytes":541656},
+    "static/tradutor_ui.css": {"sha256":"A24C4425C869825DBD822A842E431A0B73FF3D4A3D192399638A8DDC219D18B8","bytes":282270}
+  },
+  "new_ui_strings_present": ["O que você quer gerar?","Tradução pronta","Apenas Clean","Completo","Mais opções"],
+  "legacy_strings_present_only_in_hidden_compatibility_markup": ["Perfil de saída","Automático","QC Profissional","Formato de saída"]
+}

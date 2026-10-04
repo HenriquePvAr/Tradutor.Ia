@@ -1,0 +1,9 @@
+{
+  "status": "IMPLEMENTED",
+  "file": "yomu/desktop/app.py",
+  "change": "Removed healthy-port reuse; desktop now rejects any occupied port before spawning its owned child backend.",
+  "safety_property": "A frozen EXE cannot silently render another checkout's UI.",
+  "test_added": "test_desktop_does_not_reuse_preexisting_healthy_backend",
+  "ux_changed": false,
+  "provider_behavior_changed": false
+}

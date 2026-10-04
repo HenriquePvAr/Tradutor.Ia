@@ -61,6 +61,17 @@ def test_desktop_url_is_loopback():
     assert desktop_app._desktop_url("127.0.0.1", 8080).endswith("/?desktop=1")
 
 
+def test_desktop_does_not_reuse_preexisting_healthy_backend(monkeypatch):
+    monkeypatch.setattr(desktop_app, "_healthy", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(desktop_app, "_port_free", lambda *_args, **_kwargs: False)
+    try:
+        desktop_app._start_server("127.0.0.1", 8080)
+    except RuntimeError as exc:
+        assert "não reutiliza backends preexistentes" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("desktop must reject a pre-existing healthy backend")
+
+
 def test_desktop_launcher_has_webview2_and_health_lifecycle():
     source = Path("yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "gui=\"edgechromium\"" in source

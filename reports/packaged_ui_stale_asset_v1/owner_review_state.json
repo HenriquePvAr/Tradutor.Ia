@@ -1,0 +1,9 @@
+{
+  "provenance": "OWNER_PHYSICAL_UI_REVIEW",
+  "owner_window_opened": true,
+  "owner_window_pid": 61372,
+  "owner_confirmation": "AWAITING_OWNER_PHYSICAL_CONFIRMATION",
+  "expected_first_view": ["O que você quer gerar?","Tradução pronta","Apenas Clean","Completo","Mais opções"],
+  "automatic_interaction": "none",
+  "physical_pass_claimed": false
+}

@@ -1,0 +1,13 @@
+{
+  "status": "PASS",
+  "python": "3.11.9",
+  "pyinstaller": "6.22.2",
+  "duration_seconds": 192.78,
+  "exit_code": 0,
+  "exe": "C:/Users/henri/YomuExperimental/ui-packaged-smoke-v1/dist/YomuSekai/YomuSekai.exe",
+  "size_bytes": 33226854,
+  "sha256": "D4F54E2FCAF96861FFE1815D11772CBB9F81CE17406C061078CC255C628E512A",
+  "new_backend_child_pid": 60860,
+  "new_backend_parent_pid": 61372,
+  "http_new_ui": true
+}

@@ -1,0 +1,20 @@
+{
+  "mission": "YOMU_PACKAGED_UI_STALE_ASSET_ROOT_CAUSE_AND_FIX_V1",
+  "mission_result": "AWAITING_OWNER_CONFIRMATION",
+  "base_head": "84a937d",
+  "root_cause": "STALE_BACKEND_PORT",
+  "preexisting_8080_listener": true,
+  "old_backend_reused": true,
+  "source_has_new_ui": true,
+  "packaged_bundle_has_new_ui": true,
+  "backend_http_serves_new_ui_after_fix": true,
+  "webview2_cache_was_cause": false,
+  "rebuild_required": true,
+  "new_exe": "C:/Users/henri/YomuExperimental/ui-packaged-smoke-v1/dist/YomuSekai/YomuSekai.exe",
+  "new_exe_sha256": "D4F54E2FCAF96861FFE1815D11772CBB9F81CE17406C061078CC255C628E512A",
+  "owner_window_opened": true,
+  "physical_ui": "AWAITING_OWNER",
+  "worktree_clean": "pending_commit",
+  "push": "NO",
+  "provenance": "OWNER_PHYSICAL_UI_REVIEW"
+}

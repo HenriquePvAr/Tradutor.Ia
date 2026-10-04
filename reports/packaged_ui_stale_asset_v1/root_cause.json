@@ -1,0 +1,6 @@
+{
+  "root_cause": "STALE_BACKEND_PORT",
+  "evidence": "desktop._start_server returned None whenever any healthy process answered on 8080; the owner-visible EXE then navigated to the old C:/Projetos/Tradutor.Ia/app_ui.py backend.",
+  "not_causes": ["STALE_PACKAGED_ASSETS","WRONG_RESOURCE_PATH","WEBVIEW2_CACHE","STALE_APPDATA_COPY","WRONG_BUILD_SOURCE"],
+  "physical_ui_failure_explanation": "The old backend served the legacy selector while the new bundle itself matched the source hashes."
+}

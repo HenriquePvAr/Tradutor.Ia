@@ -1143,10 +1143,12 @@ def _port_free(host: str, port: int) -> bool:
 
 
 def _start_server(host: str, port: int, *, auth_diagnostics: bool = False) -> subprocess.Popen[bytes] | None:
-    if _healthy(host, port):
-        return None
     if not _port_free(host, port):
-        raise RuntimeError(f"A porta {host}:{port} está ocupada por outro serviço.")
+        # A desktop shell must never attach to an arbitrary healthy process on
+        # its configured port.  Doing so can silently render a stale checkout's
+        # UI while the frozen executable appears to have started successfully.
+        # Only the child process spawned below is a valid runtime owner.
+        raise RuntimeError(f"A porta {host}:{port} está ocupada por outro serviço; o desktop não reutiliza backends preexistentes.")
     python = Path(sys.executable)
     if not python.exists():
         raise RuntimeError("Python do ambiente beta não encontrado.")

@@ -1,0 +1,13 @@
+{
+  "preexisting_8080_listener": true,
+  "listener_pid": 13440,
+  "listener_source": "C:/Projetos/Tradutor.Ia/app_ui.py",
+  "old_backend_reused": true,
+  "old_http_ui": true,
+  "old_http_contains_new_ui": false,
+  "old_http_contains_legacy_ui": true,
+  "after_fix_port_free_before_start": true,
+  "after_fix_listener_pid": 60860,
+  "after_fix_listener_parent": 61372,
+  "after_fix_listener_executable": "C:/Users/henri/YomuExperimental/ui-packaged-smoke-v1/dist/YomuSekai/YomuSekai.exe"
+}

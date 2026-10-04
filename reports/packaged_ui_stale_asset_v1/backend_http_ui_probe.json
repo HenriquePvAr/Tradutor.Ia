@@ -1,0 +1,10 @@
+{
+  "url": "http://127.0.0.1:8080/?desktop=1",
+  "status": 200,
+  "new_ui_strings_present": true,
+  "legacy_strings_present_in_response": true,
+  "legacy_markup_visibility": "hidden compatibility field in ui_shell.html, not the primary plan surface",
+  "listener_owned_by": "C:/Users/henri/YomuExperimental/ui-packaged-smoke-v1/dist/YomuSekai/YomuSekai.exe",
+  "listener_pid": 60860,
+  "response_length": 163707
+}

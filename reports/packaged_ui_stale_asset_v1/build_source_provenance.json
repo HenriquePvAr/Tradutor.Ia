@@ -1,0 +1,10 @@
+{
+  "build_cwd": "C:/Users/henri/.codex/worktrees/ui-packaged-desktop-smoke-v1/Tradutor.Ia",
+  "git_root": "C:/Users/henri/.codex/worktrees/ui-packaged-desktop-smoke-v1/Tradutor.Ia",
+  "branch": "validation/ui-packaged-desktop-smoke-v1",
+  "head": "84a937de1d40b896c31a7269dc86c435bbec9441",
+  "spec": "C:/Users/henri/.codex/worktrees/ui-packaged-desktop-smoke-v1/Tradutor.Ia/packaging/tradutor_ia.spec",
+  "spec_root_resolution": "ROOT resolved to the worktree because desktop_app.py exists at SPECPATH-derived root",
+  "source_paths_collected": ["ui", "static", "assets/branding", "config/public-runtime.json", "desktop_app.py", "yomu/*"],
+  "source_is_expected_lineage": true
+}

@@ -1,0 +1,6 @@
+{
+  "focused_status": "PASS",
+  "focused_result": "170 passed, 15 subtests passed in 21.28s",
+  "tests": ["tests/test_desktop_app.py","tests/test_output_presets_ui.py","tests/test_output_plan.py","tests/test_processing_surface_ui.py","tests/test_translate_only_completion.py","tests/test_job_completion_summary.py","tests/test_history_format_labels.py","tests/test_canonical_output_naming.py","tests/test_selective_pipeline_execution.py"],
+  "real_provider_calls": 0
+}

@@ -1,0 +1,6 @@
+{
+  "base_head": "84a937de1d40b896c31a7269dc86c435bbec9441",
+  "branch": "validation/ui-packaged-desktop-smoke-v1",
+  "worktree_clean_before_fix": true,
+  "source_ux_base": "0d4f79c"
+}
