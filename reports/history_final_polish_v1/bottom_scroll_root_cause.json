@@ -1,0 +1,15 @@
+{
+  "bug": "A - trailing blank scroll after last content",
+  "reproduced": "NO (not reproducible in bdf7b83)",
+  "method": "Measured the real scroll owner (main) in the running app with controlled content injected into #histList (DOM-only, no server mutation): 12 flat cards, and the real grouped structure with a COLLAPSED 'Capitulo local' folder as the last group.",
+  "measurements": {
+    "flat_cards_trailing_px": 32,
+    "flat_cards_note": "equals main padding-bottom:32px (design token, acceptable 16-48px)",
+    "grouped_collapsed_last_folder_trailing_px": 16,
+    "collapsed_cfBody_height_px": 0,
+    "double_scroll_docElement": 0,
+    "scroll_owner": "main (overflow-y:auto)"
+  },
+  "conclusion": "No artificial trailing space. The collapsed last folder correctly has 0 height (max-height:0/overflow:hidden); only the normal 16-32px design padding remains. The excessive trailing scroll the owner saw on an EARLIER build was already resolved by the prior scroll fixes present in bdf7b83 (incremental selection, absolute checkbox, no :has grid reflow, lastUserHistoryScrollAt guard). No code change made; a blind change risked hiding content (forbidden).",
+  "change_made": "NONE (verified clean)"
+}

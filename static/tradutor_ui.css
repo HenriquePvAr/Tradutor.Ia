@@ -581,9 +581,16 @@
   }
   /* Selection checkbox: always in the DOM but absolutely positioned (no grid column) and hidden
      until selection mode is active, so entering/leaving the mode causes no reflow -> no scroll jump. */
-  .history-select-control{position:absolute; top:9px; left:9px; z-index:2; display:none; align-items:center; justify-content:center; width:24px; height:24px; border-radius:4px; background:rgba(20,17,13,.78); cursor:pointer;}
+  /* Selection checkbox: a clear custom box (empty -> gold with a ✓ when checked) so "selected"
+     is unmistakable, not a tiny native tick. The real <input> stays for keyboard/screen-reader
+     but is visually hidden on top of the box for the click/focus target. */
+  .history-select-control{position:absolute; top:9px; left:9px; z-index:2; display:none; align-items:center; justify-content:center; width:26px; height:26px; border-radius:6px; border:2px solid rgba(239,231,216,.55); background:rgba(20,17,13,.85); cursor:pointer; transition:background .12s,border-color .12s;}
   .hist-list.selection-active .history-select-control{display:flex;}
-  .history-select-control input{width:16px; height:16px; accent-color:var(--gold); cursor:pointer;}
+  .history-select-control input{position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:pointer;}
+  .history-select-control::after{content:''; width:11px; height:6px; border-left:2.5px solid #14110d; border-bottom:2.5px solid #14110d; transform:rotate(-45deg) translateY(-1px); opacity:0; transition:opacity .12s;}
+  .history-select-control:has(input:checked){background:var(--gold); border-color:var(--gold);}
+  .history-select-control:has(input:checked)::after{opacity:1;}
+  .history-select-control:has(input:focus-visible){outline:2px solid var(--gold); outline-offset:2px;}
   /* Selected card: discreet gold accent -- never the strong red that reads as an error (red is
      reserved for the destructive trash action). */
   .hist-item.history-item-selected{border-color:rgba(201,162,39,.6); background:rgba(201,162,39,.08); box-shadow:inset 0 0 0 1px rgba(201,162,39,.45);}

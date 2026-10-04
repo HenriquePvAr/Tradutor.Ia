@@ -1,0 +1,10 @@
+{
+  "bug": "C - login/startup",
+  "reproduced": "NO - login contract works",
+  "physical_check": "Running packaged app (127.0.0.1:8080) was UNAUTHENTICATED (data-shell-state=unauthenticated); the official login page was SHOWN (auth-login-page[hidden]=false, .shell hidden) and rendered fully.",
+  "login_render": {"YOMU_SEKAI": true, "tagline": true, "Entrar": true, "email": true, "senha": true, "Lembrar de mim": true, "Criar conta": true, "background_image": "loaded"},
+  "contract": "html:not([data-shell-state=authenticated]) .shell{display:none}; .auth-login-page[hidden]{display:none}. No session -> login shown. Valid persisted session + Lembrar de mim -> may enter app directly (correct, per mission).",
+  "login_assets_bundled": "YES (served from the frozen bundle at /static; background image + auth_ui.js/auth_presentation.js/supabase_auth.js present; login rendered from the running EXE)",
+  "conclusion": "Not a current bug. The official login appears when there is no valid session. The owner's earlier observation was most likely a valid persisted session (Lembrar de mim) correctly entering the app, or an earlier build. Forcing login would break Lembrar de mim (explicitly forbidden). No code change made.",
+  "change_made": "NONE (contract verified correct)"
+}

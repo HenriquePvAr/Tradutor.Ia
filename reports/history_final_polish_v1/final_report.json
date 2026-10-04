@@ -1,0 +1,12 @@
+{
+  "mission": "YOMU_HISTORY_BOTTOM_SCROLL_SELECTION_VISUAL_AND_AUTH_STARTUP_FIX_V1",
+  "mission_result": "AWAITING_OWNER_CONFIRMATION",
+  "base_head": "bdf7b83",
+  "bug_A_trailing_scroll": "NOT REPRODUCIBLE (trailing 16-32px = design padding, flat + grouped/collapsed; already fixed in bdf7b83). No change.",
+  "bug_B_checkbox_visual": "FIXED (custom box: empty -> gold with dark ✓ when checked; card gold border; native input kept hidden for keyboard/screen-reader; focus ring). Verified in-browser.",
+  "bug_C_auth_startup": "NOT A BUG (unauthenticated -> official login shown and fully rendered; assets bundled). No change (forcing login would break Lembrar de mim).",
+  "selected_card_visual": "gold, not red",
+  "bulk_delete": "PRESERVED", "artifact_cards": "PRESERVED (PDF-only -> PDF)",
+  "providers": 0, "secrets": 0, "push": "NO",
+  "owner_review": "AWAITING"
+}
