@@ -1,0 +1,14 @@
+{
+  "executed": true,
+  "method": "Component harness served over http (real tradutor_ui.css + exact shipped preset markup + exact preset interaction JS). The full desktop app was not launched: PyInstaller is not installed in this environment and the backend-served shell needs .env/NVIDIA key.",
+  "verified": {
+    "preset_selector_renders": "PASS (6 cards, 3x2 grid, title/subtitle/description stacked)",
+    "default_selection": "PASS (Tradução pronta selected, hint shown)",
+    "custom_reveal": "PASS (Personalizado reveals the 6 operation checkboxes)",
+    "dependency_ux": "PASS (checking 'Aplicar texto traduzido' auto-marks 'Traduzir textos' and shows 'Também será necessário: traduzir.')",
+    "hidden_custom_by_default": "PASS (bug found + fixed: .output-custom-ops[hidden] rule; custom ops hidden unless Personalizado)"
+  },
+  "bug_found_and_fixed": ".output-custom-ops{display:grid} overrode the [hidden] attribute, leaking the custom checkboxes; fixed with .output-custom-ops[hidden]{display:none}. Caught by browser verification.",
+  "screenshots": ["preset_selector_six_cards", "custom_mode_with_dependency_autoenable"],
+  "note": "JS dependency/preset logic also verified by executing the real shipped functions in node (see preset_tests)."
+}

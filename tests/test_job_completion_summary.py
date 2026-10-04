@@ -218,11 +218,13 @@ def test_completion_ui_copy_and_actions_are_local_artifact_driven():
     assert "fetch(" not in js[js.index("function renderJobCompletion(record)"):js.index("$('#jobCompletionActions')?.addEventListener")]
 
 
-def test_review_count_copy_singular_plural_and_profile_scoping():
+def test_review_count_copy_singular_plural_and_artifact_scoping():
     js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
     assert "count === 1 ? 'item recomendado para revisão.' : 'itens recomendados para revisão.'" in js
-    assert "['final_pdf', 'translated_image', 'clean_image', 'editable_psd', 'quality_report']" in js
-    assert "['final_pdf', 'translated_image']" in js
+    # The finish-screen artifact list is now produced-driven (plan-aware): it shows only
+    # artifacts that were actually generated, in a stable order, never a phantom "Não gerado".
+    assert "const ARTIFACT_DISPLAY_ORDER = ['final_pdf', 'translated_image', 'clean_image'," in js
+    assert "model.artifacts?.[kind]?.available === true" in js
 
 
 def test_completion_renderer_terminal_profiles_and_actions_with_dom_stub():

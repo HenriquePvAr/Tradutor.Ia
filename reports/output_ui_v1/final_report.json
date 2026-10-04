@@ -1,0 +1,28 @@
+{
+  "mission": "YOMU_OUTPUT_PRESETS_CUSTOM_UI_AND_FILTERED_PROGRESS_V1",
+  "mission_result": "PASS (build/desktop smoke BLOCKED: PyInstaller not installed in this env)",
+  "base_head": "b4da199",
+  "work_branch": "feat/output-presets-custom-ui-v1",
+  "push": "NO",
+  "ui": {
+    "preset_selector": "6 cards (traducao_pronta default) + Personalizado with operation checkboxes",
+    "preset_to_outputplan": "PASS (backend normalize is source of truth; proven by tests)",
+    "custom_dependencies": "PASS (typeset=>translate, psd/qc deps, pdf dropped w/o page producer; UX auto-enable + hint; backend revalidates)",
+    "progress_plan_aware": "PASS (translate/render/pdf stages hidden by effective_operations; not-requested never shown as error)",
+    "finish_screen": "PASS (produced-artifact-driven; translate-only shows Tradução; zero phantom buttons/rows)",
+    "history": "PASS (shows output_plan_label; legacy inferred; retry preserves plan via stored config)",
+    "no_internal_terms": "PASS (no gemini/oracle/chrome/provider/typeset in the visible selector)",
+    "backward_compat": "PASS (legacy payloads without output_plan unchanged; profile/format fields kept)"
+  },
+  "tests": {
+    "new": "tests/test_output_presets_ui.py (15) + node logic verification of shipped closePlanDeps/presets",
+    "updated": "tests/test_job_completion_summary.py (finish-screen now produced-driven)",
+    "focused": "see backend_regression.json"
+  },
+  "build_smoke": "BLOCKED: PyInstaller not installed. Mitigations: node --check static/tradutor_ui.js OK; fresh-process import of ui modules OK; .spec bundles yomu via collect_submodules; UI change adds no new Python imports.",
+  "desktop_smoke": "BLOCKED: same (no frozen binary without PyInstaller). Component UI verified in-browser instead.",
+  "security": {"secrets": 0, "large_files": 0, "remote_provider_calls": 0, "production_mutations": 0},
+  "root_policy": "PASS (no new root modules; UI files in ui/ + static/; backend in yomu/)",
+  "codex_worktrees_touched": "NO",
+  "next_step": "Discord observability (per roadmap)."
+}

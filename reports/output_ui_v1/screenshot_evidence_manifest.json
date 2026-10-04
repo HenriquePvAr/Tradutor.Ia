@@ -1,0 +1,7 @@
+{
+  "note": "Screenshots captured in-session via the built-in browser against a component harness (real CSS + shipped markup/JS). Not versioned (ephemeral session blobs).",
+  "shots": [
+    {"name": "preset_selector_six_cards", "shows": "O que você quer gerar? — 6 cards in a 3x2 grid, Tradução pronta selected, custom hidden"},
+    {"name": "custom_mode_with_dependency_autoenable", "shows": "Personalizado selected, operation checkboxes revealed, 'Aplicar texto traduzido' checked auto-highlights 'Traduzir textos'"}
+  ]
+}

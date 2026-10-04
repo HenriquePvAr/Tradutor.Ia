@@ -353,6 +353,62 @@
           </div>
 
           <div class="field">
+            <fieldset class="output-profile-field" id="outputPlanField">
+              <legend>O que você quer gerar?</legend>
+              <div class="output-plan-grid" id="outputPlanOptions" role="radiogroup" aria-label="O que você quer gerar">
+                <label class="output-profile-card output-plan-card selected" data-output-plan-card="traducao_pronta">
+                  <input type="radio" name="output_plan" value="traducao_pronta" checked aria-describedby="planDescTraducaoPronta">
+                  <span class="output-profile-card-title">Tradução pronta</span>
+                  <span class="output-profile-card-subtitle">Resultado pronto para ler</span>
+                  <span class="output-profile-card-description" id="planDescTraducaoPronta">Traduz, remove o texto original, aplica a tradução e gera o PDF final.</span>
+                </label>
+                <label class="output-profile-card output-plan-card" data-output-plan-card="apenas_clean">
+                  <input type="radio" name="output_plan" value="apenas_clean" aria-describedby="planDescApenasClean">
+                  <span class="output-profile-card-title">Apenas Clean</span>
+                  <span class="output-profile-card-subtitle">Imagens limpas</span>
+                  <span class="output-profile-card-description" id="planDescApenasClean">Remove o texto original e entrega as imagens limpas, sem traduzir.</span>
+                </label>
+                <label class="output-profile-card output-plan-card" data-output-plan-card="apenas_traducao">
+                  <input type="radio" name="output_plan" value="apenas_traducao" aria-describedby="planDescApenasTraducao">
+                  <span class="output-profile-card-title">Apenas tradução</span>
+                  <span class="output-profile-card-subtitle">Só o texto traduzido</span>
+                  <span class="output-profile-card-description" id="planDescApenasTraducao">Traduz os textos encontrados sem modificar as imagens.</span>
+                </label>
+                <label class="output-profile-card output-plan-card" data-output-plan-card="traducao_clean">
+                  <input type="radio" name="output_plan" value="traducao_clean" aria-describedby="planDescTraducaoClean">
+                  <span class="output-profile-card-title">Tradução + Clean</span>
+                  <span class="output-profile-card-subtitle">Para diagramar depois</span>
+                  <span class="output-profile-card-description" id="planDescTraducaoClean">Traduz os textos e gera as imagens limpas, sem aplicar o texto traduzido.</span>
+                </label>
+                <label class="output-profile-card output-plan-card" data-output-plan-card="profissional">
+                  <input type="radio" name="output_plan" value="profissional" aria-describedby="planDescProfissional">
+                  <span class="output-profile-card-title">Profissional</span>
+                  <span class="output-profile-card-subtitle">Completo + revisão</span>
+                  <span class="output-profile-card-description" id="planDescProfissional">Resultado completo com PSD editável, relatório de qualidade e revisão.</span>
+                </label>
+                <label class="output-profile-card output-plan-card" data-output-plan-card="personalizado">
+                  <input type="radio" name="output_plan" value="personalizado" aria-describedby="planDescPersonalizado">
+                  <span class="output-profile-card-title">Personalizado</span>
+                  <span class="output-profile-card-subtitle">Você escolhe as etapas</span>
+                  <span class="output-profile-card-description" id="planDescPersonalizado">Escolha manualmente quais etapas deseja executar.</span>
+                </label>
+              </div>
+              <fieldset class="output-custom-ops" id="outputCustomOps" hidden>
+                <legend class="sr-only">Etapas personalizadas</legend>
+                <label class="custom-op"><input type="checkbox" id="opTranslate" value="translate"> Traduzir textos</label>
+                <label class="custom-op"><input type="checkbox" id="opClean" value="clean"> Gerar imagens limpas</label>
+                <label class="custom-op"><input type="checkbox" id="opTypeset" value="typeset"> Aplicar texto traduzido</label>
+                <label class="custom-op"><input type="checkbox" id="opPdf" value="pdf"> Gerar PDF</label>
+                <label class="custom-op"><input type="checkbox" id="opPsd" value="psd"> Gerar PSD profissional</label>
+                <label class="custom-op"><input type="checkbox" id="opQc" value="qc"> Gerar relatório/revisão QC</label>
+              </fieldset>
+              <small class="field-hint" id="outputPlanHint">Traduz, limpa, aplica a tradução e gera o PDF final.</small>
+              <small class="field-hint" id="outputPlanDepHint" hidden></small>
+              <small class="field-hint" id="outputPlanDownloadOnlyHint" hidden>Download-only salva apenas o conteúdo original.</small>
+            </fieldset>
+          </div>
+
+          <div class="field" hidden>
             <fieldset class="output-profile-field" id="outputProfileField">
               <legend>Perfil de saída</legend>
               <div class="output-profile-grid" id="outputProfileOptions" role="radiogroup" aria-label="Perfil de saída">

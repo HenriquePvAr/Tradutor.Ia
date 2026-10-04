@@ -43,6 +43,8 @@
     localMediaSelectionIds: [],
     outputFormat: 'pdf',
     outputProfile: 'automatic',
+    outputPlan: 'traducao_pronta',
+    activeEffectiveOps: null,
     nameDirty: false,
     outputDirty: false,
     providerDirty: false,
@@ -1346,6 +1348,118 @@
   }));
   try { applyOutputProfile(localStorage.getItem(OUTPUT_PROFILE_STORAGE_KEY) || 'automatic'); }
   catch (_) { applyOutputProfile('automatic'); }
+
+  // ---- Output plan presets ("O que você quer gerar?") -------------------------------------
+  // The backend (yomu/runtime/output_plan.py) is the single source of truth: the UI sends a
+  // preset (and, for custom, the chosen operations) and the backend normalizes + validates.
+  // These JS mirrors drive only the on-screen hint and the custom-mode dependency UX.
+  const OUTPUT_PLAN_STORAGE_KEY = 'yomu.outputPlan';
+  const OUTPUT_PLAN_PRESETS = {
+    traducao_pronta: {ops: ['translate', 'clean', 'typeset', 'pdf'], profile: 'automatic',
+      hint: 'Traduz, limpa, aplica a tradução e gera o PDF final.'},
+    apenas_clean: {ops: ['clean'], profile: 'automatic',
+      hint: 'Remove o texto original e entrega as imagens limpas (não traduz).'},
+    apenas_traducao: {ops: ['translate'], profile: 'automatic',
+      hint: 'Traduz os textos sem modificar as imagens; entrega os dados de tradução.'},
+    traducao_clean: {ops: ['translate', 'clean'], profile: 'automatic',
+      hint: 'Traduz e gera as imagens limpas, sem aplicar o texto traduzido.'},
+    profissional: {ops: ['translate', 'clean', 'typeset', 'pdf', 'psd', 'qc'], profile: 'professional_qc',
+      hint: 'Resultado completo com PSD editável, relatório de qualidade e revisão.'},
+    personalizado: {ops: [], profile: 'automatic', hint: 'Escolha manualmente quais etapas deseja executar.'},
+  };
+  const PLAN_REQUIRES = {typeset: ['translate'], psd: ['translate', 'typeset'], qc: ['translate', 'clean', 'typeset']};
+  const PLAN_PAGE_PRODUCERS = ['typeset', 'clean'];
+  const PLAN_OP_ORDER = ['translate', 'clean', 'typeset', 'pdf', 'psd', 'qc'];
+  function closePlanDeps(ops) {
+    const set = new Set(ops);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const op of Array.from(set)) {
+        for (const dep of (PLAN_REQUIRES[op] || [])) {
+          if (!set.has(dep)) { set.add(dep); changed = true; }
+        }
+      }
+    }
+    if (set.has('pdf') && !PLAN_PAGE_PRODUCERS.some(p => set.has(p))) set.delete('pdf');
+    return PLAN_OP_ORDER.filter(op => set.has(op));
+  }
+  function normalizeOutputPlan(value) {
+    const plan = String(value == null ? '' : value).trim().toLowerCase();
+    return Object.prototype.hasOwnProperty.call(OUTPUT_PLAN_PRESETS, plan) ? plan : 'traducao_pronta';
+  }
+  function customCheckedOps() {
+    return PLAN_OP_ORDER.filter(op => $('#op' + op.charAt(0).toUpperCase() + op.slice(1))?.checked);
+  }
+  // Operations the current selection will actually run (dependency-closed), for progress/hint.
+  function effectivePlanOps() {
+    if (appState.outputPlan === 'personalizado') return closePlanDeps(customCheckedOps());
+    return (OUTPUT_PLAN_PRESETS[appState.outputPlan] || {}).ops || [];
+  }
+  function syncCustomOpsUI() {
+    const closed = closePlanDeps(customCheckedOps());
+    const picked = customCheckedOps();
+    const auto = closed.filter(op => !picked.includes(op));
+    PLAN_OP_ORDER.forEach(op => {
+      const box = $('#op' + op.charAt(0).toUpperCase() + op.slice(1));
+      if (!box) return;
+      const isAuto = auto.includes(op);
+      box.closest('.custom-op')?.classList.toggle('op-auto', isAuto);
+    });
+    const dep = $('#outputPlanDepHint');
+    if (dep) {
+      if (auto.length) {
+        const names = {translate: 'traduzir', clean: 'limpar', typeset: 'aplicar o texto', pdf: 'gerar PDF'};
+        dep.textContent = 'Também será necessário: ' + auto.map(o => names[o] || o).join(', ') + '.';
+        dep.hidden = false;
+      } else { dep.hidden = true; dep.textContent = ''; }
+    }
+  }
+  function applyOutputPlan(value, {persist = false} = {}) {
+    const plan = normalizeOutputPlan(value);
+    appState.outputPlan = plan;
+    $$('input[name="output_plan"]').forEach(input => { input.checked = input.value === plan; });
+    $$('[data-output-plan-card]').forEach(card => {
+      const selected = card.dataset.outputPlanCard === plan;
+      card.classList.toggle('selected', selected);
+      card.setAttribute('aria-checked', selected ? 'true' : 'false');
+    });
+    const custom = $('#outputCustomOps');
+    if (custom) custom.hidden = plan !== 'personalizado';
+    const hint = $('#outputPlanHint');
+    if (hint) hint.textContent = (OUTPUT_PLAN_PRESETS[plan] || {}).hint || '';
+    // Keep the (hidden, legacy) output profile consistent so finish-screen/profile code and
+    // backward-compatible payload fields stay coherent; the backend re-derives from the plan.
+    applyOutputProfile((OUTPUT_PLAN_PRESETS[plan] || {}).profile || 'automatic');
+    if (plan === 'personalizado') syncCustomOpsUI(); else { const d = $('#outputPlanDepHint'); if (d) d.hidden = true; }
+    if (persist) { try { localStorage.setItem(OUTPUT_PLAN_STORAGE_KEY, plan); } catch (_) { /* default stays safe */ } }
+    syncOutputPlanField();
+    return plan;
+  }
+  function syncOutputPlanField() {
+    const downloadOnly = appState.selectedMode === 'download_only';
+    const options = $('#outputPlanOptions');
+    if (options) options.setAttribute('aria-disabled', downloadOnly ? 'true' : 'false');
+    $$('input[name="output_plan"]').forEach(input => { input.disabled = downloadOnly; });
+    const custom = $('#outputCustomOps');
+    if (custom) $$('input', custom).forEach(input => { input.disabled = downloadOnly; });
+    const dlHint = $('#outputPlanDownloadOnlyHint');
+    if (dlHint) dlHint.hidden = !downloadOnly;
+    const planHint = $('#outputPlanHint');
+    if (planHint) planHint.hidden = downloadOnly;
+  }
+  $$('input[name="output_plan"]').forEach(input => input.addEventListener('change', event => {
+    applyOutputPlan(event.currentTarget.value, {persist: true});
+    syncSourceFormState();
+    refreshStoredSourceExecutionDraft();
+  }));
+  $$('#outputCustomOps input[type="checkbox"]').forEach(box => box.addEventListener('change', () => {
+    syncCustomOpsUI();
+    syncSourceFormState();
+    refreshStoredSourceExecutionDraft();
+  }));
+  try { applyOutputPlan(localStorage.getItem(OUTPUT_PLAN_STORAGE_KEY) || 'traducao_pronta'); }
+  catch (_) { applyOutputPlan('traducao_pronta'); }
   // Typesetting ON/OFF is only meaningful for PSD (§11): show it only for that format.
   function syncTypesettingField() {
     const field = $('#typesettingModeField');
@@ -1526,6 +1640,7 @@
       ? String(mode) : 'quality';
     appState.selectedMode = value;
     if (typeof syncOutputProfileField === 'function') syncOutputProfileField();
+    if (typeof syncOutputPlanField === 'function') syncOutputPlanField();
     const select = $('#modeSelect');
     if (select) select.value = value;
     const hint = $('#modeHint');
@@ -1683,6 +1798,9 @@
     const full = appState.selectedScope === 'full';
     const maxImages = full ? null : Number(appState.selectedScope === 'custom' ? $('#scopeCustomInput').value : appState.selectedScope);
     const guess = local ? {title: 'Capítulo local', slug: 'capitulo_local'} : guessFromUrl(form.url);
+    // Drive plan-aware progress immediately for the run the user just started.
+    const planOps = typeof effectivePlanOps === 'function' ? effectivePlanOps() : null;
+    appState.activeEffectiveOps = appState.selectedMode === 'download_only' ? [] : planOps;
     const payload = {
       source_type: appState.selectedSourceType,
       output_format: form.outputFormat || 'pdf',
@@ -1692,6 +1810,13 @@
       slug: form.outputSlug || slugify(guess.slug),
       mode: appState.selectedMode === 'download_only' ? 'fast' : appState.selectedMode,
       download_only: appState.selectedMode === 'download_only',
+      // Output plan is the single source of truth: the backend normalizes it and overrides the
+      // legacy output_profile/output_format/translation_enabled fields above. Omitted for
+      // download-only (its own path) so legacy behaviour is untouched.
+      ...(appState.selectedMode === 'download_only' ? {} : {
+        output_plan: appState.outputPlan || 'traducao_pronta',
+        ...(appState.outputPlan === 'personalizado' && Array.isArray(planOps) ? {operations: planOps} : {}),
+      }),
       full,
       max_images: maxImages,
       use_cache: $('#cacheToggle').checked,
@@ -3102,6 +3227,14 @@
     appState.latestJobId = String(runtime.latest?.id || runtime.latest?.job_id || '');
     const incoming = activeRecord || runtime.latest || null;
     const incomingJobId = String(incoming?.id || incoming?.job_id || '');
+    // Keep progress plan-aware: the active job's effective operations drive which pipeline
+    // stages are shown. Download-only has its own stage set; a legacy job without the field
+    // leaves this null so every stage stays visible (unchanged behaviour).
+    if (incoming && Array.isArray(incoming.effective_operations)) {
+      appState.activeEffectiveOps = incoming.effective_operations;
+    } else if (incoming && incoming.download_only === true) {
+      appState.activeEffectiveOps = [];
+    }
     adoptPipelineIdentity(incoming, {
       authoritative: Boolean(activeRecord),
       stage: visibleProgress.stage_key || incoming?.stage || appState.status,
@@ -6480,7 +6613,22 @@
     if (root && !root.hidden && root.dataset.lsMode !== 'bootstrap') clearLoadingSurface();
   }
 
+  // Stages that only run for certain operations. A stage is hidden when the active plan
+  // requests none of its operations, so a translate-only run never shows "Reconstruindo
+  // páginas"/"Preparando documento" and a clean-only run never shows "Tradução". Stages not
+  // listed here (source, download, regions, OCR, verification) run for every plan.
+  const STAGE_OP_REQUIREMENT = {translate: ['translate'], render: ['clean', 'typeset'], pdf: ['pdf']};
+  function applyPlanStageVisibility(ops) {
+    const hasPlan = Array.isArray(ops) && ops.length > 0;
+    $$('.stage-item').forEach(item => {
+      const req = STAGE_OP_REQUIREMENT[item.dataset.stage];
+      // Legacy/unknown plan or a non-optional stage stays visible (never hide by accident).
+      item.hidden = Boolean(hasPlan && req && !req.some(op => ops.includes(op)));
+    });
+  }
+
   function renderProgress(progress, pipelineState = null) {
+    applyPlanStageVisibility(appState.activeEffectiveOps);
     const state = pipelineState || buildPipelineState({status: appState.status}, progress);
     const runtimeKey = state.stage || progress.stage_key || 'idle';
     const key = state.visualStage || visualStageKey(runtimeKey);
@@ -6723,9 +6871,13 @@
     if (!title || !pages || !message || !artifacts || !actions) return;
     [$('#runStatusHuman'), $('#runProgressHuman'), $('#runEtaHuman'), $('#runUpdatedHuman'), $('#runNextHuman')]
       .forEach(node => { if (node) node.hidden = true; });
+    const effOps = Array.isArray(model.effective_operations) ? model.effective_operations : [];
+    const cleanOnly = effOps.length > 0 && effOps.includes('clean')
+      && !effOps.includes('translate') && !effOps.includes('typeset');
     title.textContent = status === 'failed' ? 'Não foi possível concluir a tradução'
       : status === 'cancelled' ? 'Tradução cancelada'
-        : downloadOnly ? 'Download concluído' : 'Tradução concluída';
+        : downloadOnly ? 'Download concluído'
+          : cleanOnly ? 'Imagens limpas prontas' : 'Tradução concluída';
     const showBadge = status === 'review_required' || reviewRequired
       || (status === 'review_completed' && !downloadOnly);
     if (badge) {
@@ -6757,18 +6909,22 @@
         : 'A revisão é recomendada para conferir o resultado.';
     }
     artifacts.replaceChildren();
-    const visibleTypes = downloadOnly ? [] : profile === 'professional_qc'
-      ? ['final_pdf', 'translated_image', 'clean_image', 'editable_psd', 'quality_report']
-      : ['final_pdf', 'translated_image'];
+    // Produced-artifact driven: list only what was actually generated, in a stable order.
+    // No phantom entries, and an operation the plan never requested is simply absent (never
+    // shown as "Não gerado"). Covers clean-only, translate-only (Tradução) and the rest.
+    const ARTIFACT_DISPLAY_ORDER = ['final_pdf', 'translated_image', 'clean_image',
+      'editable_psd', 'quality_report', 'translation_manifest'];
+    const visibleTypes = downloadOnly ? []
+      : ARTIFACT_DISPLAY_ORDER.filter(kind => model.artifacts?.[kind]?.available === true);
     for (const kind of visibleTypes) {
       const artifact = model.artifacts?.[kind] || {};
       const item = document.createElement('li');
-      item.dataset.status = artifact.status || 'missing';
+      item.dataset.status = artifact.status || 'produced';
       const mark = document.createElement('span');
       mark.setAttribute('aria-hidden', 'true');
-      mark.textContent = artifact.available === true ? '✓' : '•';
+      mark.textContent = '✓';
       const label = document.createElement('span');
-      label.textContent = `${artifact.label || kind} — ${artifact.available === true ? 'Pronto' : 'Não gerado'}`;
+      label.textContent = `${artifact.label || kind} — Pronto`;
       item.append(mark, label);
       artifacts.appendChild(item);
     }
@@ -7324,8 +7480,11 @@
     return fmt === 'psd' ? 'PSD' : fmt === 'png' ? 'PNG' : 'PDF';
   }
   function historyTypeFormatLabel(record) {
-    const type = record && record.download_only === true ? 'Download' : 'Tradução';
-    return `${type} · ${outputFormatLabel(record)}`;
+    if (record && record.download_only === true) return 'Download';
+    // Show the output mode the job was run under; legacy jobs carry an inferred plan label.
+    const planLabel = record && typeof record.output_plan_label === 'string' ? record.output_plan_label.trim() : '';
+    if (planLabel) return planLabel;
+    return `Tradução · ${outputFormatLabel(record)}`;
   }
   function renderHistoryCard(record) {
     const title = record.chapter_name || record.slug || 'Capítulo';

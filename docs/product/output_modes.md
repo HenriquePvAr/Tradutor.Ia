@@ -1,9 +1,37 @@
 # Modos de saída e pipeline seletivo
 
-> Estado: os **cinco modos executam de verdade** (provados por testes E2E herméticos):
-> `Apenas Clean`, `Apenas tradução`, `Tradução + Clean`, `Tradução pronta` e `Profissional`.
-> Falta apenas a superfície de UI de presets (próxima missão). Base verificada: `e16a99a`.
-> Revisado em: 2026-10-03.
+> Estado: os **cinco modos executam de verdade** e agora têm **interface de presets**:
+> `Tradução pronta`, `Apenas Clean`, `Apenas tradução`, `Tradução + Clean`, `Profissional`
+> e `Personalizado`. Base verificada: `b4da199`. Revisado em: 2026-10-04.
+
+## Interface — "O que você quer gerar?"
+
+A tela de nova tradução tem um seletor de cartões com seis opções. Cada preset envia um
+`output_plan` no payload; o backend (`yomu/runtime/output_plan.py`) é a **única fonte de
+verdade** e normaliza/valida o plano, sobrepondo os campos legados
+(`output_profile`/`output_format`/`translation_enabled`).
+
+| Cartão | Envia | Operações efetivas |
+| --- | --- | --- |
+| Tradução pronta (padrão) | `output_plan=traducao_pronta` | translate, clean, typeset, pdf |
+| Apenas Clean | `output_plan=apenas_clean` | clean (0 provedor, 0 YK) |
+| Apenas tradução | `output_plan=apenas_traducao` | translate (dados de tradução) |
+| Tradução + Clean | `output_plan=traducao_clean` | translate, clean |
+| Profissional | `output_plan=profissional` | translate, clean, typeset, pdf, psd, qc |
+| Personalizado | `output_plan=personalizado` + `operations[]` | o que o usuário marcar (com dependências) |
+
+- **Personalizado** revela caixas de seleção (traduzir / imagens limpas / aplicar texto /
+  PDF / PSD / QC). Dependências são aplicadas e explicadas ("Também será necessário:
+  traduzir."); a etapa auto-adicionada aparece em destaque. O backend revalida.
+- **Progresso plan-aware**: etapas não solicitadas não aparecem (um `Apenas tradução` não
+  mostra "Reconstruindo páginas"/"Preparando documento"; um `Apenas Clean` não mostra
+  "Tradução"). Dirigido por `effective_operations`.
+- **Tela final orientada por artefatos produzidos** (`completion_summary.artifacts` com
+  `available`): lista só o que foi gerado (sem botão/linha fantasma). `Apenas tradução`
+  mostra "Tradução" (o arquivo `translation/translation.json`).
+- **Histórico** mostra o modo (ex.: "Apenas Clean"); jobs legados exibem o modo inferido.
+- **Sem termos internos** na escolha (nada de Gemini/Oracle/Chrome/provider/typeset).
+  Download-only permanece como opção separada em "Modo de processamento".
 
 ## O que o usuário escolhe
 

@@ -1,0 +1,16 @@
+{
+  "mission": "YOMU_OUTPUT_PRESETS_CUSTOM_UI_AND_FILTERED_PROGRESS_V1",
+  "base_head": "b4da199",
+  "audited_at": "2026-10-04",
+  "existing_output_controls": [
+    {"file": "ui/ui_shell.html", "component": "#outputProfileField (Perfil de saída)", "controls": "automatic / professional_qc cards", "backend_field": "output_profile", "decision": "keep (hidden, derived from preset) for backward-compat + existing tests"},
+    {"file": "ui/ui_shell.html", "component": "#outputFormatSelect (Formato de saída)", "controls": "pdf/png/psd", "backend_field": "output_format", "decision": "kept in DOM (derived from preset); backend re-derives from output_plan"},
+    {"file": "ui/ui_shell.html", "component": "#typesettingModeField (Diagramação)", "controls": "on/off (PSD)", "decision": "unchanged (hidden unless PSD)"},
+    {"file": "ui/ui_shell.html", "component": "#modeSelect (Modo de processamento)", "controls": "quality / download_only", "decision": "keep download_only as a separate quick action (Stage 16); presets disabled when download_only"},
+    {"file": "ui/ui_shell.html", "component": "progress stage-items", "controls": "fixed list", "decision": "made plan-aware (hide translate/render/pdf by effective_operations)"},
+    {"file": "static/tradutor_ui.js", "component": "renderJobCompletion finish screen", "controls": "profile-based artifact list", "decision": "replaced with produced-artifact-driven list (no phantoms)"}
+  ],
+  "redundant_overlapping_axes": ["output_profile", "output_format", "download_only-in-modeSelect"],
+  "consolidation": "Added one primary selector 'O que você quer gerar?' (6 preset cards + custom). It is the single visible output control; the overlapping profile/format fields are hidden and derived (backend normalizes from output_plan). download_only stays separate.",
+  "default_mode": "traducao_pronta (== legacy automatic; unchanged default behaviour)"
+}

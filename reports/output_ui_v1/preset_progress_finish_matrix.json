@@ -1,0 +1,35 @@
+{
+  "preset_mapping": {
+    "traducao_pronta": {"output_plan": "traducao_pronta", "effective": ["translate","clean","typeset","pdf"]},
+    "apenas_clean":    {"output_plan": "apenas_clean", "effective": ["clean"], "provider": 0, "yk": 0},
+    "apenas_traducao": {"output_plan": "apenas_traducao", "effective": ["translate"], "format": "translation"},
+    "traducao_clean":  {"output_plan": "traducao_clean", "effective": ["translate","clean"]},
+    "profissional":    {"output_plan": "profissional", "effective": ["translate","clean","typeset","pdf","psd","qc"]},
+    "personalizado":   {"output_plan": "personalizado", "operations": "user-chosen, dependency-closed by backend"}
+  },
+  "custom_dependencies": {
+    "typeset": "requires translate",
+    "psd": "requires translate+typeset",
+    "qc": "requires translate+clean+typeset",
+    "pdf": "dropped if no page producer (clean or typeset)",
+    "ux": "auto-enabled deps highlighted + hint 'Também será necessário: ...'; backend revalidates"
+  },
+  "progress_matrix": {
+    "apenas_clean": {"shown": ["source","download","regions","ocr","render"], "hidden": ["translate","pdf"]},
+    "apenas_traducao": {"shown": ["source","download","regions","ocr","translate"], "hidden": ["render","pdf"]},
+    "traducao_clean": {"shown": ["source","download","regions","ocr","translate","render"], "hidden": ["pdf"]},
+    "traducao_pronta": {"shown": ["source","download","regions","ocr","translate","render","pdf"]},
+    "profissional": {"shown": ["all incl. render,pdf"]},
+    "not_requested_as_error": "NO (stages simply hidden, never FAILED/ERROR)"
+  },
+  "finish_screen_matrix": {
+    "driver": "produced_artifacts (completion_summary.artifacts[kind].available === true)",
+    "apenas_clean": ["clean_image"],
+    "apenas_traducao": ["translation_manifest (Tradução)"],
+    "traducao_clean": ["clean_image"],
+    "traducao_pronta": ["final_pdf","translated_image"],
+    "profissional": ["final_pdf","translated_image","clean_image","editable_psd","quality_report"],
+    "phantom_buttons": 0,
+    "action_buttons": "backend file-existence driven (unchanged): pdf/review/psd_folder/qc_folder/output_folder"
+  }
+}

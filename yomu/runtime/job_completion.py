@@ -13,6 +13,7 @@ ARTIFACT_LABELS = {
     "editable_psd": "PSDs editáveis",
     "quality_report": "Relatório de QC",
     "review_manifest": "Dados de revisão",
+    "translation_manifest": "Tradução",
 }
 
 
@@ -116,11 +117,18 @@ def build_job_completion_summary(record: dict[str, Any], output_root: str | Path
         "editable_psd": has_files("psd", ".psd"),
         "quality_report": has_file("qc/quality_report.json"),
         "review_manifest": has_file("qc/review_manifest.json"),
+        # Translate-only deliverable: the persisted translation data (no visual artifact).
+        "translation_manifest": has_file("translation/translation.json"),
     }
     artifacts: dict[str, dict[str, Any]] = {}
     for kind, label in ARTIFACT_LABELS.items():
         artifact_status = str(statuses.get(kind) or "") if v2 else ""
-        produced = artifact_map[kind] and (artifact_status == "produced" if v2 else kind in {"final_pdf", "translated_image"})
+        if kind == "translation_manifest":
+            # Translate-only deliverable: on-disk presence is authoritative.
+            produced = artifact_map[kind]
+        else:
+            produced = artifact_map[kind] and (
+                artifact_status == "produced" if v2 else kind in {"final_pdf", "translated_image"})
         if produced:
             final_status = "produced"
         elif artifact_status in {"failed", "unavailable", "skipped", "requested"}:
@@ -170,6 +178,16 @@ def build_job_completion_summary(record: dict[str, Any], output_root: str | Path
         "review_pending": review_pending,
         "review_available": review_available,
         "legacy": not v2,
+        # Output-plan provenance so the finish screen lists only requested artifacts and the
+        # history shows the mode. Prefer the manifest; fall back to the job record fields.
+        "output_plan": str(manifest.get("output_plan") or record.get("output_plan") or ""),
+        "effective_operations": (
+            list(manifest.get("effective_operations"))
+            if isinstance(manifest.get("effective_operations"), list)
+            else (list(record.get("effective_operations"))
+                  if isinstance(record.get("effective_operations"), list) else [])),
+        "requested_artifacts": (list(manifest.get("requested_artifacts"))
+                                if isinstance(manifest.get("requested_artifacts"), list) else []),
         "artifacts": artifacts,
         "actions": {
             "pdf": bool(artifacts["final_pdf"]["available"]),

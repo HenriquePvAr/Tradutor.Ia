@@ -26,7 +26,11 @@ def test_output_format_helper_exists_and_maps_all_formats():
 
 def test_history_card_shows_type_and_format():
     assert "function historyTypeFormatLabel(record)" in JS
-    assert "'Download'" in JS and "'Tradução'" in JS
+    # Download stays a type label; a translation job now shows its output mode (plan label)
+    # when present, falling back to the "Tradução · <format>" label for legacy jobs.
+    assert "return 'Download';" in JS
+    assert "record.output_plan_label" in JS
+    assert "`Tradução · ${outputFormatLabel(record)}`" in JS
     # the history card renders the combined label, not the old hardcoded engine badge
     assert "historyTypeFormatLabel(record)" in JS
     assert '<span class="badge ${engine}">${engine === \'rapid\' ? \'Rápido\' : \'Qualidade\'}</span>' not in JS
