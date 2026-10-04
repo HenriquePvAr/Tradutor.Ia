@@ -23,9 +23,13 @@ def _webhook() -> str:
     value = os.environ.get("YOMU_DISCORD_WEBHOOK_URL", "").strip()
     if value:
         return value
-    path = Path(os.environ.get("YOMU_DISCORD_WEBHOOK_FILE", "/etc/yomu/discord_webhook_url"))
+    path = Path(os.environ.get("YOMU_DISCORD_WEBHOOK_FILE", "/home/ubuntu/yomu/.secrets/discord.env"))
     try:
-        return path.read_text(encoding="utf-8").strip()
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key.strip() == "YOMU_DISCORD_WEBHOOK_URL":
+                return value.strip().strip('"').strip("'")
+        return ""
     except OSError:
         return ""
 
