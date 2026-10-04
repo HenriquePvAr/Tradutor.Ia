@@ -1,0 +1,1 @@
+{"status":"PASS","covered":["hard local success","mask uncertain","remote unavailable","alignment fail","seam fail","outside-mask violation"],"tests":5}

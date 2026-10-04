@@ -1,0 +1,1 @@
+{"clean_only":["clean_image"],"translate_only":["translation_manifest"],"translate_clean":["translation_manifest","clean_image"],"automatic":["translation_manifest","clean_image","translated_image","final_pdf"],"professional":["translation_manifest","clean_image","translated_image","final_pdf","editable_psd","quality_report","review_manifest"],"filesystem_parity_tested":true}

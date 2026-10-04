@@ -1,0 +1,1 @@
+{"module":"yomu.clean.orchestrator","local_first":true,"provider_agnostic":true,"raw_gemini_final":false,"safe_composite_required":true,"manifest_fields":["strategy_requested","strategy_used","local_status","fallback_invoked","fallback_reason","fallback_status","safety_status","review_required"]}

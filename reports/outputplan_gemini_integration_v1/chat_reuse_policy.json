@@ -1,0 +1,1 @@
+{"default_concurrency":1,"persistent_chat_per_slot":true,"slot_fields":["slot_id","browser_id","tab_id","chat_id","current_job_id"],"rotation_reasons":["persistent_failure","upload_generation_broken","ui_inconsistent","context_excess","cross_job_contamination"]}

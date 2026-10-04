@@ -1,0 +1,1 @@
+{"head":"7066cf1","commits_audited":1,"commits":[{"hash":"7066cf1","subject":"feat(clean): integrate Gemini safe fallback v2","capability":"Gemini V2 package, quality metadata, reports/tests","overlap":"none with runtime paths after reorg","port_strategy":"preserve selected package"}]}
