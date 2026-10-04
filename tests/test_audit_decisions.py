@@ -1,7 +1,7 @@
 """Hermetic tests for the human audit decisions store (BLOCO 3)."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from audit_decisions import AuditDecisionStore
+from yomu.review.audit_decisions import AuditDecisionStore
 
 
 class AuditDecisionStoreContracts(unittest.TestCase):
@@ -62,7 +62,7 @@ class AuditDecisionStoreContracts(unittest.TestCase):
         self.assertFalse(self.store.delete("does-not-exist", created_by="user-1"))
 
     def test_all_valid_decisions_accepted(self):
-        from audit_decisions import DECISIONS
+        from yomu.review.audit_decisions import DECISIONS
         for i, decision in enumerate(DECISIONS):
             self.store.upsert(decision=decision, **{**self.base, "region_id": f"p001:R{i}"})
         self.assertEqual(len(self.store.list_for("j", "ru", "rev1")), len(DECISIONS))

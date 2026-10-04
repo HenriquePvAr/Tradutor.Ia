@@ -1,4 +1,4 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-import reference_guided_reconstruction as rgr
+import yomu.clean.reconstruction.reference_guided_reconstruction as rgr
 
 
 class ReferenceInventoryTests(unittest.TestCase):

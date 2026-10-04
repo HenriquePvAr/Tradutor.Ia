@@ -1,9 +1,9 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import json
 import unittest
 
-import natural_ptbr_refinement as npr
-from provider_transport import ProviderTransportError
+import yomu.translation.natural_ptbr_refinement as npr
+from yomu.translation.providers.provider_transport import ProviderTransportError
 
 
 def request(**extra):

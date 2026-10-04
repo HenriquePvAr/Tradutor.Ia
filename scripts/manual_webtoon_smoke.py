@@ -24,13 +24,13 @@ def _load_pipeline_dependencies():
     from PIL import Image as pillow_image
     from PIL import ImageStat as pillow_image_stat
 
-    import config as runtime_config
-    from down import download_images as runtime_download_images
-    from json_utils import dump_json as runtime_dump_json
-    from json_utils import dumps_json as runtime_dumps_json
-    from ocr_balloon import process_image_file as runtime_process_image_file
-    from pdf import generate_pdf as runtime_generate_pdf
-    from translator_nllb import get_translator as runtime_get_translator
+    import yomu.config.settings as runtime_config
+    from yomu.download.down import download_images as runtime_download_images
+    from yomu.core.json_utils import dump_json as runtime_dump_json
+    from yomu.core.json_utils import dumps_json as runtime_dumps_json
+    from yomu.ocr.ocr_balloon import process_image_file as runtime_process_image_file
+    from yomu.export.pdf import generate_pdf as runtime_generate_pdf
+    from yomu.translation.providers.translator_nllb import get_translator as runtime_get_translator
 
     Image = pillow_image
     ImageStat = pillow_image_stat
@@ -146,7 +146,7 @@ def run_smoke(args, output_folder: Path) -> int:
         return 0
 
     if args.benchmark:
-        from benchmark_pipeline import run_benchmark
+        from yomu.pipeline.benchmark_pipeline import run_benchmark
 
         run_benchmark(args)
         return 0

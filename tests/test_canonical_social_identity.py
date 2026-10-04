@@ -1,19 +1,19 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import threading
 import unittest
 from dataclasses import dataclass
 
-from canonical_social_identity import (
+from yomu.community.canonical_social_identity import (
     CanonicalSocialIdentityError,
     CanonicalSourceKeys,
     FakeCanonicalSocialIdentityMaterializer,
     SupabaseCanonicalSocialIdentityMaterializer,
     canonical_source_identity_from_publish_source,
 )
-from community_auth import RequestPrincipal
-from supabase_social import SocialConfig
+from yomu.community.community_auth import RequestPrincipal
+from yomu.community.supabase_social import SocialConfig
 
 
 OWNER = RequestPrincipal(

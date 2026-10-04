@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -19,7 +19,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from legacy_publication_migration_executor import (
+from yomu.community.legacy.legacy_publication_migration_executor import (
     ConflictError,
     FakeLegacyArtifactStorage,
     FakeLegacyTargetBackend,
@@ -29,8 +29,8 @@ from legacy_publication_migration_executor import (
     TransientBackendError,
     ValidationError,
 )
-from legacy_publication_migrator import load_migration_input, plan_migration
-from legacy_publication_postgres_adapter import (
+from yomu.community.legacy.legacy_publication_migrator import load_migration_input, plan_migration
+from yomu.community.legacy.legacy_publication_postgres_adapter import (
     ALLOWED_RUNTIME_FUNCTIONS,
     FORBIDDEN_OPERATIONAL_FUNCTIONS,
     LocalPostgresConnectionSettings,
@@ -326,7 +326,7 @@ def test_local_host_guard_accepts_only_phase_allowlist():
 
 def test_parameter_binding_and_zero_direct_dml_are_static():
     assert all("%s" in sql for sql in ALLOWED_RUNTIME_FUNCTIONS.values())
-    production = Path("legacy_publication_postgres_adapter.py").read_text(encoding="utf-8")
+    production = Path("yomu/community/legacy/legacy_publication_postgres_adapter.py").read_text(encoding="utf-8")
     forbidden = [
         "insert into private.legacy_migration_sources",
         "insert into private.legacy_publication_migrations",

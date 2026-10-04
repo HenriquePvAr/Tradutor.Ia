@@ -5,12 +5,12 @@ module. ``sitecustomize.py`` additionally covers guarded Python descendants that
 marker and repository path.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import socket
 import unittest
 
-from offline_test_guard import OfflineNetworkAttempt
+from test_support.offline_test_guard import OfflineNetworkAttempt
 
 
 class UnittestGuardProbe(unittest.TestCase):

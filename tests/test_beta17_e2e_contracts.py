@@ -3,7 +3,7 @@
 import sqlite3
 from pathlib import Path
 
-from job_store import JobStore
+from yomu.runtime.job_store import JobStore
 
 
 def _job(store: JobStore, key: str) -> str:
@@ -22,7 +22,7 @@ def _job(store: JobStore, key: str) -> str:
 
 
 def test_source_analyze_route_has_no_job_side_effect():
-    source = Path("app_ui.py").read_text(encoding="utf-8")
+    source = Path("yomu/ui/app.py").read_text(encoding="utf-8")
     block = source[source.index('@app.post("/api/ui/source/analyze")'):]
     block = block[:block.index('@app.post("/api/ui/source/report")')]
     assert "BRIDGE.start(" not in block
@@ -50,7 +50,7 @@ def test_distinct_attempts_remain_independent(tmp_path):
         first = _job(store, "trace-a:analysis-a")
         # A new attempt for the same chapter is allowed once the previous attempt is
         # terminal; the active-attempt guard must not become a permanent ban.
-        from job_store import JobStatus
+        from yomu.runtime.job_store import JobStatus
         for state in (JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING):
             store.transition(first, state)
         store.transition(first, JobStatus.FAILED, reason_code="source_validation_failed")

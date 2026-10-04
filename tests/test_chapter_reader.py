@@ -9,9 +9,9 @@ provider, network or remote store is touched.
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -23,11 +23,11 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-import app_ui
-import pdf_reader
-from community_auth import RequestPrincipal
-from job_store import JobStatus, JobStore
-from ui_bridge import UiBridge
+import yomu.ui.app as app_ui
+import yomu.export.pdf_reader as pdf_reader
+from yomu.community.community_auth import RequestPrincipal
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.ui.ui_bridge import UiBridge
 
 
 def _write_pdf(path: Path, sizes, colour=(40, 40, 40)) -> Path:
@@ -373,7 +373,7 @@ def test_the_reader_lives_inside_the_application_shell():
 
 
 def test_the_shell_loads_the_reader_module():
-    source = (Path(app_ui.ROOT) / "app_ui.py").read_text(encoding="utf-8")
+    source = (Path(app_ui.ROOT) / "yomu/ui/app.py").read_text(encoding="utf-8")
     assert "CHAPTER_READER_ASSET" in source
     assert "_asset_url(CHAPTER_READER_ASSET)" in source
 
@@ -397,4 +397,3 @@ def test_thumbnails_are_loaded_lazily_and_pages_are_not_prerendered():
     assert "IntersectionObserver" in reader
     assert "dataset.src" in reader
     assert "loading = 'lazy'" in reader.replace("'lazy'", "'lazy'")
-

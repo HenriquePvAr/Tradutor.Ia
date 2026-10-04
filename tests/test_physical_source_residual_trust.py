@@ -17,7 +17,7 @@ Every engine here is a stub.  No RapidOCR/Paddle inference, no network, no
 chapter, no provider.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -27,15 +27,15 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-import ocr_balloon
-from ocr_balloon import (
+import yomu.ocr.ocr_balloon as ocr_balloon
+from yomu.ocr.ocr_balloon import (
     OCR_UNINTELLIGIBLE_SOURCE_REASON,
     TextGroup,
     _build_text_mask,
     _post_render_source_text_check,
     reconcile_recovery_lines,
 )
-from ocr_engine import OCRLine
+from yomu.ocr.ocr_engine import OCRLine
 
 PASS = "pass"
 RESIDUAL = "residual_detected"

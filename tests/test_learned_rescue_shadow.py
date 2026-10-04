@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -6,7 +6,7 @@ import json
 
 import numpy as np
 
-from learned_rescue import CANDIDATE_ID, LearnedRescueService, ShadowRequest
+from yomu.clean.reconstruction.learned_rescue import CANDIDATE_ID, LearnedRescueService, ShadowRequest
 
 
 def _request(review_required=True):

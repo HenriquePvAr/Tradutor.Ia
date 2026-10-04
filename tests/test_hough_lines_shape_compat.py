@@ -6,7 +6,7 @@ These tests are version-agnostic: the real HoughLinesP is patched out so both
 representations are exercised on every OpenCV build.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -15,8 +15,8 @@ from unittest import mock
 
 import numpy as np
 
-import ocr_balloon
-from ocr_balloon import OCRLine, TextGroup, _classify_background_region
+import yomu.ocr.ocr_balloon as ocr_balloon
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup, _classify_background_region
 
 
 # One horizontal segment plus one ~45 deg diagonal, both far longer than any

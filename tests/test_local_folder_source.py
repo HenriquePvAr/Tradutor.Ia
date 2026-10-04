@@ -1,6 +1,6 @@
 """Hermetic tests for the isolated LocalFolderChapterAdapter intake boundary."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import io
 import json
@@ -11,8 +11,8 @@ from unittest import mock
 
 from PIL import Image
 
-import local_folder_source as local_source
-from local_folder_source import (
+import yomu.download.local.local_folder_source as local_source
+from yomu.download.local.local_folder_source import (
     HARD_MAX_BYTES_PER_FILE,
     LOCAL_FOLDER_ROOT_NOT_SELECTABLE,
     LOCAL_INPUT_DUPLICATE,

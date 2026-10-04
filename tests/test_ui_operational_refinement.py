@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -15,14 +15,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
-import ui_bridge
-from job_store import JobStatus, JobStore
-from process_options import build_background_process_options
-from download_transport import preflight_browser_navigation
-from chapter_source import SourceError
-from ui_bridge import UiBridge
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.runtime.process_options import build_background_process_options
+from yomu.download.download_transport import preflight_browser_navigation
+from yomu.download.sources.chapter_source import SourceError
+from yomu.ui.ui_bridge import UiBridge
 
 
 class OperationalBridge(UiBridge):

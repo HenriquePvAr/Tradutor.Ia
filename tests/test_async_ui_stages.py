@@ -7,7 +7,7 @@ its own counter.
 Source-level contract tests: no DOM runner in this project, so these read the shipped file.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import re
 import unittest
@@ -44,7 +44,7 @@ class StageLabelTests(unittest.TestCase):
         self.assertIn("preparando a ordem das páginas", JS)
 
     def test_the_backend_agrees_on_the_same_stage_keys(self):
-        from ui_bridge import _UI_STAGE_LABELS
+        from yomu.ui.ui_bridge import _UI_STAGE_LABELS
 
         for stage in WORKER_STAGES:
             self.assertIn(stage, _UI_STAGE_LABELS, stage)

@@ -1,6 +1,6 @@
 """Offline regression coverage for UI lifecycle and community publication contracts."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import asyncio
 import hashlib
@@ -11,11 +11,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from community_auth import RequestPrincipal, ResourceNotFound
-from community_api import ArtifactBindingError, CommunityApi
-from community_http import _community_call
-from job_store import JobStatus, JobStore
-import ui_bridge
+from yomu.community.community_auth import RequestPrincipal, ResourceNotFound
+from yomu.community.community_api import ArtifactBindingError, CommunityApi
+from yomu.community.community_http import _community_call
+from yomu.runtime.job_store import JobStatus, JobStore
+import yomu.ui.ui_bridge as ui_bridge
 
 
 def _run(coro):

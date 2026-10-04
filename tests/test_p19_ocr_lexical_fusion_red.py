@@ -4,12 +4,12 @@ This file intentionally captures the current failure without prescribing a
 production repair.  The historical fixture is allowed here; production must
 remain page/chapter agnostic.
 """
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import pytest
 import unittest
 
-from ocr_engine import clean_ocr_text, repair_ocr_text
+from yomu.ocr.ocr_engine import clean_ocr_text, repair_ocr_text
 
 
 class P19OcrLexicalFusionRedTests(unittest.TestCase):

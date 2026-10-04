@@ -8,7 +8,7 @@ runner, UI, network, Supabase, Community or Drive path.
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import os
@@ -18,14 +18,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
-import ocr_line_provenance
-import source_completeness
-from ocr_balloon import _render_analyzed_image, analyze_image_array, validate_translation_text
-from ocr_engine import OCRLine
+import yomu.ocr.ocr_line_provenance as ocr_line_provenance
+import yomu.ocr.source_completeness as source_completeness
+from yomu.ocr.ocr_balloon import _render_analyzed_image, analyze_image_array, validate_translation_text
+from yomu.ocr.ocr_engine import OCRLine
 
 
 RUN_DIR = Path(

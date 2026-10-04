@@ -14,7 +14,7 @@ import pathlib
 import unittest
 from unittest import mock
 
-import ui_bridge
+import yomu.ui.ui_bridge as ui_bridge
 
 
 def _env_without_hermetic():

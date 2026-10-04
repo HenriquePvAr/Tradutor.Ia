@@ -13,17 +13,17 @@ under test are the ones a mapping or fallback bug would silently break:
 * the requested provider surviving every command rebuild down to the argv.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import config
-import translator_deepl
-import ui_helpers
-from translator_deepl import (
+import yomu.config.settings as config
+import yomu.translation.providers.translator_deepl as translator_deepl
+import yomu.ui.ui_helpers as ui_helpers
+from yomu.translation.providers.translator_deepl import (
     AUTH_ERROR,
     DeepLProviderError,
     DeepLTranslator,
@@ -376,7 +376,7 @@ class FactoryTests(unittest.TestCase):
     """§20: canonical provider resolution."""
 
     def test_deepl_resolves_the_deepl_adapter(self):
-        from translator_nllb import get_translator
+        from yomu.translation.providers.translator_nllb import get_translator
 
         with mock.patch.object(config, "DEEPL_API_KEY", TEST_KEY):
             client, ocr_code = get_translator("3", translation_provider="deepl")
@@ -385,7 +385,7 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(client.stats["provider_name"], "deepl")
 
     def test_deepl_gets_no_automatic_naturalization_pass(self):
-        from translator_nllb import get_translator
+        from yomu.translation.providers.translator_nllb import get_translator
 
         with mock.patch.object(config, "DEEPL_API_KEY", TEST_KEY), \
                 mock.patch.object(config, "PTBR_NATURALIZATION_MODE", "selective"):
@@ -394,7 +394,7 @@ class FactoryTests(unittest.TestCase):
         self.assertFalse(client.stats["naturalization_enabled"])
 
     def test_an_unknown_provider_is_still_invalid(self):
-        from translator_nllb import get_translator
+        from yomu.translation.providers.translator_nllb import get_translator
 
         with self.assertRaises(ValueError):
             get_translator("3", translation_provider="not-a-provider")
@@ -420,7 +420,7 @@ class NoCrossProviderFallbackTests(unittest.TestCase):
     """RED #50: a DeepL job that fails stays a DeepL job."""
 
     def test_a_deepl_failure_never_produces_another_providers_effective_name(self):
-        from benchmark_pipeline import resolve_provider_provenance
+        from yomu.pipeline.benchmark_pipeline import resolve_provider_provenance
 
         client = translator(RecordingTransport((503, "down")))
         client.translate_many(["A"])
@@ -431,7 +431,7 @@ class NoCrossProviderFallbackTests(unittest.TestCase):
         self.assertFalse(provenance["provider_fallback_used"])
 
     def test_an_nvidia_translator_against_a_deepl_request_fails_closed(self):
-        from benchmark_pipeline import resolve_provider_provenance
+        from yomu.pipeline.benchmark_pipeline import resolve_provider_provenance
 
         class _Riva:
             stats = {"provider_name": "riva", "model": "riva-x"}
@@ -445,7 +445,7 @@ class NoCrossProviderFallbackTests(unittest.TestCase):
         # reference one, nor the paid host.
         import ast
 
-        tree = ast.parse((ROOT / "translator_deepl.py").read_text(encoding="utf-8"))
+        tree = ast.parse((ROOT / "yomu/translation/providers/translator_deepl.py").read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
                                  ast.AsyncFunctionDef)) and ast.get_docstring(node):
@@ -487,13 +487,13 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(ui_helpers.assert_command_provider(command, configuration), command)
 
     def test_the_cli_parser_accepts_deepl(self):
-        from run_webtoon import build_parser
+        from yomu.commands.run_webtoon import build_parser
 
         args = build_parser().parse_args(["https://x/y", "--translation-provider", "deepl"])
         self.assertEqual(args.translation_provider, "deepl")
 
     def test_the_manifest_records_deepl_model_types_truthfully(self):
-        from output_manifest import sanitize_provider_provenance
+        from yomu.export.output_manifest import sanitize_provider_provenance
 
         record = sanitize_provider_provenance({
             "provider_requested": "deepl", "provider_effective": "deepl",
@@ -508,7 +508,7 @@ class ProvenanceTests(unittest.TestCase):
         self.assertFalse(record["provider_mismatch"])
 
     def test_the_manifest_never_carries_a_credential_shaped_value(self):
-        from output_manifest import sanitize_provider_provenance
+        from yomu.export.output_manifest import sanitize_provider_provenance
 
         record = sanitize_provider_provenance({
             "provider_requested": "deepl", "provider_effective": "deepl",
@@ -517,7 +517,7 @@ class ProvenanceTests(unittest.TestCase):
         self.assertNotIn("provider_model_type_used", record)
 
     def test_report_provenance_omits_model_types_for_the_nvidia_family(self):
-        from benchmark_pipeline import report_provider_provenance
+        from yomu.pipeline.benchmark_pipeline import report_provider_provenance
 
         record = report_provider_provenance(
             {"provider_requested": "riva", "provider_effective": "riva", "model": "riva-x"})
@@ -546,7 +546,7 @@ class UiSelectionTests(unittest.TestCase):
             script)
 
     def test_the_backend_payload_normalizer_accepts_deepl(self):
-        import ui_bridge
+        import yomu.ui.ui_bridge as ui_bridge
 
         self.assertEqual(
             ui_bridge.UiBridge._normalize_translation_provider(
@@ -554,14 +554,14 @@ class UiSelectionTests(unittest.TestCase):
             "deepl")
 
     def test_a_label_string_is_refused_as_a_provider(self):
-        import ui_bridge
+        import yomu.ui.ui_bridge as ui_bridge
 
         with self.assertRaises(ValueError):
             ui_bridge.UiBridge._normalize_translation_provider(
                 {"translation_provider": "DeepL (Qualidade)"})
 
     def test_an_absent_selection_defaults_to_deepl(self):
-        import ui_bridge
+        import yomu.ui.ui_bridge as ui_bridge
 
         with mock.patch.dict("os.environ", {}, clear=False):
             import os
@@ -575,7 +575,7 @@ class OtherProvidersUnchangedTests(unittest.TestCase):
     """§37: adding DeepL must not have touched Riva or Nemotron."""
 
     def test_the_nvidia_translator_still_refuses_deepl(self):
-        from translator_nvidia import TranslatorNvidiaBatch
+        from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
 
         with self.assertRaises(ValueError):
             TranslatorNvidiaBatch(translation_provider="deepl")

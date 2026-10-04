@@ -1,4 +1,4 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import copy
 import json
 import sqlite3
@@ -11,8 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
-import residual_analysis_artifacts as raa
-import residual_mask_revisions as rmr
+import yomu.clean.ownership.residual_analysis_artifacts as raa
+import yomu.clean.ownership.residual_mask_revisions as rmr
 
 
 def make_bundle(mask=None, contract=None):

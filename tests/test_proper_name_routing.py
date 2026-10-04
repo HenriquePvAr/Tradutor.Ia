@@ -9,16 +9,16 @@ The real chapter texts appear only as fixtures. Nothing in production keys off a
 specific word, page or chapter.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
-import config
-from benchmark_pipeline import _translation_quality_accounting
-from ocr_balloon import (
+import yomu.config.settings as config
+from yomu.pipeline.benchmark_pipeline import _translation_quality_accounting
+from yomu.ocr.ocr_balloon import (
     OCRLine,
     TextGroup,
     apply_group_translations,
@@ -27,7 +27,7 @@ from ocr_balloon import (
     validate_and_retry_translations,
     validate_translation_text,
 )
-from translator_nvidia import TranslatorNvidiaBatch
+from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
 
 
 def _line(text, confidence=0.92):
@@ -626,7 +626,7 @@ class QualityOnlyRescueTests(unittest.TestCase):
 
     def test_voce_infinitive_candidate_is_rescued(self):
         """TEST: imperfect PT-BR verb mood is still rendered rather than English."""
-        from ocr_balloon import _quality_review_render_candidate
+        from yomu.ocr.ocr_balloon import _quality_review_render_candidate
         group = self._review_group(
             "WHAT YOU DO DURING THE TRIAL WILL DETERMINE THE REWARDS.",
             "O QUE VOCE FAZER DURANTE A PROVA DETERMINARA AS RECOMPENSAS.",
@@ -637,7 +637,7 @@ class QualityOnlyRescueTests(unittest.TestCase):
 
     def test_stray_ocr_fragment_candidate_is_rescued(self):
         """TEST: OCR artifact in translation is still rendered."""
-        from ocr_balloon import _quality_review_render_candidate
+        from yomu.ocr.ocr_balloon import _quality_review_render_candidate
         group = self._review_group(
             "SO DO YOURSELF A FAVOR AND) JUST THINK ABOUT THEM.",
             "ENTAO, FACA UM FAVOR A SI MESMO E) APENAS PENSE NELAS.",
@@ -648,7 +648,7 @@ class QualityOnlyRescueTests(unittest.TestCase):
 
     def test_english_candidate_is_not_rescued(self):
         """TEST: candidate that is still in English stays blocked."""
-        from ocr_balloon import _quality_review_render_candidate
+        from yomu.ocr.ocr_balloon import _quality_review_render_candidate
         group = self._review_group(
             "THE MONSTER IS HERE.",
             "THE MONSTER IS HERE.",
@@ -659,7 +659,7 @@ class QualityOnlyRescueTests(unittest.TestCase):
 
     def test_semantic_fidelity_failure_is_not_rescued(self):
         """TEST: semantic fidelity rejection is too risky to rescue."""
-        from ocr_balloon import _quality_review_render_candidate
+        from yomu.ocr.ocr_balloon import _quality_review_render_candidate
         group = self._review_group(
             "FOR ME, BEING CHOSEN IS A DEATH SENTENCE.",
             "PARA MIM, SER ESCOLHIDO E UMA SENTENCA DE MORTE.",
@@ -671,7 +671,7 @@ class QualityOnlyRescueTests(unittest.TestCase):
 
     def test_proper_name_altered_candidate_is_rescued_with_imperfect_name(self):
         """TEST: name-altered candidate still ships Portuguese under review."""
-        from ocr_balloon import _quality_review_render_candidate
+        from yomu.ocr.ocr_balloon import _quality_review_render_candidate
         group = self._review_group(
             "SUNLESS... BUT PEOPLE CALL ME SUNNY.",
             "Sem sol... MAS AS PESSOAS ME CHAMAM DE Sunny.",
@@ -682,7 +682,7 @@ class QualityOnlyRescueTests(unittest.TestCase):
 
     def test_rescue_is_wired_into_finalize_translation_failure(self):
         """TEST: _finalize_translation_failure applies the quality rescue."""
-        from ocr_balloon import _finalize_translation_failure
+        from yomu.ocr.ocr_balloon import _finalize_translation_failure
         group = _group("WHAT YOU DO DURING THE TRIAL WILL DETERMINE THE REWARDS.")
         group.translation_candidate = (
             "O QUE VOCE FAZER DURANTE A PROVA DETERMINARA AS RECOMPENSAS."
@@ -725,7 +725,7 @@ class QualityOnlyRescueTests(unittest.TestCase):
 
     def test_corrupted_ocr_token_detected(self):
         """TEST: corrupted OCR fragment is caught as non-clean."""
-        from ocr_balloon import _candidate_forensic_class
+        from yomu.ocr.ocr_balloon import _candidate_forensic_class
         result = _candidate_forensic_class(
             "TRNDGE HAPPPNED.",
             "TRNDGE HAPPPNED.",
@@ -739,7 +739,7 @@ class ChapterEntityMemoryTests(unittest.TestCase):
 
     def test_declared_name_propagates_to_other_groups(self):
         """TEST NAME-A: name declared in one group is known to others."""
-        from ocr_balloon import propagate_chapter_declared_names
+        from yomu.ocr.ocr_balloon import propagate_chapter_declared_names
         declarer = _group("SUNLESS... BUT PEOPLE CALL ME SUNNY.")
         other_sunny = _group("HAVE YOU SEEN SUNNY LATELY?")
         other_sunless = _group("SUNLESS IS ASLEEP.")
@@ -750,7 +750,7 @@ class ChapterEntityMemoryTests(unittest.TestCase):
 
     def test_translated_name_is_caught_after_propagation(self):
         """TEST NAME-B: translator converting a propagated name is rejected."""
-        from ocr_balloon import propagate_chapter_declared_names
+        from yomu.ocr.ocr_balloon import propagate_chapter_declared_names
         declarer = _group("SUNLESS... BUT PEOPLE CALL ME SUNNY.")
         other = _group("HAVE YOU SEEN SUNNY LATELY?")
         propagate_chapter_declared_names([declarer, other])
@@ -767,7 +767,7 @@ class ChapterEntityMemoryTests(unittest.TestCase):
 
     def test_alias_is_not_inconsistency(self):
         """TEST NAME-C: a legitimate alias is not flagged as inconsistent."""
-        from ocr_balloon import propagate_chapter_declared_names
+        from yomu.ocr.ocr_balloon import propagate_chapter_declared_names
         declarer = _group("SUNLESS... BUT PEOPLE CALL ME SUNNY.")
         sunless_group = _group("SUNLESS, ARE YOU OKAY?")
         sunny_group = _group("SUNNY, WAIT!")
@@ -795,7 +795,7 @@ class ChapterEntityMemoryTests(unittest.TestCase):
 
     def test_common_word_not_promoted_to_name(self):
         """TEST NAME-D: capitalized common words are not treated as names."""
-        from ocr_balloon import propagate_chapter_declared_names
+        from yomu.ocr.ocr_balloon import propagate_chapter_declared_names
         group = _group("THE DREAM IS OVER.")
         propagate_chapter_declared_names([group])
 
@@ -804,7 +804,7 @@ class ChapterEntityMemoryTests(unittest.TestCase):
 
     def test_unknown_name_not_invented(self):
         """TEST NAME-E: no canonical form is invented for unrecognized tokens."""
-        from ocr_balloon import propagate_chapter_declared_names
+        from yomu.ocr.ocr_balloon import propagate_chapter_declared_names
         group = _group("ZARQUON ARRIVED QUIETLY.")
         propagate_chapter_declared_names([group])
 

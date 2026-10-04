@@ -1,9 +1,9 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 from unittest.mock import patch
 
-import benchmark_pipeline
-import job_runner
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.runtime.job_runner as job_runner
 
 
 def test_explicit_max_images_is_not_expanded_by_smart_split(monkeypatch):

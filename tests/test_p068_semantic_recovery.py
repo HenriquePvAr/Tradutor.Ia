@@ -21,8 +21,8 @@ Everything here is offline: no job, no provider, no network.  The good second
 candidate is a TEST fixture, never a persisted real DeepL answer.
 """
 
-import _test_bootstrap  # noqa: F401
-from offline_test_guard import install_offline_network_guard
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -31,9 +31,9 @@ import unittest
 
 import numpy as np
 
-import benchmark_pipeline
-import translator_deepl
-from ocr_balloon import (
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.translation.providers.translator_deepl as translator_deepl
+from yomu.ocr.ocr_balloon import (
     OCRLine,
     TextGroup,
     detect_proper_name_spans,

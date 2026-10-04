@@ -20,7 +20,7 @@ purely to prove no regression - production code never branches on their ids.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -30,9 +30,9 @@ import unittest
 import cv2
 import numpy as np
 
-import font_fidelity
-import ocr_balloon as ob
-from ocr_engine import OCRLine
+import yomu.clean.ownership.font_fidelity as font_fidelity
+import yomu.ocr.ocr_balloon as ob
+from yomu.ocr.ocr_engine import OCRLine
 
 _REAL_RUN = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -8,10 +8,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from ui_helpers import build_run_command, suggest_chapter_details
-from job_store import JobStore
-from ui_history import UIHistoryStore
-from ui_bridge import UiBridge
+from yomu.ui.ui_helpers import build_run_command, suggest_chapter_details
+from yomu.runtime.job_store import JobStore
+from yomu.ui.ui_history import UIHistoryStore
+from yomu.ui.ui_bridge import UiBridge
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,14 +23,14 @@ URL = (
 
 class UiIntegrationTests(unittest.TestCase):
     def test_reference_shell_is_split_from_python(self):
-        app_source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertTrue((ROOT / "ui" / "ui_shell.html").is_file())
         self.assertTrue((ROOT / "static" / "tradutor_ui.css").is_file())
         self.assertTrue((ROOT / "static" / "tradutor_ui.js").is_file())
         self.assertNotIn("<section class=", app_source)
 
     def test_tradutor_asset_is_versioned_to_avoid_stale_browser_cache(self):
-        source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         for marker in (
             "_asset_url(TRADUTOR_UI_ASSET)",
             "_asset_url(AUTH_UI_ASSET)",
@@ -139,9 +139,9 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertIn("ownerReady", source)
 
     def test_community_feed_includes_unreviewed_published_posts(self):
-        source = (ROOT / "community_service.py").read_text(encoding="utf-8")
-        store = (ROOT / "community_store.py").read_text(encoding="utf-8")
-        authorization = (ROOT / "community_authorization.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/community/community_service.py").read_text(encoding="utf-8")
+        store = (ROOT / "yomu/community/community_store.py").read_text(encoding="utf-8")
+        authorization = (ROOT / "yomu/community/community_authorization.py").read_text(encoding="utf-8")
         self.assertIn("require_moderation=False", source)
         self.assertIn("moderation_status IN (?, ?)", store)
         self.assertIn("Moderation.PENDING", authorization)
@@ -228,7 +228,7 @@ class UiIntegrationTests(unittest.TestCase):
     def test_frontend_has_a_sanitized_source_review_confirmation_path(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-        app_source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertIn("awaiting_source_review", source)
         self.assertIn("/api/ui/source/confirm", source)
         self.assertIn("data-source-candidate-id", source)
@@ -250,8 +250,8 @@ class UiIntegrationTests(unittest.TestCase):
     def test_frontend_submits_local_folder_only_as_an_explicit_source_type(self):
         source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-        bridge = (ROOT / "ui_bridge.py").read_text(encoding="utf-8")
-        app_source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        bridge = (ROOT / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertIn('data-source-type="local_folder"', shell)
         self.assertIn('id="localFolderInput"', shell)
         self.assertIn("source_type: appState.selectedSourceType", source)
@@ -276,8 +276,8 @@ class UiIntegrationTests(unittest.TestCase):
         sources = "\n".join(
             (ROOT / path).read_text(encoding="utf-8")
             for path in (
-                "app_ui.py",
-                "ui_bridge.py",
+                "yomu/ui/app.py",
+                "yomu/ui/ui_bridge.py",
                 "static/tradutor_ui.js",
                 "ui/ui_shell.html",
             )
@@ -290,8 +290,8 @@ class UiIntegrationTests(unittest.TestCase):
         js_source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         css_source = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
         shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
-        backend = (ROOT / "app_ui.py").read_text(encoding="utf-8")
-        bridge = (ROOT / "ui_bridge.py").read_text(encoding="utf-8")
+        backend = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
+        bridge = (ROOT / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
         for removed in ("profileFromForm", "uploadProfileMedia", "removeProfileMedia", "profileSave",
                         "/api/ui/profile/media", "/api/community/profiles/", "/functions/v1/profile-media"):
             self.assertNotIn(removed, js_source)
@@ -325,7 +325,7 @@ class UiIntegrationTests(unittest.TestCase):
             bridge.store = JobStore(root / "jobs.sqlite3")
             bridge.history = []
             bridge.history_revision = 1
-            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+            with patch("yomu.ui.ui_bridge.OUTPUT_ROOT", output_root):
                 result = bridge.delete_local_artifact("fixture", delete_files=True, confirm="EXCLUIR")
             self.assertEqual(result["code"], "local_artifact_deleted")
             self.assertEqual(result["local_artifact_id"], "fixture")
@@ -356,7 +356,7 @@ class UiIntegrationTests(unittest.TestCase):
             bridge.store = JobStore(root / "jobs.sqlite3")
             bridge.history = []
             bridge.history_revision = 1
-            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+            with patch("yomu.ui.ui_bridge.OUTPUT_ROOT", output_root):
                 result = bridge.delete_local_artifact("job-123", delete_files=False, confirm="EXCLUIR")
             self.assertEqual(result["code"], "local_history_item_hidden")
             self.assertEqual(result["local_artifact_id"], "history-id")
@@ -449,7 +449,7 @@ class UiIntegrationTests(unittest.TestCase):
             bridge.store = JobStore(root / "jobs.sqlite3")
             bridge.history = []
             bridge.history_revision = 1
-            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+            with patch("yomu.ui.ui_bridge.OUTPUT_ROOT", output_root):
                 result = bridge.delete_local_artifact("legacy-zero", delete_files=True, confirm="EXCLUIR")
             self.assertEqual(result["code"], "local_history_item_hidden")
             self.assertEqual(result["files_state"], "unsafe_path_preserved")
@@ -479,7 +479,7 @@ class UiIntegrationTests(unittest.TestCase):
             bridge.store = JobStore(root / "jobs.sqlite3")
             bridge.history = []
             bridge.history_revision = 1
-            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+            with patch("yomu.ui.ui_bridge.OUTPUT_ROOT", output_root):
                 result = bridge.delete_local_artifact("foreign-hide", delete_files=False, confirm="EXCLUIR")
             self.assertEqual(result["code"], "local_history_item_hidden")
             self.assertEqual(result["files_state"], "preserved")
@@ -508,7 +508,7 @@ class UiIntegrationTests(unittest.TestCase):
             bridge.store = JobStore(root / "jobs.sqlite3")
             bridge.history = []
             bridge.history_revision = 1
-            with patch("ui_bridge.OUTPUT_ROOT", output_root):
+            with patch("yomu.ui.ui_bridge.OUTPUT_ROOT", output_root):
                 result = bridge.delete_local_artifact("traversal", delete_files=True, confirm="EXCLUIR")
             self.assertEqual(result["files_state"], "unsafe_path_preserved")
             self.assertTrue((sentinel / "precious.txt").exists())
@@ -528,14 +528,14 @@ class UiIntegrationTests(unittest.TestCase):
             bridge.store = JobStore(root / "jobs.sqlite3")
             bridge.history = []
             bridge.history_revision = 1
-            with patch("ui_bridge.OUTPUT_ROOT", output_root), self.assertRaisesRegex(ValueError, "local_artifact_not_found"):
+            with patch("yomu.ui.ui_bridge.OUTPUT_ROOT", output_root), self.assertRaisesRegex(ValueError, "local_artifact_not_found"):
                 bridge.delete_local_artifact("ghost", delete_files=False, confirm="EXCLUIR")
             bridge.store.close()
 
     def test_history_delete_route_authenticates_without_requiring_store_job(self):
         # Gate #1 regression: the route must not require a live store job -- legacy
         # local cards have no job row and were 404'd before reaching the bridge.
-        src = (Path(__file__).resolve().parents[1] / "app_ui.py").read_text(encoding="utf-8")
+        src = (Path(__file__).resolve().parents[1] / "yomu/ui/app.py").read_text(encoding="utf-8")
         route = src.split('@app.post("/api/ui/history/delete")', 1)[1].split("\n@app.", 1)[0]
         self.assertIn("_ui_principal(request, mutate=True)", route)
         self.assertNotIn("_owned_ui_job", route)
@@ -568,7 +568,7 @@ class UiIntegrationTests(unittest.TestCase):
             bridge.store = JobStore(root / "jobs.sqlite3")
             bridge.history = []
             bridge.history_revision = 1
-            with patch("ui_bridge.OUTPUT_ROOT", output_root), self.assertRaisesRegex(ValueError, "local_artifact_published"):
+            with patch("yomu.ui.ui_bridge.OUTPUT_ROOT", output_root), self.assertRaisesRegex(ValueError, "local_artifact_published"):
                 bridge.delete_local_artifact("published", delete_files=True, confirm="EXCLUIR")
             self.assertTrue(fixture.exists())
             bridge.store.close()
@@ -590,7 +590,7 @@ class UiIntegrationTests(unittest.TestCase):
             )
             (fixture / "chapter.pdf").write_bytes(b"%PDF-1.4\nx\n%%EOF\n")
             history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
-            with patch("ui_history.OUTPUT_ROOT", output_root):
+            with patch("yomu.ui.ui_history.OUTPUT_ROOT", output_root):
                 discovered = history.discover_outputs()
                 self.assertEqual([item["id"] for item in discovered], ["discovered-manifest_like_chapter"])
                 history.hide_record(discovered[0])
@@ -598,7 +598,7 @@ class UiIntegrationTests(unittest.TestCase):
                 self.assertTrue(fixture.exists())
 
     def test_profile_routes_require_canonical_authentication(self):
-        source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         for marker in ("def _ui_principal", "AUTH.require_authenticated"):
             self.assertIn(marker, source, marker)
         for removed in ("api_profile_media", "profile_for_user", "/api/ui/profile/media", "/api/community/profiles/"):
@@ -609,7 +609,7 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertNotIn("/api/ui/profile/media", source)
         self.assertNotIn("uploadProfileMedia", source)
         self.assertNotIn("removeProfileMedia", source)
-        backend = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        backend = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertNotIn("api_profile_media", backend)
         self.assertNotIn("profile_media_provider_factory", backend)
 
@@ -728,8 +728,8 @@ class UiIntegrationTests(unittest.TestCase):
         )
 
     def test_community_profile_join_is_public_metadata_only(self):
-        source = (ROOT / "community_service.py").read_text(encoding="utf-8")
-        store = (ROOT / "community_store.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/community/community_service.py").read_text(encoding="utf-8")
+        store = (ROOT / "yomu/community/community_store.py").read_text(encoding="utf-8")
         for marker in ("author_display_name", "author_public_role"):
             self.assertIn(marker, source + store, marker)
         for marker in ("author_avatar_object_key", "avatar_url", "avatar_object_key", "banner_object_key"):
@@ -742,7 +742,7 @@ class UiIntegrationTests(unittest.TestCase):
         for marker in ("display_name_normalized", "profiles_display_name_normalized_uq", "normalize_profile_identity", "display_name_reserved"):
             self.assertIn(marker, migration, marker)
         self.assertIn("if not exists (select 1 from pg_constraint", migration)
-        public_fields = (ROOT / "supabase_social.py").read_text(encoding="utf-8").split("PROFILE_PUBLIC_FIELDS", 1)[1].split("WORK_FIELDS", 1)[0]
+        public_fields = (ROOT / "yomu/community/supabase_social.py").read_text(encoding="utf-8").split("PROFILE_PUBLIC_FIELDS", 1)[1].split("WORK_FIELDS", 1)[0]
         self.assertNotIn("avatar_object_key", public_fields)
         self.assertNotIn("banner_object_key", public_fields)
 
@@ -777,7 +777,7 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertLess(source.index("function applyCanonicalAuthSurface"), source.index("applyCanonicalAuthSurface(getGlobal('__tradutorAuthState')"))
 
     def test_existing_publication_is_joined_to_history_by_run_and_sha(self):
-        app_source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         ui_source = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         for marker in ("_enrich_history_publications", "source_run_id", "publication_pdf_sha256", "publication_id"):
             self.assertIn(marker, app_source, marker)
@@ -834,7 +834,7 @@ class UiIntegrationTests(unittest.TestCase):
         self.assertFalse(any(ord(character) >= 0x1F000 for character in sources))
 
     def test_local_ui_bootstrap_does_not_reference_external_font_hosts(self):
-        source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertNotIn("fonts.googleapis.com", source)
         self.assertNotIn("fonts.gstatic.com", source)
 
@@ -850,7 +850,7 @@ class ServiceHealthTruthfulnessTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.app_ui = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        self.app_ui = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.ui_js = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         self.shell = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")
         self.health_js = (ROOT / "static" / "service_health.js").read_text(encoding="utf-8")

@@ -166,18 +166,17 @@ A referência completa das flags está disponível em `python run_webtoon.py --h
 
 | Área | Responsabilidade principal |
 | --- | --- |
-| `start_tradutor.py`, `worker_supervisor.py` | Launcher canônico e supervisão limitada do worker |
-| `app_ui.py` e `ui_bridge.py` | Interface local, progresso, revisão e histórico (não executa o pipeline) |
-| `worker_service.py`, `job_runner.py`, `job_store.py` | Fila persistente, worker independente e execução isolada por capítulo |
-| `run_webtoon.py` | Entrada simplificada da CLI e seleção de modo |
-| `benchmark_pipeline.py` | Orquestração do fluxo ponta a ponta e relatórios |
-| `chapter_source.py`, `http_source_discovery.py` | Seleção de adapter e descoberta de páginas HTTP-first |
-| `down.py` | Coleta, validação, fallback de navegador e teardown |
-| `ocr_engine.py` e `ocr_balloon.py` | OCR, recuperação, agrupamento, classificação, validação e reconstrução |
-| `translator_deepl.py`, `translator_nvidia.py` | Tradução em lote, rate limit, retries e cache |
-| `session_context.py` | Ledger de terminologia e registro de personagens do capítulo |
-| `semantic_fidelity.py`, `linguistic_audit.py` | Veredito semântico e auditoria linguística do candidato |
-| `art_text_inpainting.py`, `advanced_art_inpainting.py` | Remoção do lettering de origem e reconstrução de arte |
+| `yomu/commands/`, `yomu/runtime/` | Launcher, worker supervisionado, fila e execução isolada; comandos históricos são shims na raiz |
+| `yomu/ui/`, `yomu/desktop/` | Interface local, bridge, progresso, revisão e shell desktop |
+| `yomu/pipeline/` | Orquestração do fluxo ponta a ponta e contexto do capítulo |
+| `yomu/download/` | Adapters de fonte, intake local, transportes e coleta |
+| `yomu/ocr/` | Engines, políticas, streaming e divisão de páginas |
+| `yomu/clean/` | Ownership, masks, inpainting e reconstrução de arte |
+| `yomu/translation/` | Decisões semânticas/linguísticas e adaptadores de providers |
+| `yomu/export/` | PDF, PNG, PSD e manifests de saída |
+| `yomu/community/`, `yomu/auth/` | Storage/publicação comunitária, identidade e licenciamento |
+| `tests/`, `test_support/` | Suíte e suporte hermético de teste |
+| `tools/`, `experiments/`, `research/` | Auditorias, harnesses e R&D fora do runtime principal |
 | `pipeline_cache.py`, `resource_monitor.py` | Cache versionado, persistência atômica e métricas de recursos |
 | `pdf.py`, `pdf_naming.py`, `pdf_reader.py` | Páginas lógicas, geração, nomeação e leitura do PDF |
 | `process_launcher.py` | Execução supervisionada de um processo e persistência do exit code |

@@ -5,7 +5,7 @@ appears, only the publishable config is fetched, the Bearer token is attached fr
 SDK-owned cache, the callback cannot open-redirect, and no token is logged.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from pathlib import Path
@@ -14,6 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _read(rel: str) -> str:
+    if rel == "app_ui.py":
+        rel = "yomu/ui/app.py"
+    elif rel == "supabase_auth.py":
+        rel = "yomu/auth/supabase_auth.py"
+    elif rel == "community_http.py":
+        rel = "yomu/community/community_http.py"
     return (ROOT / rel).read_text(encoding="utf-8")
 
 

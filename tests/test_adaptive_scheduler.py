@@ -1,10 +1,10 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 
-from adaptive_scheduler import (
+from yomu.runtime.adaptive_scheduler import (
     AdaptiveResourceScheduler,
     ResourceSnapshot,
     SchedulerConfig,

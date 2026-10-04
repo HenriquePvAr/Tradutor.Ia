@@ -4,7 +4,7 @@ import json
 
 
 CLIENT = Path("static/control_plane_client.js").read_text(encoding="utf-8")
-APP = Path("app_ui.py").read_text(encoding="utf-8")
+APP = Path("yomu/ui/app.py").read_text(encoding="utf-8")
 
 
 def test_control_plane_trace_uses_existing_app_diagnostic_sink():
@@ -85,7 +85,7 @@ def test_profile_metadata_is_not_part_of_normal_ui_bootstrap():
 
 
 def test_bootstrap_does_not_load_or_sync_profile_and_is_read_only():
-    app = Path("app_ui.py").read_text(encoding="utf-8")
+    app = Path("yomu/ui/app.py").read_text(encoding="utf-8")
     start = app.find("def api_bootstrap(")
     end = app.find("\n@app.", start + 1)
     assert start >= 0 and end > start
@@ -109,7 +109,7 @@ def test_server_records_ui_trace_request_before_sanitizer():
 
 
 def test_wallet_numeric_fields_survive_final_jsonl_and_auth_diagnostics_endpoint(tmp_path, monkeypatch):
-    import app_ui
+    import yomu.ui.app as app_ui
 
     monkeypatch.setattr(app_ui, "DIAGNOSTICS_ROOT", tmp_path)
 

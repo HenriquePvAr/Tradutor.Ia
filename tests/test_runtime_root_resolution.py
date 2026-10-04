@@ -16,8 +16,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from runtime_paths import resolve_runtime_root_for_job
-from secure_auth_context import AuthEnvelopeStore
+from yomu.runtime.runtime_paths import resolve_runtime_root_for_job
+from yomu.auth.secure_auth_context import AuthEnvelopeStore
 
 
 class _Scenario:
@@ -153,7 +153,7 @@ class ProviderAuthAfterFixTests(unittest.TestCase):
     """The translation provider's auth store follows the resolved runtime root."""
 
     def test_provider_acquires_auth_when_output_on_other_root(self):
-        from yomu_backend_provider import YomuBackendTranslationProvider
+        from yomu.translation.providers.yomu_backend_provider import YomuBackendTranslationProvider
 
         class _FakeBackend:  # never called by the auth path
             pass

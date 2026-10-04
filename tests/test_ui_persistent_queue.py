@@ -1,6 +1,6 @@
 """The UI creates and reads jobs through the persistent store, never running them."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import tempfile
@@ -9,9 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import ui_bridge
-from community_auth import RequestPrincipal
-from job_store import JobStatus, JobStore
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.community.community_auth import RequestPrincipal
+from yomu.runtime.job_store import JobStatus, JobStore
 
 
 def _run(coro):
@@ -47,7 +47,7 @@ class UiPersistentQueueTests(unittest.TestCase):
             # Queue tests own persistence, not worker lifecycle. The real method
             # launches a detached worker against the launcher's import-time DB.
             patch.object(ui_bridge.UiBridge, "ensure_worker", return_value={"online": True}),
-            patch("start_tradutor.spawn_worker_process",
+            patch("yomu.commands.start_tradutor.spawn_worker_process",
                   side_effect=AssertionError("queue unit test must not spawn a worker")),
         ]
         for p in self._patches:
@@ -252,7 +252,7 @@ class UiPersistentQueueTests(unittest.TestCase):
         # An interrupted job whose recorded runner is still a live process must not be
         # resumed - that would run two trees for the same chapter.
         import os
-        import process_tree
+        import yomu.runtime.process_tree as process_tree
         store = JobStore(self.db)
         jid = store.create_job(source_url="https://example/x",
                                output_dir=str(self.tmp / "out"), command=["x"])

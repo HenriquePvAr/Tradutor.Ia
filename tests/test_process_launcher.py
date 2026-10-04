@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import psutil
 
-from process_launcher import (
+from yomu.runtime.process_launcher import (
     CANCELLED_EXIT_CODE,
     CLEANUP_FAILURE_EXIT_CODE,
     LAUNCH_FAILURE_EXIT_CODE,
@@ -106,7 +106,7 @@ class ProcessLauncherTests(unittest.TestCase):
                 raise KeyboardInterrupt
             return original_wait(process, timeout=timeout)
 
-        with patch("process_launcher.subprocess.Popen.wait", new=interrupting_wait):
+        with patch("yomu.runtime.process_launcher.subprocess.Popen.wait", new=interrupting_wait):
             return run_process(command, runtime, cwd=self.root)
 
     def _one_descendant_command(self, marker, pid_path, ready_path, *, exit_parent=False):
@@ -352,7 +352,7 @@ class ProcessLauncherTests(unittest.TestCase):
             return real_atomic_write(path, value)
 
         launcher_stderr = io.StringIO()
-        with patch("process_launcher.atomic_write_text", side_effect=fail_exit_code):
+        with patch("yomu.runtime.process_launcher.atomic_write_text", side_effect=fail_exit_code):
             with patch("sys.stderr", launcher_stderr):
                 with self.assertRaisesRegex(
                     OSError,
@@ -496,7 +496,8 @@ class ProcessLauncherTests(unittest.TestCase):
         launcher = subprocess.Popen(
             [
                 sys.executable,
-                str(Path(__file__).resolve().parents[1] / "process_launcher.py"),
+                "-m",
+                "yomu.runtime.process_launcher",
                 "--runtime-directory",
                 str(runtime),
                 "--cwd",
@@ -531,7 +532,7 @@ class ProcessLauncherTests(unittest.TestCase):
         ) + [marker, str(command_marker)]
 
         with patch(
-            "process_launcher._WindowsJob.assign",
+            "yomu.runtime.process_launcher._WindowsJob.assign",
             side_effect=ProcessTreeError("controlled assignment failure"),
         ):
             returncode = run_process(command, runtime, cwd=self.root)
@@ -552,7 +553,7 @@ class ProcessLauncherTests(unittest.TestCase):
         ) + [marker, str(command_marker)]
 
         with patch(
-            "process_launcher._WindowsJob.assign",
+            "yomu.runtime.process_launcher._WindowsJob.assign",
             side_effect=KeyboardInterrupt,
         ):
             returncode = run_process(command, runtime, cwd=self.root)
@@ -573,7 +574,7 @@ class ProcessLauncherTests(unittest.TestCase):
         ) + [marker, str(ready)]
 
         with patch(
-            "process_launcher._WindowsJob.terminate",
+            "yomu.runtime.process_launcher._WindowsJob.terminate",
             side_effect=OSError("controlled termination failure"),
         ):
             returncode = self._run_with_keyboard_interrupt(command, runtime, ready)
@@ -605,7 +606,7 @@ class ProcessLauncherTests(unittest.TestCase):
                 raise RuntimeError("controlled monitoring failure")
             return original_wait(process, timeout=timeout)
 
-        with patch("process_launcher.subprocess.Popen.wait", new=failing_wait):
+        with patch("yomu.runtime.process_launcher.subprocess.Popen.wait", new=failing_wait):
             returncode = run_process(command, runtime, cwd=self.root)
 
         child_pid = int((runtime / "child_pid.txt").read_text())

@@ -1,6 +1,6 @@
 """Composition-root safeguards for Community publication metadata persistence."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import logging
 import os
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from community_publication_metadata import (
+from yomu.community.community_publication_metadata import (
     NullPublicationMetadataRepository,
     PublicationMetadataError,
     PublicationMetadataRepositoryConfig,
@@ -25,7 +25,7 @@ SYNTHETIC_URL = "https://example.invalid"
 
 
 def test_env_composition_wires_supabase_secret_without_legacy_fallback(monkeypatch):
-    from community_api import publication_metadata_config_from_env
+    from yomu.community.community_api import publication_metadata_config_from_env
 
     monkeypatch.setenv("COMMUNITY_PUBLICATION_METADATA_PROVIDER", "supabase")
     monkeypatch.setenv("SUPABASE_URL", SYNTHETIC_URL)
@@ -43,7 +43,7 @@ def test_env_composition_wires_supabase_secret_without_legacy_fallback(monkeypat
 
 
 def test_required_env_composition_fails_closed_without_secret(monkeypatch):
-    from community_api import publication_metadata_config_from_env
+    from yomu.community.community_api import publication_metadata_config_from_env
 
     monkeypatch.setenv("COMMUNITY_PUBLICATION_METADATA_PROVIDER", "supabase")
     monkeypatch.setenv("SUPABASE_URL", SYNTHETIC_URL)
@@ -55,7 +55,7 @@ def test_required_env_composition_fails_closed_without_secret(monkeypatch):
 
 
 def test_explicit_offline_mode_is_the_only_null_repository(monkeypatch):
-    from community_api import publication_metadata_config_from_env
+    from yomu.community.community_api import publication_metadata_config_from_env
 
     monkeypatch.setenv("COMMUNITY_PUBLICATION_METADATA_PROVIDER", "none")
     monkeypatch.setenv("APP_ENV", "test")
@@ -136,8 +136,8 @@ def test_pytest_assertion_diff_does_not_reveal_synthetic_secret(tmp_path):
     script = tmp_path / "assertion_canary.py"
     script.write_text(
         "\n".join([
-            "import _test_bootstrap",
-            "from community_publication_metadata import PublicationMetadataRepositoryConfig",
+            "import test_support._test_bootstrap",
+            "from yomu.community.community_publication_metadata import PublicationMetadataRepositoryConfig",
             f"secret = {SYNTHETIC_SECRET!r}",
             "config = PublicationMetadataRepositoryConfig({'secret_key': secret})",
             "def test_canary_failure():",

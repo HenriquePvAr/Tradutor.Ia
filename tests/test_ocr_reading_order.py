@@ -13,7 +13,7 @@ horizontal direction.  A bbox ``y`` alone is not a reading order.
 Every fixture is synthetic geometry.  No recogniser, no network, no chapter.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -21,9 +21,9 @@ import unittest
 
 import numpy as np
 
-import ocr_balloon
-from ocr_balloon import RECOVERY_RECONCILE, RECOVERY_REJECT, reconcile_recovery_lines
-from ocr_engine import OCRLine
+import yomu.ocr.ocr_balloon as ocr_balloon
+from yomu.ocr.ocr_balloon import RECOVERY_RECONCILE, RECOVERY_REJECT, reconcile_recovery_lines
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _line(text, box, confidence=0.95):

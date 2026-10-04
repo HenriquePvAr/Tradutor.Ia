@@ -5,7 +5,7 @@ pipeline. Every wait has a monotonic deadline; every worker is torn down in a fi
 its verified PID tree, so a failing test never leaks a process or hangs.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import subprocess
@@ -15,14 +15,14 @@ import time
 import unittest
 from pathlib import Path
 
-import process_tree
-from job_store import JobStatus, JobStore
+import yomu.runtime.process_tree as process_tree
+from yomu.runtime.job_store import JobStatus, JobStore
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def _fake_command(output_dir: Path, *, steps=40, sleep=0.3, hang=False):
-    cmd = [sys.executable, "-u", str(REPO / "fake_pipeline.py"),
+    cmd = [sys.executable, "-u", str(REPO / "test_support/fake_pipeline.py"),
            "--output-dir", str(output_dir), "--outcome", "finished",
            "--steps", str(steps), "--sleep", str(sleep)]
     if hang:

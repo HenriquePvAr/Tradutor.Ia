@@ -2,8 +2,8 @@ import threading
 import time
 import unittest
 
-import config
-from pipeline_streaming import StreamPage, StreamingStageError, run_streaming
+import yomu.config.settings as config
+from yomu.pipeline.pipeline_streaming import StreamPage, StreamingStageError, run_streaming
 
 
 def pages(count=6):

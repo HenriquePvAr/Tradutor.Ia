@@ -6,7 +6,7 @@ API directly, no secret or ownership field is ever sent, user content is rendere
 (no innerHTML with user data), and the module only mounts under the Supabase provider.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import re
 import unittest
@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(rel: str) -> str:
+    if rel == "app_ui.py":
+        rel = "yomu/ui/app.py"
     return (ROOT / rel).read_text(encoding="utf-8")
 
 

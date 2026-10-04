@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import run_webtoon
-import job_runner
+import yomu.commands.run_webtoon as run_webtoon
+import yomu.runtime.job_runner as job_runner
 
 
 class DownloadOnlyFeatureTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class DownloadOnlyFeatureTests(unittest.TestCase):
                 (staging / "download_report.json").write_text(json.dumps(report), encoding="utf-8")
                 return [str(input_dir / "001.webp")]
 
-            with mock.patch("down.download_images", side_effect=fake_download) as downloader:
+            with mock.patch("yomu.download.down.download_images", side_effect=fake_download) as downloader:
                 result = run_webtoon._run_download_only(args, output)
             self.assertTrue(output.is_dir())
             self.assertTrue((output / "input" / "001.webp").is_file())

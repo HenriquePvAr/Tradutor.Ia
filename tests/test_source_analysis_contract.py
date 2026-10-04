@@ -8,13 +8,13 @@ collector could see, not about bytes that were never fetched.
 Hermetic: synthetic analyses only. No network, no browser, no provider, no chapter content.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from pathlib import Path
 
-from chapter_source import INCOMPLETE_DOWNLOAD, INCOMPLETE_SOURCE_COVERAGE
-from ui_bridge import UiBridge
+from yomu.download.sources.chapter_source import INCOMPLETE_DOWNLOAD, INCOMPLETE_SOURCE_COVERAGE
+from yomu.ui.ui_bridge import UiBridge
 
 REPO = Path(__file__).resolve().parents[1]
 ANALYSIS_COVERAGE_WARNINGS = ("page_limit_exceeded", "scroll_incomplete", "pagination_incomplete")
@@ -54,7 +54,7 @@ class AnalysisCompletenessTests(unittest.TestCase):
 
     def test_download_counters_are_absent_from_the_predicate(self):
         # Analysis must not consult fields that only exist after a download attempt.
-        source = (REPO / "ui_bridge.py").read_text(encoding="utf-8")
+        source = (REPO / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
         body = source[source.index("def _source_analysis_is_incomplete"):]
         body = body[:body.index("\n    async def ")]
         for field in ("downloaded_count", "validated_count", "output_manifest",
@@ -70,7 +70,7 @@ class ReasonCodeOwnershipTests(unittest.TestCase):
 
     def test_ui_bridge_never_emits_a_download_verdict(self):
         # The invariant the bug violated: stage=source_analysis + incomplete_download.
-        source = (REPO / "ui_bridge.py").read_text(encoding="utf-8")
+        source = (REPO / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
         emitting = [line for line in source.splitlines()
                     if "incomplete_download" in line and not line.strip().startswith("#")]
         self.assertEqual(emitting, [], emitting)
@@ -78,18 +78,18 @@ class ReasonCodeOwnershipTests(unittest.TestCase):
     def test_analysis_failure_uses_the_coverage_code(self):
         # The decision moved to the shared phase module; the assertion follows the code,
         # not the file it used to live in.
-        source = (REPO / "source_analysis_phase.py").read_text(encoding="utf-8")
+        source = (REPO / "yomu/review/source_analysis_phase.py").read_text(encoding="utf-8")
         block = source[source.index("if source_analysis_is_incomplete("):]
         block = block[:block.index("selected_ids =")]
         self.assertIn("INCOMPLETE_SOURCE_COVERAGE", block)
         self.assertIn('stage="source_analysis"', block)
 
     def test_the_downloader_still_owns_incomplete_download(self):
-        source = (REPO / "down.py").read_text(encoding="utf-8")
+        source = (REPO / "yomu/download/down.py").read_text(encoding="utf-8")
         self.assertIn("INCOMPLETE_DOWNLOAD", source)
 
     def test_the_ui_explains_both_codes_differently(self):
-        source = (REPO / "app_ui.py").read_text(encoding="utf-8")
+        source = (REPO / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertIn("incomplete_source_coverage", source)
         self.assertIn("incomplete_download", source)
 

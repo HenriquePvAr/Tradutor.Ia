@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -13,19 +13,19 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from community_auth import (
+from yomu.community.community_auth import (
     CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME,
     LocalSessionAuthProvider,
     SESSION_COOKIE_NAME,
 )
-from community_http import (
+from yomu.community.community_http import (
     CommunityNetworkBoundaryMiddleware,
     create_admin_community_router,
     create_community_router,
 )
-from community_api import CommunityApi
-from job_store import JobStatus, JobStore
+from yomu.community.community_api import CommunityApi
+from yomu.runtime.job_store import JobStatus, JobStore
 
 
 JOB_ID = "a" * 32

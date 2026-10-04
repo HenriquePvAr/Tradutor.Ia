@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 from pathlib import Path
@@ -8,12 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
-import ui_bridge
-from community_api import CommunityApi
-from community_auth import AuthorizationDenied, RequestPrincipal
-from community_store import Moderation, PostStatus, Visibility
-from job_store import JobStatus
-from job_store import JobStore, TransitionError
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.community.community_api import CommunityApi
+from yomu.community.community_auth import AuthorizationDenied, RequestPrincipal
+from yomu.community.community_store import Moderation, PostStatus, Visibility
+from yomu.runtime.job_store import JobStatus
+from yomu.runtime.job_store import JobStore, TransitionError
 
 
 def _bridge(tmp_path: Path) -> ui_bridge.UiBridge:
@@ -99,7 +99,7 @@ def test_retry_remains_owner_scoped(tmp_path):
 
 
 def _community(tmp_path: Path) -> tuple[CommunityApi, str]:
-    from job_store import JobStore
+    from yomu.runtime.job_store import JobStore
 
     jobs = JobStore(tmp_path / "jobs.sqlite3")
     api = CommunityApi(

@@ -1,0 +1,7 @@
+{
+  "allowlisted_root_python_files": 10,
+  "generated_ignored_caches_reported_separately": true,
+  "result": "PASS",
+  "tool": "tools/repository/check_root_policy.py",
+  "unlisted_root_python_files": 0
+}

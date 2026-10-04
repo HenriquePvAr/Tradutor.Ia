@@ -3,7 +3,7 @@
 Hermetic: no Supabase network, no Google Drive network, no Webtoon/NVIDIA.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import hashlib
 import json
@@ -14,15 +14,15 @@ from unittest.mock import patch
 
 import pytest
 
-import community_api
-import community_publish_runner
-from canonical_social_identity import FakeCanonicalSocialIdentityMaterializer
-from community_api import ArtifactBindingError, CommunityApi, CommunityError
-from community_auth import RequestPrincipal
-from community_publication_metadata import FakePublicationMetadataRepository, PublicationMetadataError
-from community_storage import FakeStorageProvider, StorageError
-from community_store import FileStatus, PostStatus
-from job_store import JobStatus, JobStore
+import yomu.community.community_api as community_api
+import yomu.community.community_publish_runner as community_publish_runner
+from yomu.community.canonical_social_identity import FakeCanonicalSocialIdentityMaterializer
+from yomu.community.community_api import ArtifactBindingError, CommunityApi, CommunityError
+from yomu.community.community_auth import RequestPrincipal
+from yomu.community.community_publication_metadata import FakePublicationMetadataRepository, PublicationMetadataError
+from yomu.community.community_storage import FakeStorageProvider, StorageError
+from yomu.community.community_store import FileStatus, PostStatus
+from yomu.runtime.job_store import JobStatus, JobStore
 
 
 OWNER = RequestPrincipal("owner-a", True, auth_source="test", session_id="owner")

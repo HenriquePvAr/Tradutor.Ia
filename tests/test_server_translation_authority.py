@@ -1,8 +1,8 @@
 import threading
 from pathlib import Path
 import pytest
-from yomu_backend_provider import BatchItem, BatchRequest, BatchResponse, BackendTranslationError
-from server_translation_authority import ServerTranslationAuthority
+from yomu.translation.providers.yomu_backend_provider import BatchItem, BatchRequest, BatchResponse, BackendTranslationError
+from yomu.translation.providers.server_translation_authority import ServerTranslationAuthority
 
 
 def req(rid="r1", text="Hello"):

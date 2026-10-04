@@ -33,7 +33,7 @@ clearance (``descender_overshoot == 0``) is left completely untouched.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -43,9 +43,9 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-import ocr_balloon as ob
-from ocr_balloon import TextGroup
-from ocr_engine import OCRLine
+import yomu.ocr.ocr_balloon as ob
+from yomu.ocr.ocr_balloon import TextGroup
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _line(text, box):

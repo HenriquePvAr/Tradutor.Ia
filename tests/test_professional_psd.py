@@ -1,5 +1,5 @@
 """P1/P2 professional layered PSD: Cleaned canonical + per-region raster layers."""
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from psd_tools import PSDImage
 
-from professional_psd import export_professional_psd, write_professional_page_psd
+from yomu.export.professional_psd import export_professional_psd, write_professional_page_psd
 
 # region bboxes (x, y, w, h)
 A = [80, 120, 320, 90]

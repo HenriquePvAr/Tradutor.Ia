@@ -1,0 +1,7 @@
+{
+  "canonical_module_targets": 187,
+  "files_with_import_rewrites_batch2": 269,
+  "incorrect_dynamic_import_semantics_fixed": true,
+  "internal_runtime_imports_use_packages": true,
+  "rewriter": "AST-aware absolute/dynamic import migration"
+}

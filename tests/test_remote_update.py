@@ -19,7 +19,7 @@ explicit subclass that widens ``ALLOWED_SCHEMES``. There is no production flag t
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import re
@@ -34,12 +34,12 @@ from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-import app_version
-import start_tradutor
-import update_bootstrap
-import update_installer
-import update_manifest
-import update_transport
+import yomu.runtime.version as app_version
+import yomu.commands.start_tradutor as start_tradutor
+import yomu.runtime.update_bootstrap as update_bootstrap
+import yomu.runtime.update_installer as update_installer
+import yomu.runtime.update_manifest as update_manifest
+import yomu.runtime.update_transport as update_transport
 from scripts.sign_release import public_key_material, sign_manifest
 
 APP_ID = "tradutor-ia"
@@ -230,7 +230,7 @@ class ProductVersionTests(unittest.TestCase):
         pattern = re.compile(r"^\s*(__version__|PRODUCT_VERSION|APP_VERSION|RELEASE_VERSION)\s*=")
         duplicates = [
             name for name in tracked
-            if name != "app_version.py"
+            if name not in {"app_version.py", "yomu/runtime/version.py"}
             and (REPO_ROOT / name).is_file()
             and any(pattern.match(line) for line in (REPO_ROOT / name).read_text(
                 encoding="utf-8", errors="ignore").splitlines())

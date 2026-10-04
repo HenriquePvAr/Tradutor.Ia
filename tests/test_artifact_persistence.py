@@ -13,8 +13,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-import artifact_contract as ac
-import benchmark_pipeline as bp
+import yomu.runtime.artifact_contract as ac
+import yomu.pipeline.benchmark_pipeline as bp
 
 
 def _png(path, w=800, h=200, value=127):

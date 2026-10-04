@@ -8,17 +8,17 @@ empty population it never examined, and an unavailable engine must stop the run
 before the chapter is downloaded and processed at all.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 from unittest.mock import patch
 
-import benchmark_pipeline
-import ocr_engine
-import output_manifest
-import run_webtoon
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.ocr.ocr_engine as ocr_engine
+import yomu.export.output_manifest as output_manifest
+import yomu.commands.run_webtoon as run_webtoon
 
 
 def _speech_item(**overrides):
@@ -249,7 +249,7 @@ class ModeEnginePreflightTest(unittest.TestCase):
     """The mode -> engine mapping is where an unavailable engine has to stop."""
 
     def setUp(self):
-        import config
+        import yomu.config.settings as config
 
         # _configure_mode writes both os.environ and config module attributes;
         # neither may leak into another test.
@@ -306,7 +306,7 @@ class ModeEnginePreflightTest(unittest.TestCase):
 
     def test_quality_mode_runs_when_only_rapidocr_is_installed(self):
         # The canonical Beta configuration: quality mode on a machine without Paddle.
-        import config
+        import yomu.config.settings as config
 
         def only_rapidocr(name):
             return object() if name.startswith("rapidocr") else None
@@ -320,7 +320,7 @@ class ModeEnginePreflightTest(unittest.TestCase):
         self.assertFalse(config.FAST_OCR_MODE)
 
     def test_fast_mode_runs_normally_when_rapidocr_is_available(self):
-        import config
+        import yomu.config.settings as config
 
         def only_rapidocr(name):
             return object() if name.startswith("rapidocr") else None

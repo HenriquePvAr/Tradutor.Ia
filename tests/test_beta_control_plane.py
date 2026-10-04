@@ -1,5 +1,5 @@
 import sqlite3, time
-from beta_control_plane import ControlPlane
+from yomu.runtime.beta_control_plane import ControlPlane
 
 def test_flags_invites_and_sanitized_error():
     cp = ControlPlane(sqlite3.connect(":memory:", check_same_thread=False))

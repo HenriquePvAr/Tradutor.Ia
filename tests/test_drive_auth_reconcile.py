@@ -1,6 +1,6 @@
 """OAuth token source (fakes) and reconciliation — no real OAuth, no network."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import os
@@ -9,12 +9,12 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-import drive_auth
-from community_storage import FakeStorageProvider
-from community_store import CommunityStore, FileStatus, PostStatus
-from community_storage_reconcile import reconcile
-from google_drive_storage import HttpResponse
-from job_store import JobStatus, JobStore
+import yomu.community.storage.drive_auth as drive_auth
+from yomu.community.community_storage import FakeStorageProvider
+from yomu.community.community_store import CommunityStore, FileStatus, PostStatus
+from yomu.community.community_storage_reconcile import reconcile
+from yomu.community.storage.google_drive_storage import HttpResponse
+from yomu.runtime.job_store import JobStatus, JobStore
 
 
 class FakeTransport:

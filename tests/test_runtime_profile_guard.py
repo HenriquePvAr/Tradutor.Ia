@@ -6,7 +6,7 @@ only thing standing between a silent provider swap and a shipped Beta, so its de
 are asserted here rather than only observed on the build machine.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest.mock import patch

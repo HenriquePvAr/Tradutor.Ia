@@ -1,10 +1,10 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 
-from semantic_fidelity import MODALITY_TENSE_CHANGED, VERIFY, evaluate_local_fidelity
+from yomu.translation.semantic_fidelity import MODALITY_TENSE_CHANGED, VERIFY, evaluate_local_fidelity
 
 
 class P28ModalityTenseTests(unittest.TestCase):

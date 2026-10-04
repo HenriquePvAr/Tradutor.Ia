@@ -6,9 +6,9 @@ from unittest import mock
 import numpy as np
 import pytest
 
-import benchmark_pipeline as bp
-from ocr_balloon import TextGroup
-from yomu_backend_provider import SystemicTranslationFailure
+import yomu.pipeline.benchmark_pipeline as bp
+from yomu.ocr.ocr_balloon import TextGroup
+from yomu.translation.providers.yomu_backend_provider import SystemicTranslationFailure
 
 
 def _state():

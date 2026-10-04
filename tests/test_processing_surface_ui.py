@@ -8,7 +8,7 @@ value, the test run would fail with a TypeError rather than pass quietly.
 Nothing here names a chapter, a URL, an episode, an owner or a job id.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import re
@@ -400,7 +400,7 @@ class VisualHarnessIsFailClosed(unittest.TestCase):
         self.assertNotIn("XMLHttpRequest", code)
 
     def test_harness_asset_is_only_loaded_in_visual_test_mode(self):
-        app = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertIn("PIPELINE_HARNESS_ASSET", app)
         self.assertIn("if visual_test_enabled:", app)
 
@@ -438,7 +438,7 @@ class IntegrationIsWiredThroughTheViewModel(unittest.TestCase):
 
     BUNDLE = ROOT / "static" / "tradutor_ui.js"
     SHELL = ROOT / "ui" / "ui_shell.html"
-    APP = ROOT / "app_ui.py"
+    APP = ROOT / "yomu/ui/app.py"
 
     def test_every_render_call_receives_a_mapped_view_model(self):
         """Textual order proves nothing once the mapper is an argument; what

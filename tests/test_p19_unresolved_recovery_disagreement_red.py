@@ -3,22 +3,22 @@
 The test intentionally remains RED until the later 10G safety patch.  It only
 asserts the safety outcome; it does not require the recovery text to win.
 """
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
-import config
-import ocr_balloon
-from ocr_balloon import (
+import yomu.config.settings as config
+import yomu.ocr.ocr_balloon as ocr_balloon
+from yomu.ocr.ocr_balloon import (
     TextGroup,
     apply_rapidocr_region_recovery,
     enforce_rapidocr_quality_gate,
     score_group_ocr_quality,
 )
-from ocr_engine import OCRLine
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _line(text, confidence, box=(20, 20, 300, 40)):

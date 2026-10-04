@@ -8,14 +8,14 @@ classify the same. Low-confidence input falls back (family "unknown").
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from ocr_balloon import extract_glyph_style_profile, select_font_role_with_glyph_style
+from yomu.ocr.ocr_balloon import extract_glyph_style_profile, select_font_role_with_glyph_style
 
 
 def _render_bgr(font_file, text="Perfectly Fine Hamburg", size=72, fill=(20, 20, 20),

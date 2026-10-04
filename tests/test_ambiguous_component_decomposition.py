@@ -1,9 +1,9 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import unittest
 
 import numpy as np
 
-import residual_mask_revisions as rmr
+import yomu.clean.ownership.residual_mask_revisions as rmr
 
 
 class AmbiguousComponentDecompositionTests(unittest.TestCase):

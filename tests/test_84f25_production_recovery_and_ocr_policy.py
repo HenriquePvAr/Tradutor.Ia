@@ -6,7 +6,7 @@ that the Beta default does not escalate suspicious RapidOCR regions to Paddle.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -15,10 +15,10 @@ from unittest import mock
 
 import numpy as np
 
-import config
-import ocr_balloon as ob
-import semantic_fidelity
-from ocr_engine import OCRLine
+import yomu.config.settings as config
+import yomu.ocr.ocr_balloon as ob
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.ocr.ocr_engine import OCRLine
 
 
 P65_RAW = "..YOU BE COME AGATETHROUGHWHICH AMONSTERAPPEARSIN THEREALWORLD."
@@ -186,7 +186,7 @@ class RapidOCRFallbackPolicyTests(unittest.TestCase):
             mock.patch.object(config, "OCR_HYBRID_FALLBACK", True),
             mock.patch.object(config, "OCR_FALLBACK_ENGINE", "paddle"),
             mock.patch.object(config, "OCR_LEGACY_PADDLE_FALLBACK", False, create=True),
-            mock.patch("ocr_balloon.OCREngine") as engine_cls,
+            mock.patch("yomu.ocr.ocr_balloon.OCREngine") as engine_cls,
         ):
             _lines, records = ob.apply_selective_ocr_fallbacks(
                 image,
@@ -216,9 +216,9 @@ class RapidOCRFallbackPolicyTests(unittest.TestCase):
             mock.patch.object(config, "OCR_HYBRID_FALLBACK", True),
             mock.patch.object(config, "OCR_FALLBACK_ENGINE", "paddle"),
             mock.patch.object(config, "OCR_LEGACY_PADDLE_FALLBACK", True, create=True),
-            mock.patch("ocr_balloon.OCREngine") as engine_cls,
+            mock.patch("yomu.ocr.ocr_balloon.OCREngine") as engine_cls,
             mock.patch(
-                "ocr_balloon._candidate_groups_for_fallback",
+                "yomu.ocr.ocr_balloon._candidate_groups_for_fallback",
                 return_value=[
                     ob.TextGroup(
                         group_id="candidate",

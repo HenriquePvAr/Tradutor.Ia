@@ -1,10 +1,10 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import numpy as np
 
-import multiscale_patch_synthesis as mps
+import yomu.clean.inpainting.multiscale_patch_synthesis as mps
 
 
 class MultiscalePatchSynthesisTests(unittest.TestCase):

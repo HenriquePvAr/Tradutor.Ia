@@ -7,8 +7,8 @@ import time
 
 import pytest
 
-from secure_auth_context import AuthEnvelopeStore
-from yomu_backend_provider import MockBackendClient, YomuBackendTranslationProvider
+from yomu.auth.secure_auth_context import AuthEnvelopeStore
+from yomu.translation.providers.yomu_backend_provider import MockBackendClient, YomuBackendTranslationProvider
 
 
 def _token():
@@ -45,10 +45,10 @@ def test_pipeline_adapter_production_selects_real_client(tmp_path, monkeypatch):
     monkeypatch.delenv("TRADUTOR_REQUEST_ID", raising=False)
     monkeypatch.setenv("YOMU_ENV", "production")
     monkeypatch.setenv("YOMU_BACKEND_URL", "https://backend.example.test")
-    from benchmark_pipeline import _build_translation_provider
+    from yomu.pipeline.benchmark_pipeline import _build_translation_provider
 
     provider = _build_translation_provider("yomu_backend", translation_enabled=True)
-    from yomu_backend_provider import HttpBackendClient
+    from yomu.translation.providers.yomu_backend_provider import HttpBackendClient
     assert provider.provider_name == "yomu_backend"
     assert isinstance(provider.backend, HttpBackendClient)
     assert provider.backend.transport is not None
@@ -57,7 +57,7 @@ def test_pipeline_adapter_production_selects_real_client(tmp_path, monkeypatch):
 def test_http_backend_transport_rebuilt_from_environment(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://backend.example.test")
     monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", "sb_publishable_test")
-    from yomu_backend_provider import HttpBackendClient, RequestsBackendTransport
+    from yomu.translation.providers.yomu_backend_provider import HttpBackendClient, RequestsBackendTransport
     client = HttpBackendClient.from_environment()
     assert isinstance(client.transport, RequestsBackendTransport)
     assert client.transport.base_url == "https://backend.example.test"
@@ -68,9 +68,9 @@ def test_pipeline_adapter_production_rejects_test_mock(monkeypatch):
     monkeypatch.setenv("YOMU_ENV", "production")
     monkeypatch.setenv("YOMU_TEST_BACKEND", "mock")
     monkeypatch.setenv("YOMU_BACKEND_URL", "https://backend.example.test")
-    from benchmark_pipeline import _build_translation_provider
+    from yomu.pipeline.benchmark_pipeline import _build_translation_provider
     provider = _build_translation_provider("yomu_backend", translation_enabled=True)
-    from yomu_backend_provider import MockBackendClient
+    from yomu.translation.providers.yomu_backend_provider import MockBackendClient
     assert not isinstance(provider.backend, MockBackendClient)
 
 
@@ -82,8 +82,8 @@ def test_pipeline_adapter_disabled_does_not_construct_backend(monkeypatch):
 def test_pipeline_adapter_local_mock_requires_explicit_test_switch(monkeypatch):
     monkeypatch.setenv("YOMU_ENV", "local")
     monkeypatch.setenv("YOMU_TEST_BACKEND", "mock")
-    from benchmark_pipeline import _build_translation_provider
-    from yomu_backend_provider import MockBackendClient
+    from yomu.pipeline.benchmark_pipeline import _build_translation_provider
+    from yomu.translation.providers.yomu_backend_provider import MockBackendClient
     provider = _build_translation_provider("yomu_backend", translation_enabled=True)
     assert isinstance(provider.backend, MockBackendClient)
 
@@ -93,7 +93,7 @@ def test_provider_process_boundary_uses_job_envelope_not_cli_token(tmp_path):
     AuthEnvelopeStore(tmp_path).seal(job_id, _token())
     code = (
         "from pathlib import Path; import os; "
-        "from yomu_backend_provider import *; "
+        "from yomu.translation.providers.yomu_backend_provider import *; "
         "p=YomuBackendTranslationProvider(runtime_root=Path(os.environ['R']), backend=MockBackendClient()); "
         "print(p.translate_many(['child']))"
     )
@@ -107,5 +107,5 @@ def test_provider_process_boundary_uses_job_envelope_not_cli_token(tmp_path):
 
 
 def _provider_factory(provider, enabled):
-    from benchmark_pipeline import _build_translation_provider
+    from yomu.pipeline.benchmark_pipeline import _build_translation_provider
     return _build_translation_provider(provider, translation_enabled=enabled)

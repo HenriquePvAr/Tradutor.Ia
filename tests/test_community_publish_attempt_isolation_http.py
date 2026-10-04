@@ -10,7 +10,7 @@ in-place reuse of a failed attempt.
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 from pathlib import Path
 import socket
@@ -19,17 +19,17 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from community_api import CommunityApi
-from community_auth import (
+from yomu.community.community_api import CommunityApi
+from yomu.community.community_auth import (
     CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME,
     LocalSessionAuthProvider,
     SESSION_COOKIE_NAME,
 )
-from community_http import CommunityNetworkBoundaryMiddleware, create_community_router
-from community_store import FileStatus, PostStatus
-from job_store import JobStore
-from offline_test_guard import (
+from yomu.community.community_http import CommunityNetworkBoundaryMiddleware, create_community_router
+from yomu.community.community_store import FileStatus, PostStatus
+from yomu.runtime.job_store import JobStore
+from test_support.offline_test_guard import (
     _loopback_test_connect,
     _loopback_test_connect_ex,
     _loopback_test_create_connection,

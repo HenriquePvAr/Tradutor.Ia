@@ -11,7 +11,7 @@ it, and pin the application to a single name so the divergence cannot be
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -86,7 +86,7 @@ class HarnessIsolationTest(unittest.TestCase):
     harness = strip_comments(HARNESS.read_text(encoding="utf-8"))
 
     def test_harness_is_served_only_under_the_visual_test_flag(self):
-        app_ui = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app_ui = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         tree = ast.parse(app_ui)
         guarded = False
         for node in ast.walk(tree):

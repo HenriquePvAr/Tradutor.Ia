@@ -13,7 +13,7 @@ protection, including the <=4x4 tracking-pixel floor, still applies.
 """
 import unittest
 
-from universal_chapter_adapter import ImageCandidate, _negative_reason
+from yomu.download.sources.universal_chapter_adapter import ImageCandidate, _negative_reason
 
 
 def _cand(*, w, h, logical_index=0, url="https://cdn.example/p.webp", visible=True,

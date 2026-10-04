@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -9,9 +9,9 @@ from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
-from run_webtoon import _chapter_slug, _clean_url, _configure_mode, _resolve_output_folder, build_parser
-from session_context import CONTEXT_VERSION, SessionContextStore
-from translator_nvidia import TranslatorNvidiaBatch
+from yomu.commands.run_webtoon import _chapter_slug, _clean_url, _configure_mode, _resolve_output_folder, build_parser
+from yomu.pipeline.session_context import CONTEXT_VERSION, SessionContextStore
+from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
 
 
 class RunWebtoonTests(unittest.TestCase):
@@ -30,8 +30,8 @@ class RunWebtoonTests(unittest.TestCase):
                 )
 
     def test_unsupported_engine_override_cannot_activate_paddle(self):
-        import config
-        import ocr_engine
+        import yomu.config.settings as config
+        import yomu.ocr.ocr_engine as ocr_engine
         previous = config.OCR_ENGINE
         try:
             with (

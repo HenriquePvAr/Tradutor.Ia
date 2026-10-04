@@ -2,8 +2,8 @@
 
 from pathlib import Path
 import re
-from source_readiness import SourceReadinessStore, default_workspace_id
-from ui_bridge import UiBridge
+from yomu.review.source_readiness import SourceReadinessStore, default_workspace_id
+from yomu.ui.ui_bridge import UiBridge
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from legacy_publication_migrator import load_migration_input, plan_migration
-from legacy_publication_migration_executor import (
+from yomu.community.legacy.legacy_publication_migrator import load_migration_input, plan_migration
+from yomu.community.legacy.legacy_publication_migration_executor import (
     ConflictingStorageObjectError,
     FakeLegacyProvenanceBackend,
     FakeLegacyTargetBackend,
@@ -25,7 +25,7 @@ from legacy_publication_migration_executor import (
     TransientBackendError,
     ValidationError,
 )
-from legacy_publication_drive_adapter import (
+from yomu.community.legacy.legacy_publication_drive_adapter import (
     APP_PROP_IDEMPOTENCY,
     APP_PROP_SCHEMA,
     APP_PROP_SHA256,

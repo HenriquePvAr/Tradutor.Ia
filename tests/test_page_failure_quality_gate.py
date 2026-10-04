@@ -24,14 +24,14 @@ stop being reported as an ordinary-story physical residual, while a region that
 really did keep its English must keep counting.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 
-import benchmark_pipeline
-import ocr_balloon
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.ocr.ocr_balloon as ocr_balloon
 
 
 def _page(index, *, status="completed", items=(), **extra):

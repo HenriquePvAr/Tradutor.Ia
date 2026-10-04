@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import hashlib
 import json
@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from community_auth import (
+from yomu.community.community_auth import (
     AuthConfigurationError,
     AuthorizationDenied,
     CSRF_COOKIE_NAME,
@@ -25,7 +25,7 @@ from community_auth import (
     SESSION_COOKIE_NAME,
     build_auth_provider,
 )
-from community_http import create_community_router
+from yomu.community.community_http import create_community_router
 
 
 def _env(tmp_path: Path, **overrides) -> dict[str, str]:
@@ -212,7 +212,7 @@ def test_supabase_mode_has_no_local_test_login_endpoint(tmp_path):
             return {"provider": "supabase"}
 
         def authenticate_request(self, request):
-            from community_auth import RequestPrincipal
+            from yomu.community.community_auth import RequestPrincipal
             return RequestPrincipal.anonymous()
 
         require_authenticated = authenticate_request
@@ -275,7 +275,7 @@ def test_cli_bootstrap_is_idempotent_without_rotating_credentials(tmp_path):
 def test_local_test_ui_adapter_is_explicit_and_has_no_identity_shortcut():
     provider_js = Path("static/auth_provider.js").read_text(encoding="utf-8")
     auth_js = Path("static/auth_ui.js").read_text(encoding="utf-8")
-    app_source = Path("app_ui.py").read_text(encoding="utf-8")
+    app_source = Path("yomu/ui/app.py").read_text(encoding="utf-8")
     assert "localTestAdapter" in provider_js
     assert "/api/community/auth/local-test/login" in provider_js
     assert "local_test_environment" in auth_js

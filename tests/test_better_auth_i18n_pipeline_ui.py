@@ -1,4 +1,4 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import re
@@ -8,7 +8,7 @@ from unittest import mock
 
 from PIL import Image
 
-from community_auth import (
+from yomu.community.community_auth import (
     AuthConfigurationError,
     BetterAuthProvider,
     build_auth_provider,
@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(rel: str) -> str:
+    if rel == "app_ui.py":
+        rel = "yomu/ui/app.py"
     return (ROOT / rel).read_text(encoding="utf-8")
 
 

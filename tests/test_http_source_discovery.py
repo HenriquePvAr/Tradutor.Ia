@@ -4,16 +4,16 @@ Hermetic: no real site is ever contacted. ``discover_via_http`` is exercised aga
 representative HTML fixtures through a fake transport; network/DNS calls are never made.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest import mock
 
-import chapter_source
-import down
-import http_source_discovery
-from chapter_source import UniversalChapterAdapter, VortexScansAdapter, WEBTOONS
-from http_source_discovery import discover_via_http
+import yomu.download.sources.chapter_source as chapter_source
+import yomu.download.down as down
+import yomu.download.http_source_discovery as http_source_discovery
+from yomu.download.sources.chapter_source import UniversalChapterAdapter, VortexScansAdapter, WEBTOONS
+from yomu.download.http_source_discovery import discover_via_http
 
 VORTEX_URL = "https://vortexscans.org/series/demo-series/chapter-1"
 
@@ -108,7 +108,7 @@ class VortexHTMLCollectorTests(unittest.TestCase):
         # full pipeline resolves it against page_url.
         with mock.patch.object(chapter_source.socket, "getaddrinfo",
                                 return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]):
-            from universal_chapter_adapter import analyse_candidates
+            from yomu.download.sources.universal_chapter_adapter import analyse_candidates
 
             analysis = analyse_candidates(
                 VORTEX_URL, candidates, adapter=adapter, final_url=VORTEX_URL,
@@ -122,7 +122,7 @@ class VortexHTMLCollectorTests(unittest.TestCase):
         candidates = adapter.collect_dom_candidates_from_html(html, VORTEX_URL)
         with mock.patch.object(chapter_source.socket, "getaddrinfo",
                                 return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]):
-            from universal_chapter_adapter import analyse_candidates
+            from yomu.download.sources.universal_chapter_adapter import analyse_candidates
 
             analysis = analyse_candidates(
                 VORTEX_URL, candidates, adapter=adapter, final_url=VORTEX_URL,
@@ -199,10 +199,10 @@ class DiscoverChapterSourceTests(unittest.TestCase):
     def test_browser_analysis_is_never_invoked_when_http_discovery_succeeds(self):
         sentinel = mock.Mock(name="http_analysis")
         sentinel.canonical_url = ""
-        with mock.patch("down._resolve_canonical_source", return_value=None), \
-             mock.patch("http_source_discovery.discover_via_http",
+        with mock.patch("yomu.download.down._resolve_canonical_source", return_value=None), \
+             mock.patch("yomu.download.http_source_discovery.discover_via_http",
                         return_value=sentinel) as fake_http, \
-             mock.patch("down.analyze_chapter_source",
+             mock.patch("yomu.download.down.analyze_chapter_source",
                         side_effect=AssertionError("browser must not run")) as fake_browser:
             result = down.discover_chapter_source(
                 "https://vortexscans.org/series/demo-series/chapter-1")
@@ -212,9 +212,9 @@ class DiscoverChapterSourceTests(unittest.TestCase):
 
     def test_falls_back_to_browser_when_http_discovery_is_inconclusive(self):
         sentinel = mock.Mock(name="browser_analysis")
-        with mock.patch("down._resolve_canonical_source", return_value=None), \
-             mock.patch("http_source_discovery.discover_via_http", return_value=None), \
-             mock.patch("down.analyze_chapter_source", return_value=sentinel) as fake_browser:
+        with mock.patch("yomu.download.down._resolve_canonical_source", return_value=None), \
+             mock.patch("yomu.download.http_source_discovery.discover_via_http", return_value=None), \
+             mock.patch("yomu.download.down.analyze_chapter_source", return_value=sentinel) as fake_browser:
             result = down.discover_chapter_source(
                 "https://vortexscans.org/series/demo-series/chapter-1")
         fake_browser.assert_called_once()
@@ -225,20 +225,20 @@ class WorkerAndUiWiringTests(unittest.TestCase):
     """TEST 9-10: the worker and UI seams both use HTTP-first discovery, not Selenium directly."""
 
     def test_worker_analyze_source_delegates_to_http_first_discovery(self):
-        from worker_service import Worker
+        from yomu.runtime.worker_service import Worker
 
         sentinel = mock.Mock(name="analysis")
         worker = Worker.__new__(Worker)  # avoid full worker construction; only testing the seam
-        with mock.patch("down.discover_chapter_source", return_value=sentinel) as fake:
+        with mock.patch("yomu.download.down.discover_chapter_source", return_value=sentinel) as fake:
             result = Worker._analyze_source(worker, "https://vortexscans.org/series/x/chapter-1")
         fake.assert_called_once()
         self.assertIs(result, sentinel)
 
     def test_ui_analyze_source_delegates_to_http_first_discovery(self):
-        import ui_bridge
+        import yomu.ui.ui_bridge as ui_bridge
 
         sentinel = mock.Mock(name="analysis")
-        with mock.patch("down.discover_chapter_source", return_value=sentinel) as fake:
+        with mock.patch("yomu.download.down.discover_chapter_source", return_value=sentinel) as fake:
             result = ui_bridge.UiBridge._analyze_source(
                 "https://vortexscans.org/series/x/chapter-1")
         fake.assert_called_once()

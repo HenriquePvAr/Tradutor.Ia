@@ -1,5 +1,5 @@
 """R3 — durable manual region controls, with no OCR/provider/render execution."""
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -9,7 +9,7 @@ from threading import Barrier
 from PIL import Image
 import pytest
 
-from job_store import JobStore, TransitionError
+from yomu.runtime.job_store import JobStore, TransitionError
 from tests.test_review_ordering_r1 import _bridge, _review_job, _close
 
 

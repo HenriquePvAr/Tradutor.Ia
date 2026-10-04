@@ -1,8 +1,8 @@
 import unittest
 
-import ocr_line_provenance
+import yomu.ocr.ocr_line_provenance as ocr_line_provenance
 
-from page_processing_contracts import (
+from yomu.core.page_processing_contracts import (
     PageProgressAggregator,
     PageProgressEvent,
     PageProcessingContext,

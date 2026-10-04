@@ -1,0 +1,7325 @@
+"""Runtime bridge between the custom local frontend and the persistent job queue.
+
+The browser never executes the pipeline directly, and neither does this module: it
+validates UI payloads, records jobs in the persistent SQLite store, and exposes
+serializable state read back from that store. The pipeline runs in the independent
+worker/runner processes, so closing or restarting the UI never touches a running job.
+The local history/profile persistence is unchanged.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib.metadata
+import importlib.util
+import json
+import os
+import platform
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+import tempfile
+import uuid
+import hashlib
+from PIL import Image
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+from yomu.community.community_auth import RequestPrincipal, bind_is_loopback, peer_is_loopback
+from yomu.runtime.artifact_contract import OutputProfile
+from yomu.runtime.job_completion import build_job_completion_summary
+from yomu.config.settings import effective_ocr_engine
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.export.output_manifest import MANIFEST_FILENAME, load_verified_run_manifest, sanitize_source_url
+from yomu.ui.ui_helpers import (
+    DEFAULT_TRANSLATION_PROVIDER,
+    OUTPUT_ROOT,
+    REPO_ROOT,
+    TRANSLATION_PROVIDERS,
+    build_run_command,
+    clean_url,
+    env_status,
+    record_command_provider,
+    resolve_run_output_folder,
+    sanitize_diagnostic_text,
+    sanitize_output_name,
+    suggest_chapter_details,
+)
+from yomu.ui.ui_history import UIHistoryStore, utc_now
+from yomu.review.chapter_quality_revision import (REVISION_IN_FLIGHT_STATUSES, ChapterQualityRevision,
+                                      read_json, write_json)
+from yomu.pipeline.pipeline_cache import atomic_write_json
+from yomu.auth.beta_license import (
+    BetaAccessDecision,
+    LicenseState,
+    LocalDevelopmentBetaAuthorizer,
+    build_beta_license_authorizer,
+    stable_install_fingerprint_hash,
+)
+from yomu.auth.commercial_device import CommercialDeviceAuthorizer, UnavailableCommercialDeviceAuthorizer, CommercialDeviceAuthorizationError, CommercialDeviceContext
+from yomu.auth.desktop_identity import InstallIdentity
+from yomu.review.workflows.review_rerun import build_pending_region_plan
+from yomu.runtime.runtime_paths import runtime_root
+from yomu.runtime.runtime_contract import current_runtime_contract
+import yomu.review.audit_registry as audit_registry
+import yomu.translation.human_translation_decisions as human_translation_decisions
+import yomu.clean.ownership.human_mask_decisions as human_mask_decisions
+import yomu.review.human_typography_decisions as human_typography_decisions
+import yomu.translation.linguistic_audit as linguistic_audit
+import yomu.translation.linguistic_triage as linguistic_triage
+import yomu.clean.ownership.font_fidelity as font_fidelity
+import yomu.clean.inpainting.art_text_inpainting as art_text_inpainting
+import yomu.export.pdf_reader as pdf_reader
+import yomu.review.preview_gates as preview_gates
+import yomu.translation.providers.provider_execution as provider_execution
+import yomu.review.region_taxonomy as region_taxonomy
+import yomu.clean.ownership.residual_mask_revisions as residual_mask_revisions
+import yomu.clean.ownership.residual_analysis_artifacts as residual_analysis_artifacts
+import yomu.clean.ownership.residual_component_reviews as residual_component_reviews
+import yomu.clean.ownership.visual_review_decisions as visual_review_decisions
+import yomu.clean.ownership.source_glyph_envelope as source_glyph_envelope
+import yomu.clean.ownership.glyph_art_boundary_review as glyph_art_boundary_review
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+from yomu.review.audit_decisions import AuditDecisionStore
+
+
+DEFAULT_RUNTIME_ROOT = runtime_root()
+JOBS_DB_PATH = DEFAULT_RUNTIME_ROOT / "jobs.sqlite3"
+WORKER_ENV_COMPATIBILITY_KEYS = ("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", "CHROMEDRIVER_PATH")
+JOB_LOG_DIR = DEFAULT_RUNTIME_ROOT / "logs"
+MAX_LOG_LINES = 3000
+SOURCE_ANALYSIS_TIMEOUT_SECONDS = 180
+REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS = 15.0
+_WINDOWS_LOCAL_PATH = re.compile(r"(?i)\b[A-Z]:\\[^\r\n]+")
+_UI_STAGE_LABELS = {
+    "created": "Preparando",
+    # Worker-owned stages. The submit returns before any of these, so the screen only shows
+    # "Analisando fonte" once the worker actually reports it.
+    "queued": "Na fila",
+    "worker_starting": "Iniciando processamento",
+    "source_lazy_resolution": "Carregando páginas do leitor",
+    "source_selection": "Preparando páginas",
+    "source_validation": "Validando a fonte",
+    "source_analysis": "Encontrando as páginas",
+    "validating_local_source": "Validando pasta local",
+    "creating_snapshot": "Criando cópia segura",
+    "browser_loading": "Abrindo o leitor",
+    "collecting_candidates": "Encontrando as páginas",
+    "clustering_candidates": "Preparando as páginas",
+    "awaiting_source_review": "Aguardando sua revisão",
+    "downloading_pages": "Baixando as imagens",
+    "validating_pages": "Validando as imagens",
+    "download": "Baixando as imagens",
+    "smart_split": "Preparando as páginas",
+    "ocr": "Lendo os textos",
+    "translate": "Traduzindo os textos",
+    "render": "Redesenhando as páginas",
+    "pdf": "Gerando o PDF",
+    "review_rerun": "Rerun de pendências",
+    "final": "Finalizado",
+}
+
+
+def _beta_license_provider_name(env: dict[str, str] | None = None) -> str:
+    values = os.environ if env is None else env
+    return str(values.get("BETA_LICENSE_PROVIDER", "") or "").strip().casefold()
+
+
+def _build_commercial_device_authorizer(runtime_root: Path):
+    values = dict(os.environ)
+    if _beta_license_provider_name(values) != "supabase":
+        return None
+    url = str(values.get("SUPABASE_URL", "") or "").strip()
+    key = str(values.get("SUPABASE_PUBLISHABLE_KEY", "") or "").strip()
+    if not url or not key:
+        return UnavailableCommercialDeviceAuthorizer()
+    return CommercialDeviceAuthorizer(runtime_root, supabase_url=url, publishable_key=key)
+
+
+def _enforce_translation_device_uuid(configuration: dict[str, Any]) -> None:
+    """Fail closed before a translating job is ever persisted.
+
+    A Quality job reaches the yomu_backend translation provider, which needs the verified
+    ``license_devices`` row UUID (the runner exports it as ``TRADUTOR_DEVICE_UUID``).  When
+    commercial device authorization does not resolve — e.g. the beta provider is not Supabase
+    so ``commercial_device_authorizer`` is None and the beta path leaves ``device_uuid``
+    unset — the job used to run the entire OCR pass and only then die with
+    ``commercial_device_id_missing``.  Refuse to create such a job instead.  Download-only
+    jobs never translate, so they are exempt.
+    """
+    if bool(configuration.get("download_only")):
+        return
+    value = str(configuration.get("device_uuid") or "").strip()
+    if not value:
+        if os.getenv("TRADUTOR_IA_HERMETIC_TEST_ENV") == "1":
+            # Hermetic parity with _require_beta_access's LocalDevelopmentBetaAuthorizer:
+            # submit/review flow tests never resolve a real commercial device and never
+            # reach the translation provider.  Production (env unset) still fails closed.
+            configuration["device_uuid"] = "00000000-0000-4000-8000-000000000000"
+            return
+        raise ValueError("commercial_device_id_missing")
+    try:
+        uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("invalid_license_device_uuid") from exc
+
+
+def _read_or_create_install_id(runtime_root: Path, env: dict[str, str] | None = None) -> str:
+    """Resolve the Beta license identity independently from job-data isolation.
+
+    ``runtime_root`` is intentionally only a data root.  Test runtimes may use a
+    different jobs DB/output/log directory, but they must still identify the same
+    physical installation for the Beta license gate.  The explicit environment
+    override remains available for hermetic tests and deployments that provide a
+    canonical installation id themselves.
+    """
+    values = os.environ if env is None else env
+    configured = str(values.get("TRADUTOR_INSTALL_ID", "") or "").strip()
+    if configured:
+        return configured
+    del runtime_root  # runtime data isolation must not change license identity
+    try:
+        return InstallIdentity().device_id()
+    except Exception as exc:  # noqa: BLE001 - fail closed at the license boundary
+        raise RuntimeError("install_id_unavailable") from exc
+
+
+def _build_ui_beta_access_authorizer(
+    runtime_root: Path,
+    *,
+    env: dict[str, str] | None = None,
+    transport=None,
+):
+    """Compose the Beta authorizer once, at the UI runtime boundary.
+
+    Local development remains explicit. Remote/provider-aware modes get a stable,
+    non-reversible device fingerprint and fail closed when their public config is
+    missing; they never silently downgrade to the local development authorizer.
+    """
+
+    provider = _beta_license_provider_name(env)
+    values = dict(os.environ if env is None else env)
+    # The source checkout keeps its hermetic local authorizer for development/tests, but
+    # a desktop/frozen runtime must never silently grant the distributable a
+    # ``local-development`` entitlement.  Missing/invalid remote configuration therefore
+    # fails closed at construction time.
+    packaged = bool(getattr(sys, "frozen", False)) or str(
+        values.get("TRADUTOR_RUNTIME_MODE", "") or "").strip().casefold() == "desktop"
+    if provider in {"", "local_development", "local-dev"} and packaged:
+        values["BETA_LICENSE_PROVIDER"] = "production"
+        return build_beta_license_authorizer(values, transport=transport)
+    if provider in {"", "local_development", "local-dev"}:
+        return build_beta_license_authorizer(values, transport=transport)
+    install_id = _read_or_create_install_id(runtime_root, env)
+    machine_hint = platform.node() if provider == "supabase" else ""
+    return build_beta_license_authorizer(
+        values,
+        device_fingerprint_hash=stable_install_fingerprint_hash(
+            install_id, machine_hint),
+        transport=transport,
+    )
+UNAVAILABLE_DURATION = "Tempo indisponível"
+
+
+def local_folder_ui_allowed(*, bind_host: str, peer_host: str) -> bool:
+    """Return whether a browser may submit a local filesystem source.
+
+    A folder path is intrinsically machine-local data.  Both the server binding and the
+    connected browser must therefore be loopback addresses; checking only the request peer
+    would still allow a remotely reachable server to turn an exposed API into a local-file
+    reader.
+    """
+
+    return bind_is_loopback(bind_host) and peer_is_loopback(peer_host)
+
+# A timestamp far above plausible epoch-seconds is a milliseconds value written by mistake;
+# anything below this is treated as seconds. (2001-09-09 in seconds / 1970 in ms.)
+_MS_THRESHOLD = 1e11
+
+
+def _normalize_epoch(value: Any) -> float | None:
+    """Epoch seconds, or None when the value cannot be trusted as a timestamp."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0 or number != number or number in (float("inf"), float("-inf")):
+        return None
+    if number >= _MS_THRESHOLD:      # milliseconds written where seconds were expected
+        number /= 1000.0
+    return number
+
+
+def _format_seconds(value: Any) -> str:
+    """34s | 12min 34s | 1h 12min. None/invalid never renders as a number."""
+    if value is None:
+        return UNAVAILABLE_DURATION
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return UNAVAILABLE_DURATION
+    if seconds != seconds or seconds in (float("inf"), float("-inf")) or seconds < 0:
+        return UNAVAILABLE_DURATION
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}min"
+    if minutes:
+        return f"{minutes}min {secs:02d}s"
+    return f"{secs}s"
+
+
+def _epoch_to_iso(value: Any) -> str:
+    try:
+        if not value:
+            return ""
+        return datetime.fromtimestamp(float(value), timezone.utc).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def _duration(job: dict[str, Any] | None, *, live: bool = False) -> float | None:
+    """Elapsed seconds, or None when it cannot be computed honestly.
+
+    The clock only advances while the job is *proven* live. For anything else the end is a
+    stored timestamp (finished_at, then heartbeat_at, then updated_at), so an abandoned job
+    freezes at its last sign of life instead of counting up forever.
+    """
+    if not job:
+        return None
+    started = _normalize_epoch(job.get("started_at"))
+    if started is None:
+        return None
+    if live:
+        end: float | None = time.time()
+    else:
+        end = next(
+            (stamp for stamp in (
+                _normalize_epoch(job.get("finished_at")),
+                _normalize_epoch(job.get("heartbeat_at")),
+                _normalize_epoch(job.get("updated_at")),
+            ) if stamp is not None),
+            None,
+        )
+    if end is None:
+        return None
+    elapsed = end - started
+    return None if elapsed < 0 else elapsed        # negative = corrupt clock, never shown
+
+
+def _run_git(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _worker_environment_matches_current(worker: dict[str, Any] | None) -> bool:
+    """Whether a registered worker can consume jobs requiring this UI environment.
+
+    Only non-secret operational toggles are compared.  If the current UI process does not
+    require a value, any worker is compatible.  If the worker environment cannot be read,
+    fail open rather than terminating an otherwise healthy process without proof.
+    """
+    # Frozen installs may be upgraded in place while the detached worker from the prior
+    # artifact is still alive.  Its PID/path remain valid, so environment checks alone
+    # cannot detect the stale code.  Build-tagged worker leases make this mismatch explicit.
+    if bool(getattr(sys, "frozen", False)):
+        try:
+            expected_contract = current_runtime_contract()
+            actual_contract = str((worker or {}).get("worker_contract") or "")
+            if not actual_contract or actual_contract != expected_contract:
+                return False
+        except Exception:  # noqa: BLE001 - compatibility check must remain fail-open
+            pass
+    required = {
+        key: os.environ.get(key, "")
+        for key in WORKER_ENV_COMPATIBILITY_KEYS
+        if os.environ.get(key)
+    }
+    if not required:
+        return True
+    pid = int((worker or {}).get("pid") or 0)
+    if not pid:
+        return False
+    try:
+        import psutil
+
+        values = psutil.Process(pid).environ()
+    except Exception:  # noqa: BLE001 - do not stop a worker if compatibility is unknowable
+        return True
+    return all(values.get(key, "") == value for key, value in required.items())
+
+
+def _current_commit() -> str:
+    return _run_git("rev-parse", "HEAD")
+
+
+def _current_branch() -> str:
+    return _run_git("rev-parse", "--abbrev-ref", "HEAD")
+
+
+def _runner_still_alive(job: dict[str, Any]) -> bool:
+    """True when the job's recorded runner process is still the live runner for it."""
+    try:
+        import yomu.runtime.process_tree as process_tree
+    except Exception:  # noqa: BLE001 - process checks are best-effort in the UI
+        return False
+    operation_kind = str(job.get("operation_kind") or "translation")
+    if getattr(sys, "frozen", False):
+        return process_tree.is_alive(
+            job.get("runner_pid"),
+            create_time=job.get("runner_create_time"),
+            substrings=["YomuSekai.exe", str(job["id"])],
+        )
+    runner_script = {
+        "translation": "yomu.runtime.job_runner",
+        "community_publish": "yomu.community.community_publish_runner",
+        "review_rerun": "yomu.review.workflows.review_rerun_runner",
+        "review_reexport": "yomu.review.workflows.review_reexport_runner",
+    }.get(operation_kind, "yomu.runtime.job_runner")
+    return process_tree.is_alive(
+        job.get("runner_pid"),
+        create_time=job.get("runner_create_time"),
+        substrings=[runner_script, job["id"]],
+    )
+
+
+def _worker_still_alive(job: dict[str, Any]) -> bool:
+    """True while a claimed job is still owned by its worker before a runner exists."""
+    try:
+        import yomu.runtime.process_tree as process_tree
+    except Exception:  # noqa: BLE001 - process checks are best-effort in the UI
+        return False
+    fingerprint = "YomuSekai.exe" if getattr(sys, "frozen", False) else "worker_service.py"
+    return process_tree.is_alive(
+        job.get("worker_pid"),
+        create_time=job.get("worker_create_time"),
+        substrings=[fingerprint],
+    )
+
+
+def _read_env_file() -> dict[str, str]:
+    path = REPO_ROOT / ".env"
+    values: dict[str, str] = {}
+    try:
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip("'\"")
+    except OSError:
+        pass
+    return values
+
+
+def _package_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "não instalado"
+
+
+class UiBridge:
+    """Own the single local worker, queue and persistent UI state."""
+
+    def __init__(self) -> None:
+        requested_root = str(os.getenv("TRADUTOR_TEST_RUNTIME_ROOT") or "").strip()
+        # Set only by hermetic_runtime.install_runtime_isolation_guard, which runs from the
+        # test bootstrap (_test_bootstrap/conftest/sitecustomize) and never from a production
+        # entrypoint, so the production resolution below is untouched.
+        hermetic_tests = os.getenv("TRADUTOR_IA_RUNTIME_ISOLATION_GUARD") == "1"
+        test_override_allowed = hermetic_tests or (
+            os.getenv("APP_ENV") == "test"
+            and os.getenv("ALLOW_LOCAL_TEST_IDENTITIES") == "1"
+        )
+        if requested_root and not test_override_allowed:
+            raise RuntimeError("test_runtime_root_not_allowed")
+        if hermetic_tests and not requested_root:
+            # Fail closed: a test that drops the isolated root must not silently inherit the
+            # project's real queue, worker leases and artifacts.
+            raise RuntimeError("hermetic_test_runtime_root_required")
+        self.runtime_root = (
+            Path(requested_root).expanduser().resolve()
+            if requested_root else DEFAULT_RUNTIME_ROOT.resolve()
+        )
+        self.output_root = (
+            (self.runtime_root / "output").resolve()
+            if requested_root else OUTPUT_ROOT.resolve()
+        )
+        db_path = self.runtime_root / "jobs.sqlite3" if requested_root else JOBS_DB_PATH
+        self.history_store = (
+            UIHistoryStore(
+                self.runtime_root / "ui_history.json", output_root=self.output_root)
+            if requested_root else UIHistoryStore()
+        )
+        self.history = self.history_store.discover_outputs()
+        self.store = JobStore(db_path)
+        # A clean production install must be usable immediately.  The source-policy
+        # engine is safety infrastructure (supported sources remain allowlisted and
+        # unknown sources still deny); it is not a technical toggle the user should
+        # have to discover.  Seed it once for a brand-new workspace only.  An explicit
+        # later revocation remains authoritative and is never silently re-enabled.
+        if not requested_root:
+            self._ensure_default_workspace_policy(db_path)
+        self.audit_decisions = AuditDecisionStore(db_path)
+        self.human_translations = human_translation_decisions.HumanTranslationDecisionStore(db_path)
+        self.human_typography = human_typography_decisions.HumanTypographyDecisionStore(db_path)
+        self.human_masks = human_mask_decisions.HumanMaskDecisionStore(db_path)
+        self.mask_revisions = residual_mask_revisions.MaskRevisionStore(db_path)
+        self.residual_analyses = residual_analysis_artifacts.ResidualAnalysisStore(
+            db_path)
+        self.residual_component_reviews = (
+            residual_component_reviews.ResidualComponentReviewStore(
+                db_path))
+        self.visual_reviews = visual_review_decisions.VisualReviewDecisionStore(db_path)
+        self.history_revision = 1
+        self.beta_access_authorizer = _build_ui_beta_access_authorizer(
+            self.runtime_root)
+        self.commercial_device_authorizer = _build_commercial_device_authorizer(self.runtime_root)
+        self._quality_revision_threads: dict[str, threading.Thread] = {}
+        self._quality_revision_cancels: dict[str, threading.Event] = {}
+        self._owned_worker_process = None
+        self.store.reconcile_confirmed_reviews()
+        # A job left in flight by a crash must not come back as PROCESSANDO after a restart.
+        self._recover_staged_source_analyses()
+        self.reconcile_orphans()
+
+    @staticmethod
+    def _ensure_default_workspace_policy(db_path: Path) -> None:
+        from yomu.review.source_readiness import SourceReadinessStore, default_workspace_id
+
+        readiness = SourceReadinessStore(db_path)
+        try:
+            workspace_id = default_workspace_id(db_path)
+            if readiness.workspace_policy_history(owner="local", workspace_id=workspace_id):
+                return
+            readiness.activate_workspace_policy(
+                owner="local", workspace_id=workspace_id, created_by="system_default",
+                authorization_statement=(
+                    "Processamento local de fontes suportadas; fontes desconhecidas "
+                    "ou sem autorização explícita permanecem bloqueadas."
+                ),
+            )
+        finally:
+            readiness.close()
+
+    # ---- orphan reconciliation ----------------------------------------------
+    def _recover_staged_source_analyses(self) -> None:
+        """A staging analysis belongs to the UI process, never to the worker.
+
+        On a fresh UI instance no in-memory source-analysis coroutine can own a persisted
+        staging row. Freeze it instead of showing an indefinitely live browser analysis.
+        """
+        try:
+            staged = self.store.list_jobs(statuses=[JobStatus.STAGING], limit=None)
+        except Exception:  # noqa: BLE001 - startup remains best effort
+            return
+        for job in staged:
+            try:
+                self.store.transition(
+                    job["id"], JobStatus.FAILED,
+                    reason_code="source_analysis_interrupted", stage="source_analysis",
+                    error_type="source_analysis", error_message="source_analysis_interrupted",
+                )
+            except Exception:  # noqa: BLE001 - concurrent submit/cancel wins
+                continue
+
+    def _completion_evidence(self, job: dict[str, Any]) -> str:
+        """Complete proof the run really finished: exit code 0, a manifest and a real PDF.
+
+        A vanished PID is never proof of success on its own — a killed process and a
+        completed one look identical from the outside.
+        """
+        if job.get("exit_code") not in (0, "0"):
+            return ""
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return ""
+        base = Path(output_dir)
+        try:
+            # The manifest is part of the output contract.  Do not accept the old
+            # ad-hoc filename or merely well-formed JSON: only a schema-verified
+            # run manifest proves that this output belongs to a completed run.
+            if not (base / MANIFEST_FILENAME).is_file():
+                return ""
+            manifest = load_verified_run_manifest(base)
+            if not manifest:
+                return ""
+            # A PDF that exists but is empty/truncated is not evidence either.
+            pdfs = [p for p in base.rglob("*.pdf") if p.is_file() and p.stat().st_size > 1024]
+            if not pdfs:
+                return ""
+            with open(pdfs[0], "rb") as handle:
+                if handle.read(5) != b"%PDF-":
+                    return ""
+            status = str(manifest.get("final_status") or "")
+            if status == "finished" and manifest.get("quality_passed") is True:
+                return JobStatus.FINISHED
+            if status == "review_required" or (
+                status == "finished" and manifest.get("quality_passed") is False
+            ):
+                return JobStatus.REVIEW_REQUIRED
+            return ""
+        except OSError:
+            return ""
+
+    def _success_evidence(self, job: dict[str, Any]) -> bool:
+        """Backward-compatible boolean: any proven completed terminal outcome."""
+        return bool(self._completion_evidence(job))
+
+    def reconcile_orphans(self) -> list[dict[str, str]]:
+        """Freeze in-flight jobs whose runner process is gone. Outputs are never touched."""
+        reconciled: list[dict[str, str]] = []
+        try:
+            in_flight = self.store.list_jobs(statuses=list(JobStatus.IN_FLIGHT), limit=None)
+        except Exception:  # noqa: BLE001 - the UI must start even with an unreadable store
+            return reconciled
+        for job in in_flight:
+            if _runner_still_alive(job):
+                continue                      # a real, verified process owns this job
+            if not job.get("runner_pid") and _worker_still_alive(job):
+                continue                      # source analysis is still worker-owned
+            job_id = job["id"]
+            frozen = _normalize_epoch(job.get("heartbeat_at")) or \
+                _normalize_epoch(job.get("updated_at")) or time.time()
+            if job.get("cancel_requested"):
+                target, reason = JobStatus.CANCELLED, "cancelled_process_not_found"
+            elif completion := self._completion_evidence(job):
+                target = completion
+                reason = (
+                    "quality_review_completed_before_shutdown"
+                    if target == JobStatus.REVIEW_REQUIRED else "completed_before_shutdown"
+                )
+            else:
+                target, reason = JobStatus.INTERRUPTED, "process_not_found"
+            try:
+                self.store.transition(job_id, target, interrupted_reason=reason,
+                                      finished_at=frozen, recoverable=1,
+                                      writer_component="ui_bridge.reconcile_orphans")
+            except Exception:  # noqa: BLE001 - a concurrent owner wins; leave the row alone
+                continue
+            reconciled.append({"job_id": job_id, "status": target, "reason": reason})
+        return reconciled
+
+    def _reconcile_timed_out_review_rerun(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Settle a cancelled rerun whose bounded grace period has expired.
+
+        The runner tree is stopped only when its PID, creation time, script and job id
+        still match.  The worker itself is never terminated and unrelated worktrees are
+        therefore outside this recovery path.
+        """
+        if (
+            str(job.get("operation_kind") or "") != "review_rerun"
+            or str(job.get("status") or "") not in JobStatus.IN_FLIGHT
+            or not job.get("cancel_requested")
+        ):
+            return job
+        requested_at = _normalize_epoch(job.get("cancellation_requested_at"))
+        if requested_at is None or time.time() - requested_at < REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS:
+            return job
+        runner_alive = _runner_still_alive(job)
+        if runner_alive:
+            try:
+                import yomu.runtime.process_tree as process_tree
+
+                report = process_tree.terminate_tree(
+                    job.get("runner_pid"),
+                    create_time=job.get("runner_create_time"),
+                    substrings=["yomu.review.workflows.review_rerun_runner", str(job.get("id") or "")],
+                    timeout=8.0,
+                )
+            except Exception:  # noqa: BLE001 - fail closed while the runner may be alive
+                return self.store.get_job(str(job.get("id") or "")) or job
+            if report.get("reason") not in {"stopped", "not_running"}:
+                return self.store.get_job(str(job.get("id") or "")) or job
+        current = self.store.get_job(str(job.get("id") or "")) or job
+        if current.get("status") in JobStatus.TERMINAL:
+            return current
+        try:
+            if current.get("status") != JobStatus.CANCELLING:
+                current = self.store.transition(
+                    current["id"], JobStatus.CANCELLING,
+                    interrupted_reason="cancellation_timeout_recovered",
+                    reason_code="user_cancelled", stage="cancelling",
+                )
+            current = self.store.transition(
+                current["id"], JobStatus.CANCELLED,
+                interrupted_reason="cancellation_timeout_recovered",
+                reason_code="user_cancelled", stage="cancelled", recoverable=0,
+            )
+        except Exception:  # noqa: BLE001 - worker/runner terminalization wins the race
+            current = self.store.get_job(str(job.get("id") or "")) or current
+        return current
+
+    def _review_rerun_public_state(
+        self, job: dict[str, Any], config: dict[str, Any]
+    ) -> dict[str, Any]:
+        status = str(job.get("status") or JobStatus.QUEUED)
+        cancel_requested = bool(job.get("cancel_requested"))
+        lifecycle = {
+            JobStatus.QUEUED: "queued",
+            JobStatus.CLAIMING: "claimed",
+            JobStatus.STARTING: "claimed",
+            JobStatus.RUNNING: "running",
+            JobStatus.CANCELLING: "cancelling",
+            JobStatus.CANCELLED: "cancelled",
+            JobStatus.REVIEW_REQUIRED: "review_required",
+            JobStatus.FINISHED: "completed",
+            JobStatus.FAILED: "failed",
+            JobStatus.INTERRUPTED: "failed",
+        }.get(status, status)
+        if cancel_requested and status in {
+            JobStatus.CLAIMING, JobStatus.STARTING, JobStatus.RUNNING
+        }:
+            lifecycle = "cancel_requested"
+
+        result = self.store.review_actions(str(job.get("id") or ""))
+        targets = [item for item in (config.get("targets") or []) if isinstance(item, dict)]
+        total = len(targets)
+        counter_stage = str(job.get("progress_counter_stage") or "")
+        persisted_processed = result.get("processed_regions")
+        if persisted_processed is None and (
+            counter_stage == "review_rerun_regions"
+            or int(job.get("progress_total") or 0) == total
+        ):
+            persisted_processed = job.get("progress_current")
+        try:
+            processed = max(0, min(total, int(persisted_processed or 0)))
+        except (TypeError, ValueError):
+            processed = 0
+        try:
+            approved = max(0, min(processed, int(result.get("approved_regions") or 0)))
+            rejected = max(0, min(processed, int(result.get("rejected_regions") or 0)))
+            cancelled = max(0, int(result.get("cancelled_regions") or 0))
+        except (TypeError, ValueError):
+            approved = rejected = cancelled = 0
+        if status == JobStatus.CANCELLED:
+            cancelled = max(cancelled, total - processed)
+            remaining = 0
+        else:
+            cancelled = min(cancelled, max(0, total - processed))
+            remaining = max(0, total - processed - cancelled)
+        counts = {
+            "targets": total,
+            "processed": processed,
+            "approved": approved,
+            "rejected": rejected,
+            "remaining": remaining,
+            "cancelled": cancelled,
+        }
+
+        now = time.time()
+        job_heartbeat = _normalize_epoch(job.get("heartbeat_at"))
+        worker = self.store.get_worker(str(job.get("worker_id") or ""))
+        worker_heartbeat = _normalize_epoch((worker or {}).get("heartbeat_at"))
+        worker_age = max(0.0, now - worker_heartbeat) if worker_heartbeat else None
+        if not job.get("worker_id"):
+            worker_lease = "unclaimed"
+        else:
+            worker_lease = "active" if worker_age is not None and worker_age <= 15 else "expired"
+        cancel_at = _normalize_epoch(job.get("cancellation_requested_at"))
+        cancel_elapsed = max(0.0, now - cancel_at) if cancel_at else None
+        return {
+            "lifecycle_state": lifecycle,
+            "queue_position": self.store.queue_position(str(job.get("id") or "")),
+            "worker_lease": worker_lease,
+            "worker_heartbeat_at": _epoch_to_iso(worker_heartbeat),
+            "worker_heartbeat_age_seconds": round(worker_age, 1) if worker_age is not None else None,
+            "job_heartbeat_at": _epoch_to_iso(job_heartbeat),
+            "job_heartbeat_age_seconds": (
+                round(max(0.0, now - job_heartbeat), 1) if job_heartbeat else None
+            ),
+            "cancellation_elapsed_seconds": (
+                round(cancel_elapsed, 1) if cancel_elapsed is not None else None
+            ),
+            "cancellation_timeout_seconds": REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS,
+            "cancellation_timed_out": bool(
+                cancel_elapsed is not None
+                and cancel_elapsed >= REVIEW_RERUN_CANCEL_TIMEOUT_SECONDS
+                and status not in JobStatus.TERMINAL
+            ),
+            "current_page": int(result.get("current_page") or 0),
+            "current_region_id": str(result.get("current_region_id") or "")[:160],
+            "current_step": str(result.get("current_step") or "")[:80],
+            "rerun_counts": counts,
+            "rerun_accounting_closed": total == processed + remaining + cancelled,
+        }
+
+    # ---- job <-> UI record mapping -----------------------------------------
+    @staticmethod
+    def _chapter_slug_from_job(job: dict[str, Any]) -> str:
+        config = job.get("configuration") or {}
+        if isinstance(config, dict) and str(config.get("chapter_slug") or "").strip():
+            return sanitize_output_name(str(config.get("chapter_slug") or ""))
+        output = Path(str(job.get("output_dir") or "chapter"))
+        if output.parent.name.lower() == "output":
+            return sanitize_output_name(output.name)
+        return sanitize_output_name(output.parent.name or output.name or "chapter")
+
+    def _job_record(self, job: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not job:
+            return None
+        config = job.get("configuration") or {}
+        owner_id = str(config.get("community_owner_id") or "") if isinstance(config, dict) else ""
+        ownership = (
+            "owned" if owner_id else
+            "unowned_new" if isinstance(config, dict) and config.get("ownership_schema_version")
+            else "legacy"
+        )
+        source_type = str(job.get("source_type") or config.get("source_type") or "url")
+        snapshot_metadata = config.get("local_test_snapshot")
+        validation_snapshot = bool(
+            os.getenv("APP_ENV") == "test"
+            and os.getenv("AUTH_PROVIDER") == "local_test"
+            and isinstance(snapshot_metadata, dict)
+            and snapshot_metadata.get("purpose") == "authenticated_ui_validation"
+        )
+        local_summary = config.get("local_source_summary")
+        if not isinstance(local_summary, dict):
+            local_summary = {}
+        source_analysis_result = {}
+        result_id = str(config.get("source_analysis_result_id") or "") if isinstance(config, dict) else ""
+        if result_id:
+            from yomu.review.source_readiness import SourceReadinessStore
+
+            readiness = SourceReadinessStore(self.store.db_path)
+            try:
+                owner = str(config.get("community_owner_id") or "local")
+                stored_result = readiness.get_analysis(owner, result_id)
+                source_analysis_result = stored_result.public() if stored_result else {}
+            finally:
+                readiness.close()
+        public_source_analysis = job.get("source_analysis")
+        if not isinstance(public_source_analysis, dict):
+            public_source_analysis = {}
+        source_verified = bool(
+            any(
+                str(candidate.get("outcome") or "")
+                in {"supported_specific_adapter", "supported_generic", "supported"}
+                and int(candidate.get("accepted_count") or 0) > 0
+                for candidate in (source_analysis_result, public_source_analysis)
+                if isinstance(candidate, dict)
+            )
+        )
+        result_metrics = self._current_job_result_metrics(job)
+        artifact_output = self._effective_artifact_output_dir(job)
+        artifact_manifest = {}
+        if artifact_output is not None:
+            try:
+                artifact_manifest = json.loads(
+                    (artifact_output / "run_manifest.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                artifact_manifest = {}
+        display_status = job.get("status")
+        if (
+            source_type in {"local_folder", "local_images"}
+            and str(artifact_manifest.get("final_status") or "") == JobStatus.REVIEW_REQUIRED
+        ):
+            # Older frozen local jobs wrote their pipeline output relative to the bundle,
+            # while the queue row pointed at the user-data output root.  Expose the
+            # verified terminal evidence without mutating that historical row.
+            display_status = JobStatus.REVIEW_REQUIRED
+        display_output = str(artifact_output or job.get("output_dir") or "")
+        display_pdf = str(job.get("pdf_path") or "")
+        if artifact_manifest.get("pdf_path") and artifact_output is not None:
+            candidate_pdf = Path(str(artifact_manifest["pdf_path"]))
+            if not candidate_pdf.is_absolute():
+                candidate_pdf = artifact_output / candidate_pdf
+            try:
+                candidate_pdf.resolve().relative_to(artifact_output.resolve())
+                if candidate_pdf.is_file():
+                    display_pdf = str(candidate_pdf.resolve())
+            except (OSError, ValueError):
+                pass
+        record = {
+            "id": job["id"],
+            "run_id": job.get("run_id"),
+            "job_id": job["id"],
+            "operation_kind": str(job.get("operation_kind") or "chapter"),
+            "parent_job_id": str(job.get("parent_job_id") or ""),
+            "operation_label": (
+                "Rerun de pendências"
+                if str(job.get("operation_kind") or "") == "review_rerun"
+                else "Reconstrução corrigida"
+                if str(job.get("operation_kind") or "") == "artifact_reconstruction"
+                else "Tradução de capítulo"
+            ),
+            "target_region_count": len(config.get("targets") or []),
+            "target_page_count": len({
+                int(item.get("page") or 0)
+                for item in (config.get("targets") or [])
+                if isinstance(item, dict) and int(item.get("page") or 0) > 0
+            }),
+            "provider_requests_planned": sum(
+                1 for item in (config.get("targets") or [])
+                if isinstance(item, dict) and item.get("requires_provider") is True
+            ),
+            "community_ownership": ownership,
+            "chapter_name": config.get("chapter_name") or job.get("series_title") or job.get("series_slug") or "",
+            "slug": self._chapter_slug_from_job(job),
+            # The queue retains the raw URL only to execute a remote job. The browser-facing
+            # record is diagnostic data and must not echo signed query material. Local jobs
+            # carry no source path in their row; their snapshot reference stays opaque.
+            "url": (
+                sanitize_source_url(str(job.get("source_url") or ""))
+                if source_type not in {"local_folder", "local_images"} else ""
+            ),
+            "source_type": source_type,
+            "validation_snapshot": validation_snapshot,
+            "validation_snapshot_label": (
+                "Snapshot isolado de validação" if validation_snapshot else ""
+            ),
+            "source_label": (
+                str(local_summary.get("folder_name") or "Pasta local")[:120]
+                if source_type in {"local_folder", "local_images"} else ""
+            ),
+            "mode": config.get("mode") or "fast",
+            "output_profile": self._output_profile_from_config(config),
+            "scope": "full" if config.get("full", True) else "partial",
+            "cache_mode": "force" if config.get("force") else "cache",
+            "status": display_status,
+            "output_folder": display_output,
+            "pdf_path": display_pdf,
+            "output_format": str(config.get("output_format") or "pdf"),
+            "download_only": bool(config.get("download_only")),
+            "result_kind": "directory" if (
+                bool(config.get("download_only"))
+                or str(config.get("output_format") or "pdf") in {"png", "psd"}
+            ) else "file",
+            "result_path": display_output or display_pdf,
+            "quality_report_path": job.get("quality_report_path") or "",
+            "attempt": job.get("attempt") or 1,
+            "recoverable": bool(job.get("recoverable")),
+            # Backend-derived capability. The browser shows "Retomar" only for this,
+            # never for a status it recognised on its own.
+            "can_resume": self.resume_block_reason(job) == "",
+            "interrupted_reason": job.get("interrupted_reason") or "",
+            "reason_code": job.get("reason_code") or "",
+            "stage": str(job.get("stage") or "created"),
+            "progress_current": int(job.get("progress_current") or 0),
+            "progress_total": int(job.get("progress_total") or 0),
+            "progress_message": sanitize_diagnostic_text(job.get("progress_message") or "")[:300],
+            "progress_counter_stage": str(job.get("progress_counter_stage") or ""),
+            "error_message": sanitize_diagnostic_text(job.get("error_message") or ""),
+            "source_analysis": job.get("source_analysis") or {},
+            "source_selection": job.get("source_selection") or {},
+            "source_analysis_result": source_analysis_result,
+            "source_verified": source_verified,
+            "download_authorization": (
+                config.get("download_authorization") if isinstance(
+                    config.get("download_authorization"), dict) else {}
+            ),
+            "source_provenance": self._public_job_source_provenance(job),
+            "started_at": _epoch_to_iso(job.get("started_at")),
+            "updated_at": _epoch_to_iso(job.get("updated_at")),
+            "heartbeat_at": _epoch_to_iso(job.get("heartbeat_at")),
+            "finished_at": _epoch_to_iso(job.get("finished_at")),
+            "total_seconds": _duration(job),
+            "review_confirmed": bool(job.get("review_confirmed_at")),
+            "review_status": (
+                "completed" if job.get("review_confirmed_at") else
+                "required" if job.get("status") == JobStatus.REVIEW_REQUIRED else "none"
+            ),
+            "review_confirmed_at": _epoch_to_iso(job.get("review_confirmed_at")),
+            "cancellation_requested_at": _epoch_to_iso(job.get("cancellation_requested_at")),
+            "cancellation_completed_at": _epoch_to_iso(job.get("cancellation_completed_at")),
+            **result_metrics,
+        }
+        record["completion_summary"] = build_job_completion_summary(
+            record, getattr(self, "output_root", OUTPUT_ROOT)
+        )
+        if record["operation_kind"] == "artifact_reconstruction":
+            record["publication_manifest_ready"] = (
+                self._reconstruction_publication_manifest_ready(job)
+            )
+        if str(job.get("operation_kind") or "") == "review_rerun":
+            record.update(self._review_rerun_public_state(job, config))
+        if self._is_translation_job(job):
+            record["review_generations"] = self._review_generations_for_history(str(job["id"]))
+        output_dir = Path(str(job.get("output_dir") or ""))
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        try:
+            confined_output = output_dir.resolve()
+            confined_output.relative_to(output_root)
+        except (OSError, ValueError):
+            return record
+        history_store = getattr(self, "history_store", None)
+        if history_store is None:
+            return record
+        verification, manifest = history_store._output_verification(
+            confined_output, download_only=bool(record.get("download_only"))
+        )
+        record["output_verification"] = verification
+        if manifest:
+            pdf_path = history_store._manifest_pdf_path(confined_output, manifest)
+            record["pdf_sha256"] = (
+                str(manifest.get("pdf_sha256") or "")
+                or history_store._sha256_file(pdf_path)
+            )
+        elif record.get("pdf_path"):
+            try:
+                pdf_path = Path(str(record.get("pdf_path") or "")).resolve()
+                pdf_path.relative_to(confined_output)
+                pdf_path.relative_to(output_root)
+                record["pdf_sha256"] = history_store._sha256_file(pdf_path)
+            except (OSError, ValueError):
+                pass
+        return record
+
+    @staticmethod
+    def _artifact_manifest_matches_job(output_dir: Path, job: dict[str, Any]) -> bool:
+        """Return true only when reused output artifacts identify this job/run."""
+
+        job_id = str(job.get("id") or "")
+        run_id = str(job.get("run_id") or "")
+        job_manifest = output_dir / "job_manifest.json"
+        reconstruction_manifest = output_dir / "reconstruction_manifest.json"
+        run_manifest = output_dir / "run_manifest.json"
+        try:
+            for manifest_path in (job_manifest, reconstruction_manifest):
+                if not manifest_path.is_file():
+                    continue
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if str(payload.get("job_id") or "") != job_id:
+                    return False
+                manifest_run = str(payload.get("run_id") or "")
+                if run_id and manifest_run and manifest_run != run_id:
+                    return False
+                return True
+            if run_manifest.is_file():
+                payload = json.loads(run_manifest.read_text(encoding="utf-8"))
+                manifest_run = str(payload.get("run_id") or "")
+                return bool(run_id and manifest_run and manifest_run == run_id)
+        except (OSError, ValueError, TypeError):
+            return False
+
+    @classmethod
+    def _effective_artifact_output_dir(cls, job: dict[str, Any]) -> Path | None:
+        """Find the verified artifact directory for a job, including legacy frozen runs."""
+
+        output_dir = Path(str(job.get("output_dir") or ""))
+        if output_dir.is_dir() and cls._artifact_manifest_matches_job(output_dir, job):
+            return output_dir
+        config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        source_type = str(job.get("source_type") or config.get("source_type") or "")
+        if source_type not in {"local_folder", "local_images"}:
+            return None
+        command = list(job.get("command") or [])
+        try:
+            output_index = command.index("--output") + 1
+            raw_output = Path(str(command[output_index]))
+            executable = Path(str(command[0])).resolve()
+        except (ValueError, IndexError, OSError, TypeError):
+            return None
+        candidates = []
+        if raw_output.is_absolute():
+            candidates.append(raw_output)
+        else:
+            # Candidate23's frozen child resolved relative output below its bundle.  Keep
+            # this compatibility path read-only and require run-id evidence below.
+            candidates.extend((
+                executable.parent / "_internal" / "output" / raw_output,
+                executable.parent / "output" / raw_output,
+            ))
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved.is_dir() and cls._artifact_manifest_matches_job(resolved, job):
+                return resolved
+        return None
+
+    def _reconstruction_publication_manifest_ready(self, job: dict[str, Any]) -> bool:
+        """Server-side presentation capability for reconstruction publication UX."""
+
+        if str(job.get("operation_kind") or "") != "artifact_reconstruction":
+            return False
+        output_dir = Path(str(job.get("output_dir") or ""))
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        try:
+            confined_output = output_dir.resolve()
+            confined_output.relative_to(output_root)
+        except (OSError, ValueError):
+            return False
+        job_id = str(job.get("id") or "")
+        run_id = str(job.get("run_id") or "")
+        if not job_id or not run_id:
+            return False
+        for manifest_path in (
+            confined_output / "job_manifest.json",
+            confined_output / "reconstruction_manifest.json",
+        ):
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(manifest, dict):
+                continue
+            if str(manifest.get("job_id") or "") != job_id:
+                continue
+            manifest_run = str(manifest.get("run_id") or "")
+            if manifest_run and manifest_run != run_id:
+                continue
+            return True
+        return False
+
+    def _current_job_result_metrics(self, job: dict[str, Any]) -> dict[str, Any]:
+        if str(job.get("status") or "") not in JobStatus.TERMINAL:
+            return {}
+        output_dir = self._effective_artifact_output_dir(job)
+        if output_dir is None:
+            return {}
+        configuration = job.get("configuration") or {}
+        if isinstance(configuration, dict) and configuration.get("download_only") is True:
+            return self._download_only_result_metrics(output_dir)
+        report_path = output_dir / "timing_report.json"
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            report = self._load_quality_report_metrics_document(job, output_dir)
+        if not isinstance(report, dict):
+            return {}
+        quality = report.get("quality_validation")
+        if not isinstance(quality, dict):
+            summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+            quality = summary.get("quality_validation")
+        quality = quality if isinstance(quality, dict) else {}
+        try:
+            manual_review_count = int(quality.get("manual_review_required_groups") or 0)
+        except (TypeError, ValueError):
+            manual_review_count = 0
+        return {
+            "pages_processed": int(
+                report.get("processed_images") or report.get("total_images") or 0),
+            "groups_translated": int(report.get("groups_translated") or 0),
+            "manual_review_count": manual_review_count,
+            "errors": int(report.get("pages_with_error") or 0),
+            "quality_gate": quality.get("passed"),
+        }
+
+    @staticmethod
+    def _download_only_result_metrics(output_dir: Path) -> dict[str, Any]:
+        """Expose downloader artifacts without fabricating translation metrics."""
+        try:
+            report = json.loads(
+                (output_dir / "downloaded_images.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {
+                "pages_processed": None,
+                "groups_translated": None,
+                "manual_review_count": None,
+                "errors": None,
+                "quality_gate": "NOT_APPLICABLE",
+                "download_report_valid": False,
+                "download_gate": None,
+            }
+        if not isinstance(report, dict):
+            return {
+                "pages_processed": None,
+                "groups_translated": None,
+                "manual_review_count": None,
+                "errors": None,
+                "quality_gate": "NOT_APPLICABLE",
+                "download_report_valid": False,
+                "download_gate": None,
+            }
+        gate = report.get("download_gate")
+        try:
+            total_downloaded = int(report.get("total_downloaded"))
+        except (TypeError, ValueError):
+            total_downloaded = None
+        downloaded = report.get("downloaded")
+        valid = (
+            total_downloaded is not None
+            and total_downloaded >= 0
+            and isinstance(gate, dict)
+            and gate.get("passed") is True
+            and isinstance(downloaded, list)
+            and len(downloaded) == total_downloaded
+            and all(isinstance(item, dict) for item in downloaded)
+        )
+        if valid:
+            try:
+                output_root = output_dir.resolve()
+                valid = all(
+                    (path := Path(str(item.get("path") or "")).resolve()).is_file()
+                    and path.is_relative_to(output_root)
+                    for item in downloaded
+                )
+            except (OSError, ValueError):
+                valid = False
+        return {
+            "pages_processed": total_downloaded if valid else None,
+            "groups_translated": None,
+            "manual_review_count": None,
+            "errors": None,
+            "quality_gate": "NOT_APPLICABLE",
+            "download_report_valid": valid,
+            "download_gate": "PASS" if valid else None,
+        }
+
+    @staticmethod
+    def _load_quality_report_metrics_document(
+        job: dict[str, Any],
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        candidates: list[Path] = []
+        recorded = str(job.get("quality_report_path") or "").strip()
+        if recorded:
+            candidates.append(Path(recorded))
+        candidates.append(output_dir / "quality_report.json")
+        seen: set[Path] = set()
+        for candidate in candidates:
+            candidate = candidate if candidate.is_absolute() else output_dir / candidate
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                continue
+            try:
+                candidate.relative_to(output_dir.resolve())
+            except (OSError, ValueError):
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if not candidate.is_file():
+                continue
+            try:
+                document = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(document, dict):
+                return document
+        return {}
+
+    @staticmethod
+    def _quality_review_reason(item: dict[str, Any], page: dict[str, Any]) -> str:
+        visual = item.get("visual_validation") or {}
+        if float(item.get("text_overflow_ratio") or 0.0) > 0:
+            return "O texto traduzido pode ultrapassar o espaço do balão."
+        if visual and not visual.get("visual_validation_passed", True):
+            return "A aparência desta região precisa ser conferida."
+        if page.get("smart_split_unsafe") or page.get("unsafe_split"):
+            return "Este corte de página precisa de conferência."
+        if item.get("classification") == "sfx" and item.get("preserved_original"):
+            return "Este efeito sonoro foi mantido no original."
+        if item.get("preserved_original") or item.get("translation_final_state") == "preserved_original":
+            return "O sistema preservou este texto por segurança."
+        return "A tradução precisa de confirmação."
+
+    @staticmethod
+    def _quality_review_risk(item: dict[str, Any], page: dict[str, Any]) -> str:
+        reasons = " ".join(str(value).lower() for value in (item.get("quality_reasons") or []))
+        visual = item.get("visual_validation") or {}
+        if (
+            item.get("manual_review_required")
+            or item.get("preserved_original")
+            or item.get("translation_final_state") == "preserved_original"
+            or not visual.get("visual_validation_passed", True)
+            or "semantic" in reasons
+            or "source_language" in reasons
+            or "ocr" in reasons
+            or "truncated" in reasons
+        ):
+            return "HIGH"
+        try:
+            overflow = float(item.get("text_overflow_ratio") or 0.0)
+        except (TypeError, ValueError):
+            overflow = 0.0
+        if overflow >= 1.1 or item.get("classification") == "sfx" or "terminology" in reasons:
+            return "MEDIUM"
+        return "LOW"
+
+    @staticmethod
+    def _page_identity(page: dict[str, Any]) -> tuple[int, int | None]:
+        """Canonical ``(page_index, sequence_index)`` for a report page.
+
+        ``index`` is the authoritative page identity; ``sequence_index`` is only a
+        fallback used when ``index`` is genuinely absent — the two are never treated
+        as synonyms. ``0`` is a valid index, so presence is tested by key/None, not
+        truthiness (the old ``index or sequence_index`` silently lost page 0).
+        """
+        seq = page.get("sequence_index")
+        try:
+            seq_int: int | None = int(seq) if seq is not None else None
+        except (TypeError, ValueError):
+            seq_int = None
+        raw_index = page.get("index")
+        if raw_index is not None:
+            try:
+                return int(raw_index), seq_int
+            except (TypeError, ValueError):
+                pass
+        if seq_int is not None:
+            return seq_int, seq_int
+        return 0, seq_int
+
+    @staticmethod
+    def _review_bounding_box(raw: dict[str, Any]) -> tuple[list[int] | None, bool]:
+        """Validated ``[x, y, w, h]`` in original-image pixels, plus a validity flag.
+
+        An absent or malformed box yields ``(None, False)`` so the Review still
+        renders (with a "região indisponível" state) instead of breaking.
+        """
+        box = raw.get("bounding_box")
+        if not isinstance(box, (list, tuple)) or len(box) < 4:
+            return None, False
+        try:
+            x, y, w, h = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        except (TypeError, ValueError):
+            return None, False
+        if x < 0 or y < 0 or w <= 0 or h <= 0:
+            return None, False
+        return [x, y, w, h], True
+
+    @staticmethod
+    def _review_sort_key(item: dict[str, Any]) -> tuple[int, int, int, int, str]:
+        """Canonical physical reading order for a review item.
+
+        ``page_index`` first, then physical position within the page (``bbox.y`` then
+        ``bbox.x``), then ``region_id`` as a stable tiebreaker. There is no reliable
+        reading order *between* regions (only within one), so bbox position is the
+        ordering signal. Items without a box sort after boxed items on the same page,
+        by region_id — a stable fallback that still respects ``page_index``. Category
+        never participates, so items of different kinds interleave by position.
+        """
+        box = item.get("bounding_box")
+        has_box = isinstance(box, (list, tuple)) and len(box) >= 4
+        try:
+            y = int(box[1]) if has_box else 0
+            x = int(box[0]) if has_box else 0
+        except (TypeError, ValueError):
+            has_box, y, x = False, 0, 0
+        try:
+            page_index = int(item.get("page_index") or 0)
+        except (TypeError, ValueError):
+            page_index = 0
+        return (page_index, 0 if has_box else 1, y, x, str(item.get("region_id") or item.get("key") or ""))
+
+    @staticmethod
+    def _review_region_type(value: str) -> str:
+        allowed = {
+            "speech", "dialogue", "thought", "narration", "system_message", "location",
+            "title", "sfx", "decorative", "editorial", "credit", "watermark", "url",
+            "proper_name", "logo", "branding", "unknown",
+        }
+        normalized = str(value or "").strip().casefold()
+        if normalized not in allowed:
+            raise ValueError("invalid_region_type")
+        return normalized
+
+    @staticmethod
+    def _decode_region_box(raw: str | None) -> list[int] | None:
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+            return [int(part) for part in value[:4]] if isinstance(value, list) and len(value) == 4 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _review_page_dimensions(self, job: dict[str, Any], page_index: int) -> tuple[int, int]:
+        report = self._quality_report_data(job) or {}
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        for page in report.get("pages", []) or []:
+            if not isinstance(page, dict) or self._page_identity(page)[0] != int(page_index):
+                continue
+            for raw_path in (page.get("output_path"), page.get("image_path")):
+                if not raw_path:
+                    continue
+                path = Path(str(raw_path)).resolve()
+                if output_dir not in path.parents or not path.is_file():
+                    continue
+                try:
+                    with Image.open(path) as image:
+                        return int(image.width), int(image.height)
+                except Exception:
+                    continue
+        raise ValueError("review_page_image_unavailable")
+
+    @staticmethod
+    def _validate_review_bbox(box: Any, width: int, height: int) -> list[int]:
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            raise ValueError("invalid_bbox")
+        try:
+            x, y, w, h = (int(part) for part in box)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("invalid_bbox") from None
+        if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:
+            raise ValueError("invalid_bbox")
+        return [x, y, w, h]
+
+    def _smart_split_review_items(
+        self,
+        job: dict[str, Any],
+        report: dict[str, Any],
+        actions: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        validation = ((report.get("summary") or {}).get("quality_validation") or {})
+        details = validation.get("smart_split_details") or []
+        items: list[dict[str, Any]] = []
+        if not isinstance(details, list):
+            return items
+        for index, detail in enumerate(details, start=1):
+            if not isinstance(detail, dict) or not detail.get("requires_review"):
+                continue
+            page = int(detail.get("page") or detail.get("next_page") or index)
+            previous_page = detail.get("previous_page")
+            next_page = detail.get("next_page") or page
+            boundary = str(
+                detail.get("boundary")
+                or detail.get("boundary_label")
+                or (f"{previous_page}/{next_page}" if previous_page else page)
+            )
+            boundary_key = re.sub(r"[^A-Za-z0-9_.:-]+", "-", boundary).strip("-") or str(page)
+            key = f"smart_split:{page}:{boundary_key}"
+            # No safe split-resolution mechanism exists yet.  Keep the finding visible
+            # and fail-closed even if an old/manual action row exists for this key.
+            revision = {}
+            action = "pending"
+            reason_code = str(
+                detail.get("reason_code") or "smart_split_requires_visual_review")
+            unsafe_reason = str(detail.get("reason") or detail.get("unsafe_reason") or reason_code)
+            evidence_bits = [
+                f"boundary {boundary}" if boundary else "",
+                f"reason {unsafe_reason}" if unsafe_reason else "",
+                f"safe_band={detail.get('safe_band')}" if "safe_band" in detail else "",
+                f"band_score={detail.get('band_score')}" if "band_score" in detail else "",
+            ]
+            items.append({
+                "type": "smart_split",
+                "key": key,
+                "region_id": "",
+                "visual_state": "manual_review",
+                "revision_linked": False,
+                "visual_reason_code": reason_code,
+                "reason_code": reason_code,
+                "page": page,
+                "page_index": page,
+                "sequence_index": None,
+                # A boundary is a horizontal seam, not a region box; without a real
+                # bbox it sorts after boxed items on the same page (stable fallback),
+                # but it is no longer forced to the end of the whole list.
+                "bounding_box": None,
+                "bounding_box_valid": False,
+                "boundary": boundary,
+                "previous_page": previous_page,
+                "next_page": next_page,
+                "label": f"Smart Split {boundary}",
+                "classification": "smart_split",
+                "original": f"Corte {boundary}",
+                "translation": "Revisão visual obrigatória",
+                "version": int(revision.get("version") or 0),
+                "review_reason_code": str(revision.get("reason_code") or ""),
+                "review_reason": str(revision.get("reason") or ""),
+                "reason": "Smart Split requer revisão: "
+                + " · ".join(bit for bit in evidence_bits if bit),
+                "risk": "HIGH",
+                "state": action,
+                "preserved_original": False,
+                "page_url": f"/api/ui/quality-review/{job['id']}/page/{page}",
+                "smart_split_detail": {
+                    key: value for key, value in detail.items()
+                    if key not in {"image", "image_url", "source_url"}
+                },
+            })
+        return items
+
+    def _quality_report_data(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        report_path = Path(str(job.get("quality_report_path") or ""))
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        try:
+            report_path = report_path.resolve()
+            if not output_dir or output_dir not in report_path.parents or not report_path.is_file():
+                return None
+            candidates = [report_path]
+            # The worker records the human-facing HTML report, while the structured
+            # quality data is persisted beside it as JSON.  Prefer the recorded path
+            # but fall back to that sibling when the recorded artifact is not JSON.
+            if report_path.suffix.casefold() in {".html", ".htm"}:
+                candidates.append(report_path.with_suffix(".json"))
+            for candidate in candidates:
+                if not candidate.is_file() or output_dir not in candidate.resolve().parents:
+                    continue
+                try:
+                    payload = json.loads(candidate.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict):
+                    return payload
+            return None
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def quality_review(self, job_id: str) -> dict[str, Any] | None:
+        job = self.store.get_job(str(job_id or ""))
+        if not job or job.get("status") not in {JobStatus.REVIEW_REQUIRED, JobStatus.FINISHED}:
+            return None
+        if job.get("status") == JobStatus.FINISHED and not job.get("review_confirmed_at"):
+            return None
+        report = self._quality_report_data(job)
+        if not report:
+            return {
+                "job_id": job["id"], "items": [], "pending_count": 0,
+                "confirmed": bool(job.get("review_confirmed_at")),
+                "chapter_counts": {
+                    "total": 0, "approved": 0, "pending": 0, "rejected": 0,
+                    "unchanged": 0, "manual": 0, "accounting_closed": True,
+                },
+                "decision_counts": {"total": 0, "pending": 0, "completed": 0},
+            }
+        actions = self.store.review_actions(job["id"])
+        visual_states = self._region_visual_states(job)
+        items: list[dict[str, Any]] = []
+        region_controls = {
+            str(row.get("region_id") or ""): row
+            for row in self.store.review_region_overrides(str(job["id"]), str(job.get("run_id") or ""))
+        }
+        for page in report.get("pages", []) or []:
+            if not isinstance(page, dict):
+                continue
+            page_number, sequence_index = self._page_identity(page)
+            page_image = str(page.get("output_path") or page.get("image_path") or "")
+            raw_items: list[dict[str, Any]] = []
+            for collection_name in (
+                "translation_terminal_items", "text_overflow_items",
+                "visual_validation_failures", "suspicious_groups",
+            ):
+                raw_items.extend(item for item in (page.get(collection_name, []) or [])
+                                 if isinstance(item, dict))
+            seen_keys: set[str] = set()
+            for raw in raw_items:
+                if not isinstance(raw, dict):
+                    continue
+                if not (raw.get("manual_review_required") or raw.get("preserved_original")
+                        or raw.get("text_overflow_ratio")
+                        or raw.get("quality_reasons")
+                        or not (raw.get("visual_validation") or {}).get("visual_validation_passed", True)):
+                    continue
+                item_id = str(raw.get("id") or raw.get("region_id") or "item")
+                key = f"p{page_number}:i{item_id}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                revision = self.store.review_item_latest(job["id"], key) or {}
+                action = str(revision.get("action") or actions.get(key, "pending"))
+                # R2 override layer: originals stay auditable; effective = override else
+                # original. The pipeline source/target are never mutated in place.
+                original_source = str(raw.get("text") or "")
+                original_target = str(
+                    raw.get("translation") or raw.get("translation_candidate") or "")
+                rev_source = revision.get("source_text")
+                effective_source = str(rev_source) if rev_source is not None else original_source
+                source_text_edited = rev_source is not None and str(rev_source) != original_source
+                rev_target = revision.get("translation")
+                current_translation = str(rev_target if rev_target else (original_target))
+                target_text_edited = bool(revision) and current_translation != original_target
+                # A source correction does not re-translate; flag that the existing
+                # translation may no longer match the corrected source.
+                translation_stale = bool(source_text_edited and not target_text_edited)
+                # The visual gate keys regions by region_id (REGION_001), while a
+                # review item's id is the balloon label (BALAO_1); join on the
+                # region_id so per-item states are not silently dropped.
+                region_id = str(raw.get("region_id") or item_id)
+                visual = visual_states.get(f"p{page_number:03d}:{region_id}") or {}
+                # A panel item is linked to the revision only when its region was
+                # actually reviewed. Report-only items (preserved decorative/sfx
+                # flagged for OCR quality) never enter the revision, so mark them
+                # "report_only" instead of leaving them silently stateless.
+                if visual:
+                    visual_state = str(visual.get("state") or "")
+                    revision_linked = True
+                elif visual_states:
+                    visual_state = "report_only"
+                    revision_linked = False
+                else:
+                    visual_state = ""
+                    revision_linked = False
+                bounding_box, bounding_box_valid = self._review_bounding_box(raw)
+                items.append({
+                    "type": "region",
+                    "key": key,
+                    "region_id": f"p{page_number:03d}:{region_id}",
+                    "visual_state": visual_state,
+                    "revision_linked": revision_linked,
+                    "visual_reason_code": str(visual.get("reason_code") or ""),
+                    "proposed_translation": str(visual.get("proposed_translation") or ""),
+                    "applied_translation": str(visual.get("applied_translation") or ""),
+                    "confidence": visual.get("confidence"),
+                    "page": page_number,
+                    "page_index": page_number,
+                    "sequence_index": sequence_index,
+                    "bounding_box": bounding_box,
+                    "bounding_box_valid": bounding_box_valid,
+                    "label": f"Balão {item_id}" if item_id else "Texto da página",
+                    "classification": str(raw.get("classification") or "speech"),
+                    "original": original_source,
+                    "translation": current_translation,
+                    "source_text_original": original_source,
+                    "source_text_effective": effective_source,
+                    "source_text_edited": source_text_edited,
+                    "target_text_original": original_target,
+                    "target_text_effective": current_translation,
+                    "target_text_edited": target_text_edited,
+                    "translation_stale": translation_stale,
+                    "revision_version": int(revision.get("version") or 0),
+                    "version": int(revision.get("version") or 0),
+                    "review_reason_code": str(revision.get("reason_code") or ""),
+                    "review_reason": str(revision.get("reason") or ""),
+                    "reason": self._quality_review_reason(raw, page),
+                    "risk": self._quality_review_risk(raw, page),
+                    "state": action,
+                    "preserved_original": bool(raw.get("preserved_original")),
+                    "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
+                })
+                items[-1].update(self._review_region_control_fields(items[-1], region_controls.get(items[-1]["region_id"])))
+        # Manual regions share the same public Review item contract and sort key as
+        # detected regions. Their stable IDs are persisted, never array-position based.
+        for region_id, record in region_controls.items():
+            if not bool(record.get("is_manual")) or not bool(record.get("active", 1)):
+                continue
+            page_number = int(record.get("page_index") or 0)
+            key = f"p{page_number}:i{region_id}"
+            revision = self.store.review_item_latest(str(job["id"]), key) or {}
+            source_original = str(record.get("source_text_original") or "")
+            target_original = str(record.get("target_text_original") or "")
+            source_revision = revision.get("source_text")
+            target_revision = revision.get("translation")
+            source_effective = str(source_revision) if source_revision is not None else source_original
+            target_effective = str(target_revision) if target_revision else target_original
+            box = self._decode_region_box(record.get("bbox_override_json")) or self._decode_region_box(record.get("bbox_original_json"))
+            manual_item = {
+                "type": "region", "key": key, "region_id": region_id,
+                "visual_state": "", "revision_linked": False, "visual_reason_code": "",
+                "proposed_translation": "", "applied_translation": "", "confidence": None,
+                "page": page_number, "page_index": page_number, "sequence_index": None,
+                "bounding_box": box, "bounding_box_valid": box is not None,
+                "label": f"Região manual {region_id.rsplit(':', 1)[-1][:8]}",
+                "classification": str(record.get("region_type_override") or record.get("region_type_original") or "unknown"),
+                "original": source_original, "translation": target_effective,
+                "source_text_original": source_original, "source_text_effective": source_effective,
+                "source_text_edited": source_revision is not None and str(source_revision) != source_original,
+                "target_text_original": target_original, "target_text_effective": target_effective,
+                "target_text_edited": target_revision is not None and str(target_revision) != target_original,
+                "translation_stale": bool(source_revision is not None and str(source_revision) != source_original
+                                           and (target_revision is None or str(target_revision) == target_original)),
+                "revision_version": int(revision.get("version") or 0), "version": int(revision.get("version") or 0),
+                "reason": "Região adicionada manualmente.", "risk": "MEDIUM",
+                "state": str(revision.get("action") or "pending"), "preserved_original": False,
+                "page_url": f"/api/ui/quality-review/{job['id']}/page/{page_number}",
+                "is_manual_region": True, "manual_active": True,
+                "region_control_version": int(record.get("version") or 0),
+            }
+            manual_item.update(self._review_region_control_fields(manual_item, record))
+            items.append(manual_item)
+        items.extend(self._smart_split_review_items(job, report, actions))
+        # Canonical physical ordering: page_index, then bbox position, then region_id.
+        # Category no longer controls order (collections were concatenated per-kind
+        # and Smart Split was always last), so items of every kind interleave by
+        # where they physically sit on the page. Stable sort keeps input order for
+        # exact-tie items.
+        items.sort(key=self._review_sort_key)
+        report_only = sum(1 for item in items if item["visual_state"] == "report_only")
+        visual_summary = ChapterQualityRevision._visual_state_summary(visual_states)
+        chapter_counts = {
+            "approved": int(visual_summary.get("applied") or 0),
+            "pending": int(visual_summary.get("pending") or 0),
+            "rejected": int(visual_summary.get("rejected_visual_regression") or 0),
+            "unchanged": int(visual_summary.get("unchanged") or 0),
+            "manual": int(visual_summary.get("manual_review") or 0),
+        }
+        chapter_counts["total"] = len(visual_states)
+        chapter_counts["accounting_closed"] = chapter_counts["total"] == sum(
+            chapter_counts[key]
+            for key in ("approved", "pending", "rejected", "unchanged", "manual")
+        )
+        pending_decisions = sum(1 for item in items if item["state"] == "pending")
+        latest_rerun = self.store.latest_review_rerun(str(job["id"]))
+        reexport_children = self.store.artifact_reconstructions_for_parent(str(job["id"]))
+        latest_reexport = next((child for child in reexport_children
+                                if (child.get("configuration") or {}).get("job_type") == "review_reexport"), None)
+        return {
+            "job_id": job["id"],
+            "items": items,
+            "pending_count": pending_decisions,
+            "confirmed": bool(job.get("review_confirmed_at")),
+            "review_status": "completed" if job.get("review_confirmed_at") else "required",
+            "status": job.get("status"),
+            # Chapter-wide gate summary stays the 108 reviewed regions; report-only
+            # items are a panel-only bucket and are counted separately.
+            "visual_state_summary": visual_summary,
+            "chapter_counts": chapter_counts,
+            "decision_counts": {
+                "total": len(items),
+                "pending": pending_decisions,
+                "completed": len(items) - pending_decisions,
+            },
+            "report_only_count": report_only,
+            "output_format": str((job.get("configuration") or {}).get("output_format") or "pdf"),
+            "output_profile": self._output_profile_from_config(job.get("configuration")),
+            "reviewed_pdf": self._latest_reviewed_pdf(job),
+            "latest_rerun": self._job_record(latest_rerun) if latest_rerun else None,
+            "latest_reexport": self._review_generation_public(latest_reexport) if latest_reexport else None,
+        }
+
+    def quality_review_reexport_for_owner(self, owner_id: str, job_id: str, *, output_format: str | None = None, typesetting_mode: str | None = None) -> dict[str, Any]:
+        """Persist and enqueue an output generation from the saved Review state."""
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_found")
+        review = self.quality_review(str(job["id"]))
+        report = self._quality_report_data(job)
+        if not review or not report:
+            raise ValueError("quality_review_not_available")
+        from yomu.review.workflows.review_reexport import build_review_snapshot, validate_review_snapshot
+        snapshot = build_review_snapshot(job=job, report=report, review=review)
+        # Verify the source values once more before rendering; concurrent human
+        # edits make this attempt fail closed instead of mixing versions.
+        latest_job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        latest_review = self.quality_review(str(job_id))
+        latest_report = self._quality_report_data(latest_job) if latest_job else None
+        if not latest_job or not latest_review or not latest_report:
+            raise ValueError("quality_review_not_available")
+        verification = build_review_snapshot(job=latest_job, report=latest_report, review=latest_review)
+        if (snapshot["job_id"] != verification["job_id"]
+                or snapshot["run_id"] != verification["run_id"]
+                or snapshot["regions"] != verification["regions"]
+                or [(p["page_index"], p["source_path"]) for p in snapshot["pages"]]
+                   != [(p["page_index"], p["source_path"]) for p in verification["pages"]]):
+            raise ValueError("review_changed_during_snapshot")
+        snapshot = verification
+        blockers = validate_review_snapshot(snapshot)
+        if blockers:
+            from yomu.review.workflows.review_reexport import ReviewReexportError
+            raise ReviewReexportError("review_blocked", blockers)
+        config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        fmt = str(output_format or config.get("output_format") or "pdf").casefold()
+        if fmt not in {"png", "pdf", "psd"}:
+            raise ValueError("review_output_format_unsupported")
+        # Typesetting mode only applies to PSD; ON is the default so a translated PSD
+        # is produced without extra steps. It participates in the generation id so ON
+        # and OFF are distinct, independently cached generations.
+        tmode = str(typesetting_mode or config.get("typesetting_mode") or "on").casefold()
+        if tmode not in {"on", "off"}:
+            raise ValueError("invalid_typesetting_mode")
+        source_job_id, source_run_id = str(job["id"]), str(job.get("run_id") or "")
+        gen_seed = f"{source_job_id}:{source_run_id}:{snapshot['snapshot_id']}:{fmt}"
+        if fmt == "psd":
+            gen_seed += f":ts={tmode}"
+        generation_id = hashlib.sha256(gen_seed.encode("utf-8")).hexdigest()[:32]
+        existing = [row for row in self.store.artifact_reconstructions_for_parent(source_job_id)
+                    if str((row.get("configuration") or {}).get("job_type") or "") == "review_reexport"
+                    and str((row.get("configuration") or {}).get("review_generation_id") or "") == generation_id]
+        if existing and existing[0].get("status") in JobStatus.IN_FLIGHT | JobStatus.TERMINAL:
+            return self._review_generation_public(existing[0])
+        generation_root = (Path(str(job["output_dir"])).resolve() / "review_generations" / generation_id)
+        generation_root.mkdir(parents=True, exist_ok=True)
+        snapshot_path = generation_root / "review_snapshot.json"
+        if not snapshot_path.exists():
+            atomic_write_json(snapshot_path, snapshot)
+        return self._queue_review_generation(
+            owner_id=str(owner_id), parent=job, generation_id=generation_id,
+            snapshot_id=str(snapshot["snapshot_id"]), snapshot_path=snapshot_path,
+            generation_root=generation_root, fmt=fmt, chapter_config=config, attempt=1,
+            typesetting_mode=tmode,
+        )
+
+    def _queue_review_generation(
+        self, *, owner_id: str, parent: dict[str, Any], generation_id: str,
+        snapshot_id: str, snapshot_path: Path, generation_root: Path,
+        fmt: str, chapter_config: dict[str, Any], attempt: int,
+        previous_job_id: str = "", typesetting_mode: str = "on",
+    ) -> dict[str, Any]:
+        job_id = hashlib.sha256(f"review-reexport:{generation_id}:{attempt}".encode()).hexdigest()[:32]
+        final_dir = generation_root / "final"
+        config = {
+            "job_type": "review_reexport", "community_owner_id": str(owner_id),
+            "review_generation_id": generation_id, "review_snapshot_id": snapshot_id,
+            "snapshot_path": str(snapshot_path), "generation_root": str(generation_root),
+            "source_job_id": str(parent["id"]), "source_run_id": str(parent.get("run_id") or ""),
+            "output_format": fmt, "chapter_name": str(chapter_config.get("chapter_name") or parent.get("series_title") or "chapter"),
+            "output_profile": self._output_profile_from_config(chapter_config),
+            "typesetting_mode": str(typesetting_mode or "on").casefold(),
+            "attempt": int(attempt), "additional_yk_required": 0,
+            "provider_calls_added": 0, "ocr_calls_added": 0,
+        }
+        try:
+            self.store.create_job(
+                job_id=job_id, source_url="", output_dir=str(final_dir), command=[],
+                run_id=hashlib.sha256(f"{job_id}:run".encode()).hexdigest()[:32],
+                configuration=config, series_title=str(parent.get("series_title") or ""),
+                series_slug=str(parent.get("series_slug") or ""), episode_number=str(parent.get("episode_number") or ""),
+                attempt=attempt, previous_job_id=previous_job_id,
+                operation_kind="artifact_reconstruction", parent_job_id=str(parent["id"]),
+            )
+        except Exception:
+            # Deterministic id makes repeat clicks/retries idempotent under a race.
+            existing = self.store.get_job(job_id)
+            if not existing:
+                raise
+        worker = self.ensure_worker()
+        self.history_revision += 1
+        row = self.store.get_job(job_id) or {}
+        result = self._review_generation_public(row)
+        result["worker_online"] = bool(worker.get("online"))
+        return result
+
+    def _review_generation_public(self, job: dict[str, Any]) -> dict[str, Any]:
+        config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+        return {
+            "job_id": str(job.get("id") or ""),
+            "generation_id": str(config.get("review_generation_id") or ""),
+            "source_job_id": str(config.get("source_job_id") or job.get("parent_job_id") or ""),
+            "source_run_id": str(config.get("source_run_id") or ""),
+            "review_snapshot_id": str(config.get("review_snapshot_id") or ""),
+            "output_format": str(config.get("output_format") or ""),
+            "attempt": int(config.get("attempt") or job.get("attempt") or 1),
+            "status": str(job.get("status") or "unknown"),
+            "stage": str(job.get("stage") or "created"),
+            "progress_current": int(job.get("progress_current") or 0),
+            "progress_total": int(job.get("progress_total") or 0),
+            "progress_message": sanitize_diagnostic_text(job.get("progress_message") or "")[:240],
+            "recoverable": bool(job.get("recoverable")),
+            "reason_code": str(job.get("reason_code") or ""),
+            "error_message": sanitize_diagnostic_text(job.get("error_message") or "")[:300],
+            "output_path": str(job.get("output_dir") or "") if job.get("status") == JobStatus.FINISHED else "",
+            "created_at": _epoch_to_iso(job.get("created_at")),
+            "finished_at": _epoch_to_iso(job.get("finished_at")),
+            "additional_yk_required": 0, "provider_calls_added": 0, "ocr_calls_added": 0,
+        }
+
+    def _review_generations_for_history(self, parent_job_id: str) -> list[dict[str, Any]]:
+        try:
+            children = self.store.artifact_reconstructions_for_parent(parent_job_id)
+        except Exception:
+            return []
+        return [self._review_generation_public(child) for child in children
+                if str((child.get("configuration") or {}).get("job_type") or "") == "review_reexport"]
+
+    def quality_review_reexport_status_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not job or (job.get("configuration") or {}).get("job_type") != "review_reexport":
+            raise ValueError("review_generation_not_found")
+        return self._review_generation_public(job)
+
+    def quality_review_reexport_retry_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        prior = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not prior or (prior.get("configuration") or {}).get("job_type") != "review_reexport":
+            raise ValueError("review_generation_not_found")
+        if prior.get("status") not in {JobStatus.INTERRUPTED, JobStatus.FAILED} or not prior.get("recoverable"):
+            raise ValueError("review_generation_not_recoverable")
+        pid = prior.get("runner_pid")
+        created = prior.get("runner_create_time")
+        if pid and created is not None:
+            import yomu.runtime.process_tree as process_tree
+            if process_tree.matches(int(pid), create_time=float(created)):
+                raise ValueError("review_generation_runner_still_alive")
+        config = prior.get("configuration") or {}
+        parent = self.store.get_job_for_owner(str(owner_id or ""), str(prior.get("parent_job_id") or ""))
+        if not parent:
+            raise ValueError("job_not_found")
+        root = Path(str(config.get("generation_root") or "")).resolve()
+        expected_root = Path(str(parent["output_dir"])).resolve() / "review_generations" / str(config.get("review_generation_id") or "")
+        if root != expected_root:
+            raise ValueError("review_generation_path_invalid")
+        snapshot_path = Path(str(config.get("snapshot_path") or "")).resolve()
+        if snapshot_path != root / "review_snapshot.json" or not snapshot_path.is_file():
+            raise ValueError("review_snapshot_unavailable")
+        return self._queue_review_generation(
+            owner_id=str(owner_id), parent=parent, generation_id=str(config["review_generation_id"]),
+            snapshot_id=str(config["review_snapshot_id"]), snapshot_path=snapshot_path,
+            generation_root=root, fmt=str(config["output_format"]),
+            chapter_config={"chapter_name": config.get("chapter_name")},
+            attempt=int(config.get("attempt") or 1) + 1, previous_job_id=str(prior["id"]),
+            typesetting_mode=str(config.get("typesetting_mode") or "on").casefold(),
+        )
+
+    def open_review_generation_for_owner(self, owner_id: str, job_id: str) -> None:
+        generation = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not generation or (generation.get("configuration") or {}).get("job_type") != "review_reexport":
+            raise ValueError("review_generation_not_found")
+        if generation.get("status") != JobStatus.FINISHED:
+            raise ValueError("review_generation_not_finished")
+        parent = self.store.get_job_for_owner(str(owner_id or ""), str(generation.get("parent_job_id") or ""))
+        if not parent:
+            raise ValueError("job_not_found")
+        config = generation.get("configuration") or {}
+        path = Path(str(generation.get("output_dir") or "")).resolve()
+        expected = Path(str(parent.get("output_dir") or "")).resolve() / "review_generations" / str(config.get("review_generation_id") or "") / "final"
+        if path != expected or not path.is_dir():
+            raise ValueError("review_generation_output_unavailable")
+        self._open_artifact_path(str(path))
+
+    @staticmethod
+    def _review_region_control_fields(item: dict[str, Any], record: dict[str, Any] | None) -> dict[str, Any]:
+        record = record or {}
+        source = str(record.get("source_text_original") if record.get("is_manual") else item.get("source_text_original") or "")
+        target = str(record.get("target_text_original") if record.get("is_manual") else item.get("target_text_original") or "")
+        region_type = str(record.get("region_type_original") if record.get("is_manual") else item.get("classification") or "unknown")
+        original_box = (UiBridge._decode_region_box(record.get("bbox_original_json"))
+                        if record.get("is_manual") else item.get("bounding_box"))
+        effective_box = UiBridge._decode_region_box(record.get("bbox_override_json")) or original_box
+        mode = record.get("translate_override")
+        policy = region_taxonomy.resolve_region_policy(original_classification=region_type, source_text=source)
+        pipeline_preserved = bool(item.get("preserved_original")
+                                  or item.get("translation_final_state") == "preserved_original")
+        original_translate = policy.get("translatable") is True and not pipeline_preserved
+        effective_mode = str(mode or "auto")
+        effective_translate = (original_translate if mode in (None, "auto")
+                               else mode == "translate")
+        type_effective = str(record.get("region_type_override") or region_type)
+        return {
+            "is_manual_region": bool(record.get("is_manual")),
+            "manual_region_id": str(item.get("region_id") or "") if record.get("is_manual") else None,
+            "translate_original": "translate" if original_translate else "ignore",
+            "translate_effective": "translate" if effective_translate else "ignore",
+            "translate_edited": bool(mode),
+            "translate_mode_original": "auto",
+            "translate_mode_effective": effective_mode,
+            "region_type_original": region_type,
+            "region_type_effective": type_effective,
+            "region_type_edited": bool(record.get("region_type_override")),
+            "bounding_box_original": original_box,
+            "bounding_box_effective": effective_box,
+            "bounding_box_edited": bool(record.get("bbox_override_json")),
+            "bounding_box": effective_box,
+            "bounding_box_valid": effective_box is not None,
+            "region_control_version": int(record.get("version") or 0),
+            "translate_override": mode,
+            "is_inactive": not bool(record.get("active", 1)),
+        }
+
+    def save_quality_review_region_control(
+        self, job_id: str, item_key: str, *, expected_version: int, actor_id: str,
+        translate_override: str | None, region_type_override: str | None,
+        bounding_box_override: Any,
+    ) -> dict[str, Any]:
+        review = self.quality_review(job_id)
+        item = next((entry for entry in (review or {}).get("items", []) if entry.get("key") == item_key), None)
+        if not item or item.get("type") == "smart_split":
+            raise ValueError("review_region_not_found")
+        if (review or {}).get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        mode = None if translate_override in (None, "", "auto") else str(translate_override)
+        if mode not in (None, "translate", "ignore"):
+            raise ValueError("invalid_translate_override")
+        type_override = None if region_type_override in (None, "") else self._review_region_type(region_type_override)
+        box_override = None
+        if bounding_box_override is not None:
+            job = self.store.get_job(str(job_id))
+            if not job:
+                raise ValueError("job_not_found")
+            width, height = self._review_page_dimensions(job, int(item["page_index"]))
+            box_override = self._validate_review_bbox(bounding_box_override, width, height)
+        try:
+            saved = self.store.save_review_region_override(
+                job_id=str(job_id), run_id=str(self.store.get_job(job_id).get("run_id") or ""),
+                page_index=int(item["page_index"]), region_id=str(item["region_id"]),
+                expected_version=int(expected_version), actor_id=str(actor_id),
+                source_text_original=str(item.get("source_text_original") or ""),
+                target_text_original=str(item.get("target_text_original") or ""),
+                region_type_original=str(item.get("region_type_original") or item.get("classification") or "unknown"),
+                bbox_original=item.get("bounding_box_original"), is_manual=bool(item.get("is_manual_region")),
+                translate_override=mode, region_type_override=type_override,
+                bbox_override=box_override,
+            )
+        except Exception as exc:
+            if str(exc) == "review_version_conflict":
+                raise ValueError("review_version_conflict") from None
+            raise
+        self.history_revision += 1
+        return {"revision": saved, "review": self.quality_review(job_id)}
+
+    def add_quality_review_manual_region(
+        self, job_id: str, *, page_index: int, box: Any, source_text: str,
+        target_text: str = "", region_type: str = "speech", translate_override: str = "auto",
+        actor_id: str,
+    ) -> dict[str, Any]:
+        job = self.store.get_job(str(job_id))
+        review = self.quality_review(job_id)
+        if not job or not review:
+            raise ValueError("quality_review_not_available")
+        if review.get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        source = str(source_text or "").strip()
+        if not source:
+            raise ValueError("manual_region_source_required")
+        region_type = self._review_region_type(region_type)
+        width, height = self._review_page_dimensions(job, int(page_index))
+        bbox = self._validate_review_bbox(box, width, height)
+        mode = None if translate_override in (None, "", "auto") else str(translate_override)
+        if mode not in (None, "translate", "ignore"):
+            raise ValueError("invalid_translate_override")
+        region_id = f"manual:{uuid.uuid4().hex}"
+        saved = self.store.save_review_region_override(
+            job_id=str(job_id), run_id=str(job.get("run_id") or ""), page_index=int(page_index),
+            region_id=region_id, expected_version=0, actor_id=str(actor_id),
+            source_text_original=source, target_text_original=str(target_text or ""),
+            region_type_original=region_type, bbox_original=bbox, is_manual=True,
+            translate_override=mode,
+        )
+        self.history_revision += 1
+        return {"region": saved, "review": self.quality_review(job_id)}
+
+    def remove_quality_review_manual_region(
+        self, job_id: str, region_id: str, *, expected_version: int, actor_id: str,
+    ) -> dict[str, Any]:
+        job = self.store.get_job(str(job_id))
+        if not job:
+            raise ValueError("job_not_found")
+        try:
+            self.store.deactivate_manual_review_region(
+                job_id=str(job_id), run_id=str(job.get("run_id") or ""), region_id=str(region_id),
+                expected_version=int(expected_version), actor_id=str(actor_id),
+            )
+        except Exception as exc:
+            if str(exc) in {"review_version_conflict", "manual_region_not_found"}:
+                raise ValueError(str(exc)) from None
+            raise
+        self.history_revision += 1
+        return {"review": self.quality_review(job_id)}
+
+    def _latest_reviewed_pdf(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        """Canonical reviewed PDF from the revision manifest (never a glob)."""
+
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return None
+        revision = ChapterQualityRevision(output_dir, job_id=str(job["id"]),
+                                          run_id=str(job.get("run_id") or ""))
+        manifest = revision.latest_status() or {}
+        raw_path = str(manifest.get("reviewed_pdf_path") or "").strip()
+        if not raw_path:
+            return None
+        # The manifest stores the path relative to the project root; resolve it
+        # against the job's own output dir so the basename is authoritative.
+        pdf = Path(output_dir) / Path(raw_path).name
+        if not pdf.is_file():
+            return None
+        return {
+            "path": str(pdf.resolve()),
+            "name": pdf.name,
+            "sha256": str(manifest.get("reviewed_pdf_sha256") or ""),
+        }
+
+    def _region_visual_states(self, job: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Per-region result of the visual gate from the latest revision, if any."""
+
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return {}
+        revision = ChapterQualityRevision(output_dir, job_id=str(job["id"]),
+                                          run_id=str(job.get("run_id") or ""))
+        status = revision.latest_status() or {}
+        revision_id = str(status.get("revision_id") or "")
+        if not revision_id:
+            return {}
+        audit = Path(output_dir) / "quality_revision" / revision_id / "incremental_render_audit.json"
+        try:
+            data = json.loads(audit.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        states = data.get("region_visual_states")
+        return states if isinstance(states, dict) else {}
+
+    def quality_review_action(self, job_id: str, item_key: str, action: str) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload or not any(item["key"] == item_key for item in payload["items"]):
+            raise ValueError("quality_review_item_not_found")
+        if payload.get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        if action not in {"reviewed", "preserved_original"}:
+            raise ValueError("quality_review_action_invalid")
+        self.store.record_review_action(job_id, item_key, action)
+        self.history_revision += 1
+        return self.quality_review(job_id) or payload
+
+    def quality_review_edit(
+        self, job_id: str, item_key: str, *, expected_version: int,
+        action: str, translation: str, reason: str, actor_id: str,
+        source_text: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        item = next(
+            (candidate for candidate in (payload or {}).get("items", [])
+             if candidate.get("key") == item_key),
+            None,
+        )
+        if item is None:
+            raise ValueError("quality_review_item_not_found")
+        if (payload or {}).get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        action = str(action or "").strip()
+        translation = str(translation or "").strip()
+        reason = str(reason or "").strip()
+        # R2: a human source (OCR) correction is persisted as an override layer. It is
+        # NOT sent to the provider and generates no new translation. ``source_text`` is
+        # None when the caller does not touch the source; otherwise it is compared to
+        # the pipeline original so an unchanged value stores no override (None).
+        original_source = str(item.get("source_text_original") or item.get("original") or "")
+        source_override: str | None = None
+        if source_text is not None:
+            submitted_source = str(source_text).strip()
+            source_override = submitted_source if submitted_source != original_source else None
+            if len(submitted_source) > 2000:
+                raise ValueError("quality_review_source_overflow")
+        if (action == "reviewed" and not translation) or (
+            action == "edited" and not translation and source_text is None
+        ):
+            raise ValueError("quality_review_translation_empty")
+        if action == "rejected" and not reason:
+            raise ValueError("quality_review_reason_required")
+        reason_codes = {
+            "edited": "human_translation_edited",
+            "reviewed": "human_translation_approved",
+            "rejected": "human_translation_rejected",
+            "preserved_original": "preserved_original",
+            "manual_review": "manual_review_requested",
+        }
+        if action not in reason_codes:
+            raise ValueError("quality_review_action_invalid")
+        original = str(item.get("original") or "")
+        if action == "reviewed" and (
+            len(translation) > 800
+            or (original and len(translation) > max(120, len(original) * 6))
+        ):
+            raise ValueError("quality_review_overflow")
+        try:
+            revision = self.store.record_review_item_revision(
+                str(job_id), str(item_key),
+                expected_version=int(expected_version),
+                action=action,
+                translation=translation,
+                reason_code=reason_codes[action],
+                reason=reason,
+                actor_id=str(actor_id or ""),
+                source_text=source_override,
+            )
+        except Exception as exc:
+            if str(exc) == "review_version_conflict":
+                raise ValueError("review_version_conflict") from None
+            raise
+        self.history_revision += 1
+        return {
+            "revision": revision,
+            "review": self.quality_review(job_id) or payload,
+        }
+
+    def quality_review_bulk_action(
+        self,
+        job_id: str,
+        item_keys: list[str],
+        action: str,
+        *,
+        risk_filter: str = "",
+        undo: bool = False,
+        restore_actions: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        if payload.get("confirmed"):
+            raise ValueError("quality_review_already_completed")
+        if action not in {"reviewed", "preserved_original", "pending"}:
+            raise ValueError("quality_review_action_invalid")
+        known = {str(item["key"]): item for item in payload["items"]}
+        requested = [str(key) for key in (item_keys or []) if str(key) in known]
+        if risk_filter:
+            risk = str(risk_filter).upper()
+            requested = [key for key in requested if str(known[key].get("risk") or "").upper() == risk]
+        if not requested:
+            raise ValueError("quality_review_bulk_empty")
+        previous = {key: str(known[key].get("state") or "pending") for key in requested}
+        updates = {key: action for key in requested}
+        if undo:
+            restore = restore_actions if isinstance(restore_actions, dict) else previous
+            updates = {key: str(restore.get(key, "pending")) for key in requested}
+        job = self.store.get_job(str(job_id or ""))
+        output_dir = Path(str(job.get("output_dir") or "")) if job else None
+        if output_dir:
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                checkpoint = {
+                    "job_id": str(job_id),
+                    "action": action,
+                    "risk_filter": str(risk_filter or ""),
+                    "item_keys": requested,
+                    "previous": previous,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                (output_dir / "review_bulk_checkpoint.json").write_text(
+                    json.dumps(checkpoint, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError:
+                raise ValueError("quality_review_checkpoint_failed") from None
+        self.store.record_review_actions_bulk(str(job_id), updates)
+        self.history_revision += 1
+        updated = self.quality_review(job_id) or payload
+        updated["bulk"] = {
+            "action": action,
+            "count": len(requested),
+            "risk_filter": str(risk_filter or ""),
+            "checkpoint": "review_bulk_checkpoint.json",
+        }
+        return updated
+
+    def confirm_quality_review(self, job_id: str) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        if payload["pending_count"]:
+            raise ValueError("quality_review_items_pending")
+        if payload.get("confirmed"):
+            payload["message"] = "Esta revisão já foi concluída."
+            return payload
+        self.store.confirm_review(job_id)
+        self.history_revision += 1
+        return self.quality_review(job_id) or payload
+
+    @staticmethod
+    def _public_review_rerun_plan(plan: dict[str, Any]) -> dict[str, Any]:
+        """Strip filesystem details while retaining the explicit region contract."""
+        public_targets = []
+        for raw in plan.get("targets") or []:
+            if not isinstance(raw, dict):
+                continue
+            public_targets.append({
+                key: raw.get(key)
+                for key in (
+                    "region_id", "page", "classification", "review_action",
+                    "visual_state", "reason_code", "inside_balloon",
+                    "background_type", "requires_provider", "work_kind",
+                    "previous_strategies", "previous_score",
+                )
+            })
+        return {
+            key: plan.get(key)
+            for key in (
+                "schema_version", "region_count", "page_count", "pages",
+                "reconstruction_only", "provider_required",
+                "estimated_provider_requests",
+            )
+        } | {"targets": public_targets}
+
+    def review_rerun_plan_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_found")
+        if not str(job.get("output_dir") or "").strip():
+            raise ValueError("quality_review_not_available")
+        plan = build_pending_region_plan(str(job["output_dir"]))
+        public = self._public_review_rerun_plan(plan)
+        public.update({
+            "job_id": str(job["id"]),
+            "run_id": str(job.get("run_id") or ""),
+            "chapter_name": str(
+                (job.get("configuration") or {}).get("chapter_name")
+                or job.get("series_title") or ""
+            )[:160],
+            "approved_pages_preserved": True,
+        })
+        return public
+
+    def start_review_rerun_for_owner(
+        self,
+        owner_id: str,
+        job_id: str,
+        *,
+        allow_provider: bool,
+        modes: list[str] | None = None,
+        target_region_ids: list[str] | None = None,
+        parent_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_found")
+        if parent_run_id is not None and str(parent_run_id).strip() != str(job.get("run_id") or ""):
+            raise ValueError("invalid_rerun_parent_run")
+        plan = build_pending_region_plan(str(job.get("output_dir") or ""))
+        allowed_modes = {
+            "all_pending", "untranslated", "reconstruction", "improve_translation"
+        }
+        requested_modes = [str(value or "").strip() for value in (modes or ["all_pending"])]
+        if not requested_modes or any(value not in allowed_modes for value in requested_modes):
+            raise ValueError("invalid_rerun_mode")
+        targets = list(plan.get("targets") or [])
+        if target_region_ids is not None:
+            requested_regions = [str(value or "").strip() for value in target_region_ids]
+            if any(not region for region in requested_regions):
+                raise ValueError("invalid_rerun_target_selection")
+            if len(requested_regions) != len(set(requested_regions)):
+                raise ValueError("invalid_rerun_target_selection")
+            if not requested_regions or len(requested_regions) > 20:
+                raise ValueError("invalid_rerun_target_selection")
+            known_regions = {str(target.get("region_id") or "") for target in targets}
+            if any(region not in known_regions for region in requested_regions):
+                raise ValueError("invalid_rerun_target_selection")
+            selected = set(requested_regions)
+            targets = [
+                target for target in targets
+                if str(target.get("region_id") or "") in selected
+            ]
+        if "all_pending" not in requested_modes:
+            filtered = []
+            for target in targets:
+                provider = target.get("requires_provider") is True
+                reconstruction = str(target.get("work_kind") or "") == "reconstruction_only"
+                if provider and ("untranslated" in requested_modes or "improve_translation" in requested_modes):
+                    filtered.append(target)
+                elif reconstruction and "reconstruction" in requested_modes:
+                    filtered.append(target)
+            targets = filtered
+        if not targets:
+            raise ValueError("rerun_targets_required")
+        child = self.store.create_review_rerun(
+            str(job["id"]),
+            targets=targets,
+            allow_provider=allow_provider is True,
+            modes=requested_modes,
+            commit_hash=_current_commit(),
+            branch=_current_branch(),
+        )
+        self.history_revision += 1
+        return self._job_record(child) or {}
+
+    def review_rerun_status_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        job = self.store.get_job_for_owner(str(owner_id or ""), str(job_id or ""))
+        if not self._is_queue_operation(job) or str(job.get("operation_kind") or "") != "review_rerun":
+            raise ValueError("job_not_found")
+        job = self._reconcile_timed_out_review_rerun(job)
+        return self._job_record(job) or {}
+
+    @staticmethod
+    def _looks_english(text: str) -> bool:
+        tokens = re.findall(r"[A-Za-z]{2,}", str(text or ""))
+        if not tokens:
+            return False
+        common = {
+            "the", "and", "you", "that", "this", "with", "for", "are", "was", "were",
+            "have", "has", "not", "what", "when", "where", "from", "your", "their",
+            "will", "just", "maybe", "should", "can", "cannot", "i", "am",
+        }
+        hits = sum(1 for token in tokens if token.lower() in common)
+        return hits >= 1 and hits / max(1, len(tokens)) >= 0.18
+
+    @staticmethod
+    def _looks_mixed_language(text: str) -> bool:
+        value = str(text or "")
+        has_pt = bool(re.search(r"[áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ]|\b(não|você|para|com|que|uma|está|capítulo)\b", value, re.I))
+        return has_pt and UiBridge._looks_english(value)
+
+    def translation_global_review(self, job_id: str) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        job = self.store.get_job(str(job_id or ""))
+        output_dir = Path(str(job.get("output_dir") or "")) if job else None
+        items = payload.get("items") or []
+        suggestions: list[dict[str, Any]] = []
+        counts = {
+            "total_regions": len(items),
+            "kept": 0,
+            "rewritten": 0,
+            "preserved_original": 0,
+            "manual_review": 0,
+            "english_residual": 0,
+            "mixed_language": 0,
+            "sfx": 0,
+            "LOW": 0,
+            "MEDIUM": 0,
+            "HIGH": 0,
+        }
+        for item in items:
+            current = str(item.get("translation") or "")
+            original = str(item.get("original") or "")
+            risk = str(item.get("risk") or "LOW").upper()
+            counts[risk] = counts.get(risk, 0) + 1
+            english = self._looks_english(current)
+            mixed = self._looks_mixed_language(current)
+            if english:
+                counts["english_residual"] += 1
+            if mixed:
+                counts["mixed_language"] += 1
+            if str(item.get("classification") or "").lower() == "sfx":
+                counts["sfx"] += 1
+            action = "manual_review" if risk == "HIGH" or english or mixed else "keep"
+            counts["manual_review" if action == "manual_review" else "kept"] += 1
+            suggestions.append({
+                "id": str(item.get("key") or ""),
+                "page_id": str(item.get("page") or ""),
+                "region_id": str(item.get("key") or ""),
+                "balloon_id": str(item.get("key") or ""),
+                "source_text": original,
+                "current_translation": current,
+                "text_type": str(item.get("classification") or "unknown"),
+                "action": action,
+                "revised_translation": current,
+                "reason_code": "english_or_mixed_language" if english or mixed else f"risk_{risk.lower()}",
+                "confidence": 0.0 if action == "manual_review" else 0.7,
+                "risk": risk,
+                "terminology": [],
+            })
+        report = {
+            **counts,
+            "job_id": str(job_id),
+            "model": "offline-heuristic-preflight",
+            "requests": 0,
+            "duration_seconds": 0,
+            "glossary": {"terms": []},
+            "suggestions": suggestions,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "translation_global_review.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        return report
+
+    def quality_revision_status(self, job_id: str) -> dict[str, Any] | None:
+        job = self.store.get_job(str(job_id or ""))
+        if not job:
+            return None
+        output_dir = job.get("output_dir")
+        if not output_dir:
+            return None
+        revision = ChapterQualityRevision(
+            output_dir,
+            job_id=str(job["id"]),
+            run_id=str(job.get("run_id") or ""),
+        )
+        status = revision.latest_status()
+        if status:
+            status = dict(status)
+            thread = self._quality_revision_threads.get(str(job["id"]))
+            alive = bool(thread and thread.is_alive())
+            status["thread_alive"] = alive
+            # A revision only runs inside this process. If it is still marked as
+            # in-flight with no worker thread (UI restarted, process killed), it
+            # is lost: report and persist it as interrupted instead of leaving a
+            # permanently "running" revision the user cannot cancel or resume.
+            if not alive and str(status.get("status") or "") in REVISION_IN_FLIGHT_STATUSES:
+                status = revision.mark_interrupted("revision_process_lost") or status
+                status["thread_alive"] = False
+            # Older runs that died before being superseded never reach the "latest"
+            # pointer, so settle them too instead of leaving them in flight forever.
+            revision.sweep_stale_revisions(keep_revision_id=str(status.get("revision_id") or "") if alive else "")
+            # Overlay the running loop's per-region counters so the panel shows real
+            # progress instead of the manifest's last phase-transition snapshot.
+            progress = revision.live_progress()
+            for key, value in progress.items():
+                if value is not None and not status.get(key):
+                    status[key] = value
+            return status
+        return {
+            "job_id": str(job["id"]),
+            "parent_job_id": str(job["id"]),
+            "parent_run_id": str(job.get("run_id") or ""),
+            "status": "not_started",
+            "phase": "not_started",
+            "phase_label": "Revisão ainda não iniciada",
+        }
+
+    def start_quality_revision(self, job_id: str) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not job.get("output_dir"):
+            raise ValueError("quality_review_not_available")
+        thread = self._quality_revision_threads.get(str(job["id"]))
+        if thread and thread.is_alive():
+            status = self.quality_revision_status(str(job["id"]))
+            return status or {"status": "running", "parent_job_id": str(job["id"])}
+
+        cancel = threading.Event()
+        self._quality_revision_cancels[str(job["id"])] = cancel
+        revision = ChapterQualityRevision(
+            str(job["output_dir"]),
+            job_id=str(job["id"]),
+            run_id=str(job.get("run_id") or ""),
+            should_cancel=cancel.is_set,
+        )
+
+        def target() -> None:
+            try:
+                revision.start(max_iterations=3)
+            finally:
+                self.history_revision += 1
+
+        thread = threading.Thread(
+            target=target,
+            name=f"quality-revision-{str(job['id'])[:8]}",
+            daemon=True,
+        )
+        self._quality_revision_threads[str(job["id"])] = thread
+        thread.start()
+        # Give the worker a moment to persist its first checkpoint, then return a
+        # disk-backed status.  If the OS schedules it later, the caller still receives
+        # a clear starting state instead of a silent no-op.
+        thread.join(timeout=0.2)
+        self.history_revision += 1
+        status = self.quality_revision_status(str(job["id"]))
+        return status or {
+            "parent_job_id": str(job["id"]),
+            "parent_run_id": str(job.get("run_id") or ""),
+            "status": "starting",
+            "phase": "preparing",
+            "phase_label": "Preparando revisão",
+        }
+
+    def cancel_quality_revision(self, job_id: str) -> dict[str, Any]:
+        """Cooperatively stop this job's revision. Idempotent and scoped.
+
+        Only this job's revision is signalled: the UI, the worker and any other
+        job keep running. The in-flight provider request is allowed to finish so
+        its checkpoint survives for a later resume.
+        """
+
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not job.get("output_dir"):
+            raise ValueError("quality_review_not_available")
+        key = str(job["id"])
+        cancel = self._quality_revision_cancels.get(key)
+        if cancel:
+            cancel.set()
+        revision = ChapterQualityRevision(
+            str(job["output_dir"]),
+            job_id=key,
+            run_id=str(job.get("run_id") or ""),
+        )
+        thread = self._quality_revision_threads.get(key)
+        if thread and thread.is_alive():
+            # The worker will persist "cancelled" once it stops between regions.
+            revision.mark_cancelling()
+        else:
+            # Nothing is running: settle the state instead of leaving it in-flight.
+            revision.mark_interrupted("revision_process_lost")
+        self.history_revision += 1
+        return self.quality_revision_status(key) or {"status": "cancelled", "parent_job_id": key}
+
+    # --- targeted page revision (BLOCO 1) ------------------------------------
+    # All entry points validate the real job/run/page-revision linkage rather
+    # than trusting a card's title or visual index.
+
+    def _page_revision_job(self, job_id: str, run_id: str) -> dict[str, Any]:
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not job.get("output_dir"):
+            raise ValueError("job_not_found")
+        if str(run_id or "") and str(job.get("run_id") or "") != str(run_id or ""):
+            raise ValueError("run_id_mismatch")
+        return job
+
+    def _page_revision_engine(self, job: dict[str, Any], *,
+                              reviewer_factory=None) -> ChapterQualityRevision:
+        return ChapterQualityRevision(str(job["output_dir"]), job_id=str(job["id"]),
+                                      run_id=str(job.get("run_id") or ""),
+                                      reviewer_factory=reviewer_factory)
+
+    def _validated_page_revision(self, job: dict[str, Any], page_revision_id: str,
+                                 *, parent_revision_id: str | None = None):
+        engine = self._page_revision_engine(job)
+        manifest = engine.page_revision_status(str(page_revision_id or ""))
+        if not manifest:
+            raise ValueError("page_revision_not_found")
+        if str(manifest.get("parent_job_id") or "") != str(job["id"]):
+            raise ValueError("page_revision_job_mismatch")
+        if str(manifest.get("parent_run_id") or "") != str(job.get("run_id") or ""):
+            raise ValueError("page_revision_run_mismatch")
+        if parent_revision_id is not None and str(manifest.get("parent_revision_id") or "") != str(parent_revision_id):
+            raise ValueError("parent_revision_mismatch")
+        return engine, manifest
+
+    def list_page_revision_regions(self, job_id: str, run_id: str, page: int) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        return self._page_revision_engine(job).list_page_regions(int(page))
+
+    def start_page_revision(self, job_id: str, run_id: str, page: int,
+                            region_ids: list[str] | None = None) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        manifest = self._page_revision_engine(job).revise_page(
+            int(page), region_ids=region_ids or None, cache_only=True)
+        self.history_revision += 1
+        return manifest
+
+    def page_revision_status(self, job_id: str, run_id: str, page_revision_id: str) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        _, manifest = self._validated_page_revision(job, page_revision_id)
+        return manifest
+
+    def latest_page_revision(self, job_id: str, run_id: str, page: int) -> dict[str, Any] | None:
+        job = self._page_revision_job(job_id, run_id)
+        return self._page_revision_engine(job).latest_page_revision(int(page))
+
+    def cancel_page_revision(self, job_id: str, run_id: str, page_revision_id: str) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        engine, _ = self._validated_page_revision(job, page_revision_id)
+        result = engine.cancel_page_revision(str(page_revision_id))
+        self.history_revision += 1
+        return result
+
+    def resume_page_revision(self, job_id: str, run_id: str, page_revision_id: str) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        engine, manifest = self._validated_page_revision(job, page_revision_id)
+        result = engine.revise_page(int(manifest.get("page") or 0),
+                                    region_ids=manifest.get("region_ids") or None,
+                                    resume=True, cache_only=True, page_revision_id=str(page_revision_id))
+        self.history_revision += 1
+        return result
+
+    def decide_page_revision(self, job_id: str, run_id: str, page_revision_id: str,
+                             outcome: str) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        engine, _ = self._validated_page_revision(job, page_revision_id)
+        result = engine.set_page_revision_outcome(str(page_revision_id), str(outcome))
+        self.history_revision += 1
+        return result
+
+    def add_page_revision_manual_region(self, job_id: str, run_id: str, page_revision_id: str,
+                                        box: list[int], source_text: str = "",
+                                        region_type: str = "speech") -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        engine, _ = self._validated_page_revision(job, page_revision_id)
+        result = engine.add_manual_region(str(page_revision_id), box=box,
+                                          source_text=source_text, region_type=region_type)
+        self.history_revision += 1
+        return result
+
+    def page_revision_forgotten_text(self, job_id: str, run_id: str, page: int) -> dict[str, Any]:
+        job = self._page_revision_job(job_id, run_id)
+        return self._page_revision_engine(job).search_forgotten_text(int(page))
+
+    def page_revision_draft_page(self, job_id: str, run_id: str, page_revision_id: str) -> Path | None:
+        """Path to the draft page image, confined to the job's output dir."""
+        job = self._page_revision_job(job_id, run_id)
+        _, manifest = self._validated_page_revision(job, page_revision_id)
+        draft = str(manifest.get("draft_page_path") or "")
+        if not draft:
+            return None
+        path = Path(draft).resolve()
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        return path if (output_dir in path.parents and path.is_file()) else None
+
+    # --- linguistic audit review (BLOCO 3) -----------------------------------
+    # The audit is a derived view. Human decisions are persisted separately and
+    # never touch a PDF, a historical revision or a publication. Selection is by
+    # real job/run/revision identity, never by title, glob or a latest heuristic
+    # of file mtime — the canonical base revision is the recorded pointer.
+
+    def _audit_context(self, job_id: str, run_id: str) -> dict[str, Any]:
+        """Resolve output dir + canonical base revision for a chapter. Validated."""
+        job = self._page_revision_job(job_id, run_id)  # validates job + run linkage
+        output_dir = str(job["output_dir"])
+        engine = ChapterQualityRevision(output_dir, job_id=str(job["id"]),
+                                        run_id=str(job.get("run_id") or ""))
+        status = engine.latest_status() or {}
+        revision_id = str(status.get("revision_id") or "")
+        if not revision_id:
+            raise ValueError("no_canonical_revision")
+        pdf_name = Path(str(status.get("reviewed_pdf_path") or "")).name
+        return {"job": job, "output_dir": output_dir, "revision_id": revision_id,
+                "pdf_name": pdf_name}
+
+    def _resolve_or_build_audit(self, ctx: dict[str, Any]) -> dict[str, Any]:
+        try:
+            resolved = audit_registry.resolve_registered_audit(ctx["output_dir"], ctx["revision_id"])
+        except ValueError as exc:
+            # A stale audit (built under an older taxonomy) is rebuilt; anything
+            # else — tamper, traversal, unreadable — still fails closed.
+            if "version_mismatch" not in str(exc):
+                raise
+            resolved = None
+        if resolved:
+            return resolved
+        if not ctx["pdf_name"]:
+            raise ValueError("audit_source_pdf_unknown")
+        report = linguistic_audit.audit_chapter(
+            ctx["output_dir"], str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""),
+            pdf_name=ctx["pdf_name"])
+        entry = audit_registry.register_audit(ctx["output_dir"], ctx["revision_id"], report)
+        return {"entry": entry, "report": report}
+
+    def linguistic_audit_review(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._resolve_or_build_audit(ctx)
+        report, entry = resolved["report"], resolved["entry"]
+        decisions = {}
+        if user_id:
+            for row in self.audit_decisions.list_for(str(ctx["job"]["id"]),
+                                                     str(ctx["job"].get("run_id") or ""),
+                                                     ctx["revision_id"], created_by=str(user_id)):
+                decisions[row["region_id"]] = row
+        # Overlay each record with the caller's decision (a derived, per-user view).
+        records = []
+        for record in report.get("records", []):
+            item = dict(record)
+            item["human_decision"] = decisions.get(record.get("region_id"))
+            records.append(item)
+        return {
+            "job_id": str(ctx["job"]["id"]),
+            "run_id": str(ctx["job"].get("run_id") or ""),
+            "revision_id": ctx["revision_id"],
+            "audit_artifact_id": entry["audit_artifact_id"],
+            "source_audit_hash": entry["source_audit_hash"],
+            "taxonomy_version": report.get("taxonomy_version"),
+            "summary": {k: report.get(k) for k in (
+                "total_regions_audited", "by_normalized_category", "report_only_total",
+                "report_only_now_translatable", "report_only_still_preserved",
+                "needs_human_review_total", "provider_required_total")},
+            "records": records,
+            "decision_count": len(decisions),
+        }
+
+    def record_audit_decision(self, job_id: str, run_id: str, *, region_id: str, decision: str,
+                              user_id: str, reason: str = "", notes: str = "") -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._resolve_or_build_audit(ctx)
+        report, entry = resolved["report"], resolved["entry"]
+        record = next((r for r in report.get("records", []) if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")  # lineage: region must belong to the report
+        return self.audit_decisions.upsert(
+            job_id=str(ctx["job"]["id"]), run_id=str(ctx["job"].get("run_id") or ""),
+            revision_id=ctx["revision_id"], audit_artifact_id=entry["audit_artifact_id"],
+            page_id=str(record.get("page_id") or ""), region_id=str(region_id),
+            decision=decision, created_by=str(user_id), reason=reason, notes=notes,
+            taxonomy_version=str(report.get("taxonomy_version") or ""),
+            source_audit_hash=entry["source_audit_hash"])
+
+    def linguistic_triage_queue(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """The audit ordered by explainable priority, with live counters."""
+        review = self.linguistic_audit_review(job_id, run_id, user_id=user_id)
+        decisions = {str(r["region_id"]): r for r in review["records"] if r.get("human_decision")}
+        decisions = {k: v["human_decision"] for k, v in decisions.items()}
+        queue = linguistic_triage.build_triage_queue(review["records"], decisions=decisions)
+        counters: dict[str, int] = {}
+
+        def bump(key):
+            counters[key] = counters.get(key, 0) + 1
+
+        for item in queue:
+            gate = (item.get("linguistic_gate") or {}).get("status", "")
+            bump(f"gate_{gate or 'unknown'}")
+            bump(f"class_{item.get('classification_normalized') or 'unknown'}")
+            if item.get("translatable"):
+                bump("translatable")
+            if item.get("preservable"):
+                bump("preservable")
+            if item.get("provider_required"):
+                bump("provider_required")
+            if item.get("needs_human_review"):
+                bump("needs_human_review")
+            bump("cache_hit" if item.get("cache_status") == "answered" else "cache_miss")
+            if item.get("human_decision"):
+                bump("decided")
+            else:
+                bump("pending")
+        return {**{k: review[k] for k in ("job_id", "run_id", "revision_id",
+                                          "audit_artifact_id", "source_audit_hash",
+                                          "taxonomy_version", "summary")},
+                "counters": counters, "queue": queue, "total": len(queue)}
+
+    def bulk_audit_decisions(self, job_id: str, run_id: str, *, region_ids: list[str],
+                             decision: str, user_id: str, reason: str = "",
+                             source_audit_hash: str = "") -> dict[str, Any]:
+        """Apply one decision to several regions atomically, or nothing at all."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        wanted = [str(r) for r in (region_ids or []) if str(r or "").strip()]
+        if not wanted:
+            raise ValueError("no_regions_selected")
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._resolve_or_build_audit(ctx)
+        report, entry = resolved["report"], resolved["entry"]
+        if source_audit_hash and str(source_audit_hash) != entry["source_audit_hash"]:
+            # The operator acted on a stale view of the audit.
+            raise ValueError("source_audit_hash_mismatch")
+
+        by_region = {str(r.get("region_id")): r for r in report.get("records", [])}
+        unknown = [r for r in wanted if r not in by_region]
+        if unknown:
+            raise ValueError("region_not_in_audit")
+        # Compatibility: a decision must make sense for every selected region.
+        incompatible = [r for r in wanted
+                        if not self._decision_allowed(by_region[r], decision)]
+        if incompatible:
+            raise ValueError("incompatible_selection")
+        # A bulk ocr_invalid is only for reads the detector could not defend.
+        # An ambiguous read may still be marked invalid, but one region at a
+        # time, after a human has looked at it. Enforced here rather than by
+        # hiding a checkbox, so no caller can route around it.
+        if decision == "ocr_invalid":
+            undefended = [r for r in wanted
+                          if not linguistic_triage.assess_ocr_plausibility(
+                              source_text=by_region[r].get("source_text") or "",
+                              confidence=by_region[r].get("confidence"),
+                              classification=str(by_region[r].get("classification_normalized") or ""),
+                          )["auto_markable"]]
+            if undefended:
+                raise ValueError("ambiguous_regions_need_individual_review")
+
+        applied, previous = [], []
+        try:
+            for region_id in wanted:
+                record = by_region[region_id]
+                before = next((d for d in self.audit_decisions.list_for(
+                    str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+                    created_by=str(user_id)) if d["region_id"] == region_id), None)
+                previous.append((region_id, before))
+                applied.append(self.audit_decisions.upsert(
+                    job_id=str(ctx["job"]["id"]), run_id=str(ctx["job"].get("run_id") or ""),
+                    revision_id=ctx["revision_id"], audit_artifact_id=entry["audit_artifact_id"],
+                    page_id=str(record.get("page_id") or ""), region_id=region_id,
+                    decision=decision, created_by=str(user_id), reason=reason,
+                    taxonomy_version=str(report.get("taxonomy_version") or ""),
+                    source_audit_hash=entry["source_audit_hash"]))
+        except Exception:
+            # Roll back to the pre-operation state so a partial bulk never sticks.
+            for region_id, before in previous:
+                try:
+                    if before:
+                        self.audit_decisions.upsert(
+                            job_id=before["job_id"], run_id=before["run_id"],
+                            revision_id=before["revision_id"],
+                            audit_artifact_id=before["audit_artifact_id"],
+                            page_id=before["page_id"], region_id=before["region_id"],
+                            decision=before["decision"], created_by=before["created_by"],
+                            reason=before.get("reason") or "", notes=before.get("notes") or "")
+                    else:
+                        current = next((d for d in self.audit_decisions.list_for(
+                            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""),
+                            ctx["revision_id"], created_by=str(user_id))
+                            if d["region_id"] == region_id), None)
+                        if current:
+                            self.audit_decisions.delete(current["audit_decision_id"],
+                                                        created_by=str(user_id))
+                except Exception:  # noqa: BLE001 - best-effort rollback, error is re-raised
+                    pass
+            raise
+        self.history_revision += 1
+        return {"applied": len(applied), "decision": decision,
+                "region_ids": wanted,
+                "pages": sorted({str(by_region[r].get("page_id") or "") for r in wanted})}
+
+    @staticmethod
+    def _decision_allowed(record: dict[str, Any], decision: str) -> bool:
+        """A decision is offered only where it is meaningful for that region."""
+        category = str(record.get("classification_normalized") or "")
+        if decision in ("needs_review", "dismissed"):
+            return True
+        if decision == "ocr_invalid":
+            return not region_taxonomy.is_preservable(category) or bool(record.get("needs_human_review"))
+        # A reclassification asserts what the region *is*; it is allowed wherever
+        # the verdict it implies would be.
+        effect = region_taxonomy.decision_effect(decision)
+        if effect == "translate":
+            return not region_taxonomy.is_unreadable(category)
+        if effect == "preserve":
+            return True
+        return False
+
+    def _editorial_view(self, job_id: str, run_id: str, *, user_id: str) -> dict[str, Any]:
+        """The audit, its per-user decisions and the shared identity fields.
+
+        One read for every editorial queue, so the queues and the counters
+        always describe the same audit.
+        """
+        review = self.linguistic_audit_review(job_id, run_id, user_id=user_id)
+        decisions = {str(r["region_id"]): r["human_decision"] for r in review["records"]
+                     if r.get("human_decision")}
+        identity = {k: review[k] for k in ("job_id", "run_id", "revision_id",
+                                           "audit_artifact_id", "source_audit_hash")}
+        return {"records": review["records"], "decisions": decisions, "identity": identity}
+
+    def minimal_provider_set(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Regions that genuinely still need a provider call. Never calls one."""
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        result = linguistic_triage.minimal_provider_set(view["records"], decisions=view["decisions"])
+        counters = linguistic_triage.editorial_counters(view["records"], decisions=view["decisions"])
+        return {**view["identity"], **result, "editorial_counters": counters}
+
+    def ocr_invalid_candidates(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Reads that look corrupted, split by how sure the detector is.
+
+        Read-only: it proposes, it never marks. Confirming a candidate is a
+        separate human action through the bulk decision endpoint.
+        """
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        result = linguistic_triage.ocr_invalid_candidates(view["records"], decisions=view["decisions"])
+        counters = linguistic_triage.editorial_counters(view["records"], decisions=view["decisions"])
+        return {**view["identity"], **result, "editorial_counters": counters}
+
+    def pending_editorial_decisions(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Regions a human must rule on before any provider call is authorized."""
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        result = linguistic_triage.pending_editorial_decisions(view["records"], decisions=view["decisions"])
+        counters = linguistic_triage.editorial_counters(view["records"], decisions=view["decisions"])
+        return {**view["identity"], **result, "editorial_counters": counters}
+
+    def ocr_reprocessing_candidates(self, job_id: str, run_id: str, *, user_id: str = "") -> dict[str, Any]:
+        """Regions whose source text needs a fresh read. Never runs OCR here."""
+        review = self.linguistic_audit_review(job_id, run_id, user_id=user_id)
+        decisions = {str(r["region_id"]): r["human_decision"] for r in review["records"]
+                     if r.get("human_decision")}
+        result = linguistic_triage.ocr_reprocessing_candidates(review["records"], decisions=decisions)
+        return {**{k: review[k] for k in ("job_id", "run_id", "revision_id",
+                                          "audit_artifact_id", "source_audit_hash")},
+                **result}
+
+    # --- human overrides of a provider translation (BLOCO 6C) --------------
+    def _provider_execution(self, output_dir: str, revision_id: str,
+                            request_id: str = "") -> dict[str, Any]:
+        """The recorded execution, resolved by identity — never by newest file."""
+        root = Path(output_dir) / "quality_revision" / "linguistic_audit" / str(revision_id)
+        requests = read_json(provider_execution.requests_path(output_dir), {}).get("requests") or []
+        executed = [r for r in requests if isinstance(r, dict) and r.get("provider_executed")]
+        if request_id:
+            executed = [r for r in executed
+                        if str(r.get("authorization_request_id")) == str(request_id)]
+        if not executed:
+            # A chapter-wide quality revision may already have obtained a valid
+            # provider correction and then (correctly) kept the original pixels
+            # because the region needs a human visual decision. Requiring a
+            # second provider execution here would both bill twice and hide the
+            # persisted candidate from the human-preview workflow. Expose only
+            # terminal, explicitly usable cached corrections, with deterministic
+            # lineage and zero additional requests. In-flight or malformed
+            # revisions remain fail-closed.
+            revision_root = Path(output_dir) / "quality_revision" / str(revision_id)
+            manifest_path = revision_root / "revision_manifest.json"
+            manifest = read_json(manifest_path, {})
+            audit_path = root / "linguistic_page_audit.json"
+            audit = read_json(audit_path, {})
+            if str(manifest.get("revision_id") or "") != str(revision_id) \
+                    or str(audit.get("revision_id") or "") != str(revision_id) \
+                    or str(manifest.get("status") or "") not in {"finished", "completed", "review_required"}:
+                raise ValueError("provider_execution_not_found")
+            results = []
+            for record in audit.get("records") or []:
+                if not isinstance(record, dict):
+                    continue
+                proposal = record.get("cache_proposal")
+                if not isinstance(proposal, dict):
+                    continue
+                source = str(record.get("source_text") or "").strip()
+                candidate = str((proposal or {}).get("proposal") or "").strip()
+                region = str(record.get("region_id") or "").strip()
+                if not region or not source or not candidate:
+                    continue
+                if (record.get("cache_status") != "answered"
+                        or record.get("cache_correction_available") is not True
+                        or proposal.get("usable") is not True):
+                    continue
+                results.append({
+                    "region_id": region,
+                    "page_id": record.get("page_id"),
+                    "page_number": record.get("page_number"),
+                    "ocr_source_text": source,
+                    "text": source,
+                    "text_origin": "persisted_quality_revision",
+                    "translation": candidate,
+                })
+            if not results:
+                raise ValueError("provider_execution_not_found")
+            identity_material = json.dumps({
+                "revision_id": str(revision_id),
+                "semantic_revision_hash": str(manifest.get("semantic_revision_hash") or ""),
+                "results": results,
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            execution_id = "quality_revision:" + str(revision_id) + ":" \
+                + hashlib.sha256(identity_material.encode("utf-8")).hexdigest()[:16]
+            if request_id and str(request_id) != execution_id:
+                raise ValueError("provider_execution_not_found")
+            execution = {
+                "authorization_request_id": execution_id,
+                "provider_model": manifest.get("model"),
+                "provider_origin": "quality_revision_cache",
+                "executed_at": manifest.get("updated_at") or manifest.get("created_at"),
+                "api_requests": int(manifest.get("requests") or 0),
+                "additional_api_requests": 0,
+                "results": results,
+            }
+            request = {
+                "authorization_request_id": execution_id,
+                "provider_executed": False,
+                "provider_result_reused": True,
+                "status": "reused_quality_revision_result",
+            }
+            return {"request": request, "execution": execution,
+                    "artifact_path": str(manifest_path)}
+        if len(executed) > 1:
+            raise ValueError("ambiguous_provider_execution")
+        request = executed[0]
+        artifact = root / f"provider_execution_{request['authorization_request_id']}.json"
+        record = read_json(artifact, {})
+        if not record:
+            raise ValueError("provider_execution_artifact_missing")
+        return {"request": request, "execution": record, "artifact_path": str(artifact)}
+
+    def provider_execution_review(self, job_id: str, run_id: str, *, user_id: str = "",
+                                  request_id: str = "") -> dict[str, Any]:
+        """The executed set, each region overlaid with this user's own override."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._provider_execution(ctx["output_dir"], ctx["revision_id"], request_id)
+        execution = resolved["execution"]
+        by_region = {str(r.get("region_id")): r for r in view["records"]}
+        overrides = {d["region_id"]: d for d in self.human_translations.list_for(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            created_by=str(user_id))}
+        items = []
+        for result in execution.get("results", []):
+            region_id = str(result.get("region_id"))
+            record = by_region.get(region_id) or {}
+            decision = overrides.get(region_id)
+            items.append({
+                "region_id": region_id,
+                "page_id": result.get("page_id"),
+                "page_number": result.get("page_number"),
+                "ocr_source_text": result.get("ocr_source_text"),
+                "sent_text": result.get("text"),
+                "text_origin": result.get("text_origin"),
+                "current_translation": record.get("current_translation"),
+                "provider_candidate": result.get("translation"),
+                "human_candidate": (decision or {}).get("human_candidate", ""),
+                "human_decision": decision,
+                "bounding_box": record.get("bounding_box"),
+                "classification_normalized": record.get("classification_normalized"),
+            })
+        return {
+            **view["identity"],
+            "authorization_request_id": execution.get("authorization_request_id"),
+            "provider_model": execution.get("provider_model"),
+            "executed_at": execution.get("executed_at"),
+            "api_requests": execution.get("api_requests"),
+            "items": items,
+            "item_count": len(items),
+        }
+
+    def record_human_translation(self, job_id: str, run_id: str, *, region_id: str,
+                                 human_candidate: str, user_id: str, reason: str = "",
+                                 request_id: str = "") -> dict[str, Any]:
+        """Record a human line for one region of an executed provider set."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        resolved = self._provider_execution(ctx["output_dir"], ctx["revision_id"], request_id)
+        execution = resolved["execution"]
+        result = next((r for r in execution.get("results", [])
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if result is None:
+            # Only a region the provider actually answered can be overridden.
+            raise ValueError("region_not_in_provider_execution")
+        return self.human_translations.upsert(
+            provider_execution_id=str(execution.get("authorization_request_id")),
+            authorization_request_id=str(execution.get("authorization_request_id")),
+            job_id=str(ctx["job"]["id"]), run_id=str(ctx["job"].get("run_id") or ""),
+            revision_id=ctx["revision_id"],
+            page_id=str(result.get("page_id") or ""), region_id=str(region_id),
+            source_text=str(result.get("text") or ""),
+            provider_candidate=str(result.get("translation") or ""),
+            human_candidate=str(human_candidate),
+            created_by=str(user_id), reason=reason,
+            taxonomy_version=region_taxonomy.TAXONOMY_VERSION,
+            gate_version=linguistic_triage.GATE_VERSION)
+
+    def delete_human_translation(self, *, decision_id: str, user_id: str) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        removed = self.human_translations.delete(str(decision_id), created_by=str(user_id))
+        return {"removed": bool(removed), "human_translation_decision_id": str(decision_id)}
+
+    def _human_font_context(self, job_id: str, run_id: str, *, region_id: str,
+                            user_id: str) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        if not decision:
+            raise ValueError("human_decision_not_found")
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+        page = int(record.get("page_number") or 0)
+        box = tuple(int(v) for v in (record.get("bounding_box") or [])[:4])
+        if page <= 0 or len(box) != 4:
+            raise ValueError("font_choice_region_geometry_unavailable")
+        base_page = Path(job["output_dir"]) / "pages" / f"p{page:03d}.png"
+        if not base_page.is_file():
+            base_page = Path(job["output_dir"]) / "pages" / f"page_{page:03d}.png"
+        if not base_page.is_file():
+            raise ValueError("font_choice_base_page_unavailable")
+        return {"ctx": ctx, "job": job, "decision": decision, "record": record,
+                "page": page, "box": box, "base_page": base_page}
+
+    def _font_candidate_cache_dir(self, *, job_id: str, run_id: str, revision_id: str,
+                                  region_id: str, source_hash: str) -> Path:
+        token = hashlib.sha256(
+            f"{job_id}:{run_id}:{revision_id}:{region_id}:{source_hash}".encode("utf-8")
+        ).hexdigest()[:24]
+        return self.runtime_root / "human_font_candidates" / token
+
+    @staticmethod
+    def _render_font_candidate_crop(base_crop: Any, text: str, candidate: dict[str, Any]) -> Any:
+        import cv2
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFont
+
+        crop = np.asarray(base_crop).copy()
+        if crop.size == 0:
+            return crop
+        background = np.median(crop.reshape(-1, crop.shape[2]), axis=0).astype(np.uint8)
+        cleaned = np.zeros_like(crop)
+        cleaned[:, :] = background
+        rgb = cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(img)
+        size = int(candidate["font_size"])
+        font = ImageFont.truetype(str(candidate["resolved_font_path"]), size)
+        bbox = draw.textbbox((0, 0), str(text), font=font, stroke_width=1)
+        while size > 8 and (bbox[2] - bbox[0] > img.size[0] - 4 or bbox[3] - bbox[1] > img.size[1] - 4):
+            size -= 1
+            font = ImageFont.truetype(str(candidate["resolved_font_path"]), size)
+            bbox = draw.textbbox((0, 0), str(text), font=font, stroke_width=1)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = max(2, int((img.size[0] - tw) / 2) - bbox[0])
+        y = max(2, int((img.size[1] - th) / 2) - bbox[1])
+        draw.text((x, y), str(text), font=font, fill=(28, 28, 28),
+                  stroke_width=1, stroke_fill=(245, 245, 245))
+        return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+
+    def human_typography_candidates(self, job_id: str, run_id: str, *, region_id: str,
+                                    user_id: str) -> dict[str, Any]:
+        import cv2
+        import numpy as np
+
+        data = self._human_font_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        decision = data["decision"]
+        box = data["box"]
+        image = cv2.imread(str(data["base_page"]))
+        if image is None:
+            raise ValueError("font_choice_base_page_unavailable")
+        x, y, w, h = box
+        crop = image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+        candidates = font_fidelity.generate_typography_candidates(
+            crop, str(decision.get("human_candidate") or ""), max_candidates=5,
+            min_candidates=3, target_box=(w, h))
+        cache_dir = self._font_candidate_cache_dir(
+            job_id=str(data["job"]["id"]), run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            source_hash=str(decision.get("source_text_hash") or ""))
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        before_path = cache_dir / "before.png"
+        cv2.imwrite(str(before_path), crop)
+        public_candidates = []
+        for index, candidate in enumerate(candidates, start=1):
+            after = self._render_font_candidate_crop(crop, str(decision.get("human_candidate") or ""), candidate)
+            before = cv2.imread(str(before_path))
+            comparison = np.hstack([before, after]) if before is not None and before.shape == after.shape else after
+            name = f"candidate_{index:02d}_{candidate['candidate_id']}.png"
+            path = cache_dir / name
+            cv2.imwrite(str(path), comparison)
+            public = {
+                key: value for key, value in candidate.items()
+                if key not in {"resolved_font_path"}
+            }
+            public["preview_asset"] = (
+                "/api/ui/human-translation/font-candidate-preview"
+                f"?job_id={quote(str(data['job']['id']))}"
+                f"&asset={quote(str(cache_dir.name + '/' + name))}"
+            )
+            public["option_label"] = f"OPÇÃO {index}"
+            public_candidates.append(public)
+        selected = self.human_typography.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""), revision_id=str(data["ctx"]["revision_id"]),
+            region_id=str(region_id))
+        return {
+            "job_id": str(data["job"]["id"]),
+            "run_id": str(data["job"].get("run_id") or ""),
+            "revision_id": str(data["ctx"]["revision_id"]),
+            "page_id": str(decision.get("page_id") or ""),
+            "region_id": str(region_id),
+            "source_hash": str(decision.get("source_text_hash") or ""),
+            "human_translation_decision_id": str(decision.get("human_translation_decision_id") or ""),
+            "human_candidate": str(decision.get("human_candidate") or ""),
+            "font_inventory": [
+                {key: value for key, value in item.items() if key != "resolved_font_path"}
+                for item in font_fidelity.authorized_font_inventory(
+                    text=str(decision.get("human_candidate") or ""))
+            ],
+            "candidate_count": len(public_candidates),
+            "candidates": public_candidates,
+            "selected_choice": selected or {},
+            "message": "Escolher esta tipografia cria uma nova tentativa de prévia. Não altera o PDF, não publica e não modifica outras páginas.",
+        }
+
+    def choose_human_typography(self, job_id: str, run_id: str, *, region_id: str,
+                                candidate_id: str, user_id: str) -> dict[str, Any]:
+        data = self._human_font_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        candidates = font_fidelity.generate_typography_candidates(
+            self._font_context_crop(data), str(data["decision"].get("human_candidate") or ""),
+            max_candidates=5, min_candidates=3,
+            target_box=(int(data["box"][2]), int(data["box"][3])))
+        candidate = next((item for item in candidates
+                          if str(item.get("candidate_id") or "") == str(candidate_id)), None)
+        if not candidate:
+            raise ValueError("font_candidate_not_found")
+        choice = self.human_typography.upsert(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""), revision_id=str(data["ctx"]["revision_id"]),
+            page_id=str(data["decision"].get("page_id") or ""), region_id=str(region_id),
+            source_hash=str(data["decision"].get("source_text_hash") or ""),
+            human_translation_decision_id=str(data["decision"].get("human_translation_decision_id") or ""),
+            candidate=candidate, status="selected")
+        self.history_revision += 1
+        return {"ok": True, "font_choice": choice}
+
+    def choose_delegated_human_typography(self, job_id: str, run_id: str, *, region_id: str,
+                                          candidate_id: str, user_id: str,
+                                          selection: dict[str, Any]) -> dict[str, Any]:
+        """Persist an explicitly delegated font decision for one preview.
+
+        Delegation is operation-scoped metadata.  It does not create a runtime
+        rule and it does not render a draft by itself.
+        """
+        data = self._human_font_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        candidates = font_fidelity.generate_typography_candidates(
+            self._font_context_crop(data), str(data["decision"].get("human_candidate") or ""),
+            max_candidates=5, min_candidates=3,
+            target_box=(int(data["box"][2]), int(data["box"][3])))
+        candidate = next((item for item in candidates
+                          if str(item.get("candidate_id") or "") == str(candidate_id)), None)
+        if not candidate:
+            raise ValueError("font_candidate_not_found")
+        selected = selection.get("selected") or {}
+        runner_up = selection.get("runner_up") or {}
+        choice = self.human_typography.upsert(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""), revision_id=str(data["ctx"]["revision_id"]),
+            page_id=str(data["decision"].get("page_id") or ""), region_id=str(region_id),
+            source_hash=str(data["decision"].get("source_text_hash") or ""),
+            human_translation_decision_id=str(data["decision"].get("human_translation_decision_id") or ""),
+            candidate=candidate, status="selected_for_preview_generation",
+            visual_evidence={
+                "reason_codes": selection.get("reason_codes") or [],
+                "delegated_visual_score": selected.get("delegated_visual_score"),
+                "style_score": selected.get("style_score"),
+                "stroke_score": selected.get("stroke_score"),
+                "condensation_score": selected.get("condensation_score"),
+                "spacing_score": selected.get("spacing_score"),
+                "fit_score": selected.get("fit_score"),
+                "overall_score": selected.get("overall_score"),
+            },
+            selection_reason="best measured display-style match under delegated user authorization",
+            runner_authorization="delegated_by_user",
+            confidence=float(selection.get("confidence") or 0.0),
+            runner_up_candidate={
+                key: runner_up.get(key)
+                for key in ("candidate_id", "actual_font", "font_path_hash",
+                            "delegated_visual_score", "style_score", "overall_score")
+            })
+        self.history_revision += 1
+        return {"ok": True, "font_choice": choice, "selection": selection}
+
+    def human_typography_candidate_asset(self, asset: str) -> Path:
+        root = (REPO_ROOT / ".cache" / "runtime" / "human_font_candidates").resolve()
+        path = (root / str(asset or "")).resolve()
+        if root == path or root not in path.parents or not path.is_file():
+            raise ValueError("font_candidate_asset_not_found")
+        return path
+
+    def _font_context_crop(self, data: dict[str, Any]) -> Any:
+        import cv2
+        image = cv2.imread(str(data["base_page"]))
+        if image is None:
+            raise ValueError("font_choice_base_page_unavailable")
+        x, y, w, h = data["box"]
+        return image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+
+    def _mask_editor_context(self, job_id: str, run_id: str, *, region_id: str,
+                             user_id: str) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+        decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        if not decision:
+            raise ValueError("human_decision_not_found")
+        box = tuple(int(v) for v in (record.get("bounding_box") or [])[:4])
+        if len(box) != 4 or box[2] <= 0 or box[3] <= 0:
+            raise ValueError("mask_region_geometry_unavailable")
+        page = int(record.get("page_number") or 0)
+        if page <= 0:
+            raise ValueError("page_not_resolved_for_region")
+        base_page = Path(job["output_dir"]) / "pages" / f"p{page:03d}.png"
+        if not base_page.is_file():
+            base_page = Path(job["output_dir"]) / "pages" / f"page_{page:03d}.png"
+        if not base_page.is_file():
+            raise ValueError("mask_base_page_unavailable")
+        return {"ctx": ctx, "job": job, "record": record, "decision": decision,
+                "box": box, "page": page, "base_page": base_page}
+
+    def _mask_editor_cache_dir(self, *, job_id: str, run_id: str, revision_id: str,
+                               region_id: str, source_hash: str) -> Path:
+        token = hashlib.sha256(
+            f"{job_id}:{run_id}:{revision_id}:{region_id}:{source_hash}".encode("utf-8")
+        ).hexdigest()[:24]
+        return self.runtime_root / "human_mask_editor" / token
+
+    def human_mask_editor_state(self, job_id: str, run_id: str, *, region_id: str,
+                                user_id: str) -> dict[str, Any]:
+        import cv2
+        import numpy as np
+
+        data = self._mask_editor_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        image = cv2.imread(str(data["base_page"]))
+        if image is None:
+            raise ValueError("mask_base_page_unavailable")
+        x, y, w, h = data["box"]
+        crop = image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+        layers = art_text_inpainting.segment_text_layers(crop)
+        combined_mask = layers.get("combined_text_mask")
+        if combined_mask is None:
+            combined_mask = layers.get("combined_inpainting_mask")
+        if combined_mask is None:
+            raise ValueError("mask_combined_layer_unavailable")
+        base_hash = hashlib.sha256(np.asarray(combined_mask).tobytes()).hexdigest()
+        cache_dir = self._mask_editor_cache_dir(
+            job_id=str(data["job"]["id"]), run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            source_hash=str(data["decision"].get("source_text_hash") or ""))
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        assets: dict[str, str] = {}
+        cv2.imwrite(str(cache_dir / "auto_segmentation.png"), crop)
+        assets["auto_segmentation"] = f"human_mask_editor/{cache_dir.name}/auto_segmentation.png"
+        layer_keys = (
+            ("text_core_mask", "text_core_mask"),
+            ("outline_mask", "outline_mask"),
+            ("antialias_mask", "antialias_mask"),
+            ("combined_text_mask", "combined_inpainting_mask"),
+            ("validation_halo", "validation_halo"),
+            ("protected_edge_mask", "protected_edge_mask"),
+            ("background_art_mask", "background_art_mask"),
+        )
+        for public_key, layer_key in layer_keys:
+            value = layers.get(public_key)
+            if value is None:
+                value = layers.get(layer_key)
+            if value is None:
+                continue
+            path = cache_dir / f"{public_key}.png"
+            cv2.imwrite(str(path), value)
+            assets[public_key] = f"human_mask_editor/{cache_dir.name}/{public_key}.png"
+        latest = self.human_masks.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            base_segmentation_hash=base_hash)
+        latest_mask_revision = self.mask_revisions.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]),
+            region_id=str(region_id),
+            supersedes_mask_decision_id=str(
+                (latest or {}).get("human_mask_decision_id") or ""))
+        reviewed_seed = combined_mask
+        final_mask_asset = str(
+            (latest_mask_revision or {}).get("final_mask_asset") or "")
+        if final_mask_asset:
+            runtime_root = self.runtime_root.resolve()
+            candidate_path = (runtime_root / final_mask_asset).resolve()
+            if runtime_root in candidate_path.parents and candidate_path.is_file():
+                loaded = cv2.imread(str(candidate_path), cv2.IMREAD_GRAYSCALE)
+                if loaded is not None and loaded.shape == combined_mask.shape:
+                    reviewed_seed = loaded
+        envelope = source_glyph_envelope.derive_source_glyph_visual_envelope(
+            source_bgr=crop,
+            confirmed_text_seed=reviewed_seed,
+            fill_evidence=layers.get("text_core_mask"),
+            outline_evidence=layers.get("outline_mask"),
+            antialias_evidence=layers.get("antialias_mask"),
+            shadow_evidence=layers.get("shadow_mask"),
+            protected_art=layers.get("protected_edge_mask"),
+            identity={
+                "owner": str(user_id),
+                "job_id": str(data["job"]["id"]),
+                "run_id": str(data["job"].get("run_id") or ""),
+                "revision_id": str(data["ctx"]["revision_id"]),
+                "page_id": str(data["decision"].get("page_id") or ""),
+                "region_id": str(region_id),
+            },
+        )
+        conflict = glyph_art_boundary_review.build_conflict_artifact(
+            envelope["uncertain_mask"],
+            identity={
+                "owner": str(user_id),
+                "job_id": str(data["job"]["id"]),
+                "run_id": str(data["job"].get("run_id") or ""),
+                "revision_id": str(data["ctx"]["revision_id"]),
+                "page_id": str(data["decision"].get("page_id") or ""),
+                "region_id": str(region_id),
+                "source_hash": str(
+                    data["decision"].get("source_text_hash") or ""),
+            },
+            glyph_envelope_id=envelope["glyph_envelope_id"],
+            protected_art_hash=envelope["hashes"]["protected_art_mask_hash"],
+            previous_mask_hash=source_glyph_envelope._hash_mask(reviewed_seed),
+        )
+        for public_key, value in (
+            ("glyph_envelope", envelope["complete_glyph_mask"]),
+            ("glyph_art_conflict", conflict["conflict_bitmap"]),
+            ("glyph_art_uncertain", envelope["uncertain_mask"]),
+        ):
+            path = cache_dir / f"{public_key}.png"
+            cv2.imwrite(str(path), value)
+            assets[public_key] = (
+                f"human_mask_editor/{cache_dir.name}/{public_key}.png")
+        artifact_path = cache_dir / "glyph_art_conflict.json"
+        artifact_path.write_text(json.dumps({
+            key: value for key, value in conflict.items()
+            if key != "conflict_bitmap"
+        }, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        latest = self.human_masks.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            base_segmentation_hash=base_hash)
+        residual_analysis = self.residual_analyses.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]),
+            region_id=str(region_id))
+        latest_mask_revision = self.mask_revisions.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]),
+            region_id=str(region_id),
+            supersedes_mask_decision_id=str(
+                (latest or {}).get("human_mask_decision_id") or ""))
+        component_reviews = (
+            self.residual_component_reviews.list_latest_for_analysis(
+                owner=str(user_id),
+                residual_analysis_id=str(
+                    (residual_analysis or {}).get(
+                        "residual_analysis_id") or ""),
+            )
+            if residual_analysis else []
+        )
+        return {
+            "job_id": str(data["job"]["id"]),
+            "run_id": str(data["job"].get("run_id") or ""),
+            "revision_id": str(data["ctx"]["revision_id"]),
+            "page_id": str(data["decision"].get("page_id") or ""),
+            "region_id": str(region_id),
+            "source_hash": str(data["decision"].get("source_text_hash") or ""),
+            "base_segmentation_hash": base_hash,
+            "region_box": list(data["box"]),
+            "assets": assets,
+            "boundary_review": {
+                "conflict_artifact_id": conflict["conflict_artifact_id"],
+                "conflict_pixel_count": conflict["conflict_pixel_count"],
+                "status": conflict["status"],
+                "segments": conflict["segments"],
+                "first_pending_segment_id": (
+                    conflict["segments"][0]["segment_id"]
+                    if conflict["segments"] else ""),
+                "confirmation_blocked": bool(conflict["segments"]),
+            },
+            "automatic_segmentation": {
+                "valid": bool(layers.get("valid")),
+                "reason_codes": [str(v) for v in (layers.get("reason_codes") or [])],
+                "mask_ratio": float(layers.get("mask_ratio") or 0.0),
+                "mask_precision": float(layers.get("mask_precision") or 0.0),
+                "mask_ambiguity": float(layers.get("mask_ambiguity") or 0.0),
+                "status": (
+                    "candidate_only" if layers.get("valid")
+                    else "blocked_pending_human_mask"
+                ),
+            },
+            "tools": [
+                "include_text", "exclude_art", "protect_lines", "mark_uncertain",
+                "eraser", "undo", "redo", "restore_automatic", "save_draft",
+                "confirm_mask",
+            ],
+            "message": "Confirmar esta máscara permite apenas criar uma tentativa de reconstrução local. Nenhuma página definitiva ou PDF será alterado.",
+            "decision": latest or {},
+            "residual_analysis": residual_analysis or {},
+            "mask_revision": latest_mask_revision or {},
+            "residual_component_reviews": component_reviews,
+            "inpainting_status": "blocked_pending_human_mask",
+        }
+
+    def human_mask_editor_asset(self, asset: str) -> Path:
+        root = self.runtime_root.resolve()
+        path = (root / str(asset or "")).resolve()
+        allowed = (root / "human_mask_editor").resolve()
+        if allowed not in path.parents or not path.is_file() or root not in path.parents:
+            raise ValueError("human_mask_asset_not_found")
+        return path
+
+    def save_human_mask_draft(self, job_id: str, run_id: str, *, region_id: str,
+                              user_id: str, payload: dict[str, Any],
+                              confirm: bool = False) -> dict[str, Any]:
+        data = self._mask_editor_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        state = self.human_mask_editor_state(job_id, run_id, region_id=region_id, user_id=user_id)
+        status = "confirmed" if confirm else "draft"
+        validation = {}
+        if confirm:
+            import cv2
+            image = cv2.imread(str(data["base_page"]))
+            if image is None:
+                raise ValueError("mask_base_page_unavailable")
+            x, y, w, h = [int(v) for v in state["region_box"]]
+            crop = image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+            final_metrics = self._human_mask_final_metrics(crop, payload, state)
+            validation = human_mask_decisions.validate_mask_payload(
+                {
+                    **payload,
+                    "source_hash": state["source_hash"],
+                    "base_segmentation_hash": state["base_segmentation_hash"],
+                    "final_mask_metrics": final_metrics,
+                },
+                region_box=state["region_box"],
+                base_segmentation_hash=state["base_segmentation_hash"],
+                source_hash=state["source_hash"],
+            )
+        decision = self.human_masks.upsert(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""), revision_id=str(data["ctx"]["revision_id"]),
+            page_id=str(data["decision"].get("page_id") or ""), region_id=str(region_id),
+            source_hash=state["source_hash"], base_segmentation_hash=state["base_segmentation_hash"],
+            include_mask=payload.get("include_mask") or [],
+            exclude_mask=payload.get("exclude_mask") or [],
+            protected_mask=payload.get("protected_mask") or [],
+            uncertain_mask=payload.get("uncertain_mask") or [],
+            validation=validation, notes=str(payload.get("notes") or ""), status=status)
+        self.history_revision += 1
+        return {"ok": True, "mask_decision": decision, "inpainting_status": "blocked_pending_human_mask"}
+
+    @staticmethod
+    def _rect_mask_for_region(shape: tuple[int, int], rects: list[list[int]],
+                              region_box: list[int] | tuple[int, int, int, int]) -> "np.ndarray":
+        import numpy as np
+
+        height, width = shape[:2]
+        rx, ry, rw, rh = [int(v) for v in region_box[:4]]
+        mask = np.zeros((height, width), dtype=np.uint8)
+        for raw in rects or []:
+            x, y, w, h = [int(v) for v in list(raw)[:4]]
+            # UI brush data may be absolute page coordinates or crop-local
+            # operation data.  Support both without baking in a page/region.
+            if x >= rx and y >= ry and x + w <= rx + rw and y + h <= ry + rh:
+                x -= rx
+                y -= ry
+            left, top = max(0, x), max(0, y)
+            right, bottom = min(width, x + w), min(height, y + h)
+            if right > left and bottom > top:
+                mask[top:bottom, left:right] = 255
+        return mask
+
+    @staticmethod
+    def _mask_component_count(mask: "np.ndarray") -> int:
+        import cv2
+        import numpy as np
+
+        count, _labels, _stats, _centroids = cv2.connectedComponentsWithStats(
+            (np.asarray(mask) > 0).astype(np.uint8), 8)
+        return max(0, int(count) - 1)
+
+    def _human_mask_final_metrics(self, crop: "np.ndarray", payload: dict[str, Any],
+                                  state: dict[str, Any]) -> dict[str, Any]:
+        import cv2
+        import numpy as np
+
+        layers = art_text_inpainting.segment_text_layers(crop)
+        combined = layers.get("combined_inpainting_mask")
+        if combined is None:
+            raise ValueError("mask_combined_layer_unavailable")
+        include_rects = payload.get("include_mask") or []
+        include_area = self._rect_mask_for_region(combined.shape, include_rects, state["region_box"])
+        final_mask = cv2.bitwise_and(combined, include_area) if include_rects else combined.copy()
+        for key in ("exclude_mask", "protected_mask", "uncertain_mask"):
+            rect_mask = self._rect_mask_for_region(
+                final_mask.shape, payload.get(key) or [], state["region_box"])
+            if rect_mask.any():
+                final_mask[rect_mask > 0] = 0
+        final_mask = (final_mask > 0).astype(np.uint8) * 255
+        protected = np.asarray(layers.get("protected_edge_mask"), dtype=np.uint8)
+        return {
+            "final_mask_area": int((final_mask > 0).sum()),
+            "region_area": int(final_mask.size),
+            "mask_ratio": round(float((final_mask > 0).sum()) / max(1, int(final_mask.size)), 4),
+            "connected_components": self._mask_component_count(final_mask),
+            "protected_overlap": int(((protected > 0) & (final_mask > 0)).sum()),
+            "mask_hash": art_text_inpainting.mask_hash(final_mask),
+        }
+
+    def _confirmed_human_mask_override(self, job_id: str, run_id: str, *,
+                                       region_id: str, user_id: str) -> dict[str, Any] | None:
+        import cv2
+        import numpy as np
+
+        data = self._mask_editor_context(job_id, run_id, region_id=region_id, user_id=user_id)
+        state = self.human_mask_editor_state(job_id, run_id, region_id=region_id, user_id=user_id)
+        decision = self.human_masks.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            base_segmentation_hash=str(state["base_segmentation_hash"]))
+        if not decision or str(decision.get("status") or "") != "confirmed":
+            return None
+        image = cv2.imread(str(data["base_page"]))
+        if image is None:
+            raise ValueError("mask_base_page_unavailable")
+        x, y, w, h = [int(v) for v in state["region_box"]]
+        crop = image[max(0, y):max(0, y) + h, max(0, x):max(0, x) + w]
+        layers = art_text_inpainting.segment_text_layers(crop)
+        combined = layers.get("combined_inpainting_mask")
+        if combined is None:
+            raise ValueError("mask_combined_layer_unavailable")
+        revision = self.mask_revisions.latest_for_region(
+            owner=str(user_id), job_id=str(data["job"]["id"]),
+            run_id=str(data["job"].get("run_id") or ""),
+            revision_id=str(data["ctx"]["revision_id"]), region_id=str(region_id),
+            supersedes_mask_decision_id=str(decision.get("human_mask_decision_id") or ""))
+        if revision and str(revision.get("status") or "") == "confirmed":
+            root = (REPO_ROOT / ".cache" / "runtime").resolve()
+            asset = (root / str(revision.get("final_mask_asset") or "")).resolve()
+            if root not in asset.parents or not asset.is_file():
+                raise ValueError("mask_revision_asset_unavailable")
+            final_mask = cv2.imread(str(asset), cv2.IMREAD_GRAYSCALE)
+            if final_mask is None or final_mask.shape[:2] != combined.shape[:2]:
+                raise ValueError("mask_revision_shape_mismatch")
+            final_mask = (np.asarray(final_mask) > 0).astype(np.uint8) * 255
+            mask_revision_id = str(revision.get("mask_revision_id") or "")
+            validation = dict(revision.get("validation") or {})
+        else:
+            include_rects = decision.get("include_mask") or []
+            include_area = self._rect_mask_for_region(combined.shape, include_rects, state["region_box"])
+            final_mask = cv2.bitwise_and(combined, include_area) if include_rects else combined.copy()
+            for key in ("exclude_mask", "protected_mask", "uncertain_mask"):
+                rect_mask = self._rect_mask_for_region(
+                    final_mask.shape, decision.get(key) or [], state["region_box"])
+                if rect_mask.any():
+                    final_mask[rect_mask > 0] = 0
+            mask_revision_id = ""
+            validation = {}
+        final_mask = (final_mask > 0).astype(np.uint8) * 255
+        validation_halo = cv2.dilate(final_mask, np.ones((5, 5), np.uint8), iterations=1)
+        protected = np.asarray(layers.get("protected_edge_mask"), dtype=np.uint8)
+        protected_overlap = int(((protected > 0) & (final_mask > 0)).sum())
+        metrics = {
+            "final_mask_area": int((final_mask > 0).sum()),
+            "region_area": int(final_mask.size),
+            "mask_ratio": round(float((final_mask > 0).sum()) / max(1, int(final_mask.size)), 4),
+            "connected_components": self._mask_component_count(final_mask),
+            "protected_overlap": protected_overlap,
+            "mask_hash": art_text_inpainting.mask_hash(final_mask),
+        }
+        if mask_revision_id:
+            validation = {**validation, **metrics}
+        else:
+            validation = human_mask_decisions.validate_mask_payload(
+                {
+                    "source_hash": state["source_hash"],
+                    "base_segmentation_hash": state["base_segmentation_hash"],
+                    "include_mask": include_rects,
+                    "exclude_mask": decision.get("exclude_mask") or [],
+                    "protected_mask": decision.get("protected_mask") or [],
+                    "uncertain_mask": decision.get("uncertain_mask") or [],
+                    "final_mask_metrics": metrics,
+                },
+                region_box=state["region_box"],
+                base_segmentation_hash=state["base_segmentation_hash"],
+                source_hash=state["source_hash"],
+            )
+        if protected_overlap:
+            raise ValueError("mask_protected_overlap")
+        return {
+            "human_mask_decision_id": str(decision.get("human_mask_decision_id") or ""),
+            "mask_revision_id": mask_revision_id,
+            "box_ltrb": [x, y, x + w, y + h],
+            "combined_inpainting_mask": final_mask,
+            "source_residual_mask": final_mask.copy(),
+            "validation_halo": validation_halo,
+            "protected_edge_mask": protected,
+            "mask_hash": metrics["mask_hash"],
+            "validation": {**validation, **metrics},
+            "source_hash": state["source_hash"],
+            "base_segmentation_hash": state["base_segmentation_hash"],
+        }
+
+    def create_human_preview_draft(self, job_id: str, run_id: str, *, region_id: str,
+                                   user_id: str, request_id: str = "",
+                                   font_choice_decision_id: str = "") -> dict[str, Any]:
+        """Render one region's human line into its own page draft.
+
+        The reviewer is a guard that cannot call out, so this path is incapable
+        of reaching a provider however it is entered.
+        """
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        resolved = self._provider_execution(ctx["output_dir"], ctx["revision_id"], request_id)
+        decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        # Fails closed if the decision no longer answers the recorded execution.
+        human_translation_decisions.validate_against_execution(decision, resolved["execution"])
+
+        result = next(r for r in resolved["execution"]["results"]
+                      if str(r.get("region_id")) == str(region_id))
+        page = int(result.get("page_number") or 0)
+        if page <= 0:
+            raise ValueError("page_not_resolved_for_region")
+
+        engine = self._page_revision_engine(
+            job, reviewer_factory=provider_execution.NoProviderReviewer)
+        font_overrides = None
+        if str(font_choice_decision_id or "").strip():
+            choice = self.human_typography.get(str(font_choice_decision_id), owner=str(user_id))
+            if not choice:
+                raise ValueError("font_choice_not_found")
+            if str(choice.get("region_id") or "") != str(region_id):
+                raise ValueError("font_choice_region_mismatch")
+            if str(choice.get("source_hash") or "") != str(decision.get("source_text_hash") or ""):
+                raise ValueError("font_choice_source_hash_mismatch")
+            params = dict(choice.get("render_parameters") or {})
+            font_overrides = {str(region_id): {
+                **params,
+                "font_choice_decision_id": str(choice.get("font_choice_decision_id") or ""),
+                "font_file_hash": str(choice.get("font_file_hash") or ""),
+                "style_score": 1.0,
+            }}
+        mask_override = self._confirmed_human_mask_override(
+            job_id, run_id, region_id=region_id, user_id=user_id)
+        mask_overrides = {str(region_id): mask_override} if mask_override else None
+        manifest = engine.revise_page(
+            page, region_ids=[str(region_id)], cache_only=True,
+            human_overrides={str(region_id): str(decision["human_candidate"])},
+            font_overrides=font_overrides,
+            mask_overrides=mask_overrides)
+        self.human_translations.set_status(
+            decision["human_translation_decision_id"], "draft_rendered", created_by=str(user_id))
+        if font_choice_decision_id:
+            self.human_typography.set_status(
+                str(font_choice_decision_id), "draft_rendered", owner=str(user_id))
+        self.history_revision += 1
+        return {"manifest": manifest, "human_decision": decision,
+                "provider_execution_id": resolved["execution"].get("authorization_request_id")}
+
+    def _human_draft_manifest(self, job: dict[str, Any], revision_id: str,
+                              region_id: str) -> dict[str, Any] | None:
+        """The draft this region's human line was rendered into, by lineage.
+
+        Resolved from the manifests themselves, never from the newest folder on
+        disk: a draft only counts when it belongs to this job, this run, this
+        base revision and this one region.
+        """
+        root = Path(job["output_dir"]) / "quality_revision" / "page_revisions"
+        if not root.is_dir():
+            return None
+        best = None
+        for child in sorted(root.iterdir()):
+            manifest = read_json(child / "revision_manifest.json", {}) or \
+                read_json(child / "page_revision_manifest.json", {})
+            if not manifest:
+                continue
+            if str(manifest.get("parent_job_id") or "") != str(job["id"]):
+                continue
+            if str(manifest.get("parent_run_id") or "") != str(job.get("run_id") or ""):
+                continue
+            if str(manifest.get("parent_revision_id") or "") != str(revision_id):
+                continue
+            if str(region_id) not in (manifest.get("human_overrides") or []):
+                continue
+            if best is None or str(manifest.get("updated_at") or "") > str(best.get("updated_at") or ""):
+                best = manifest
+        return best
+
+    def human_preview_gates(self, job_id: str, run_id: str, *, region_id: str,
+                            user_id: str = "") -> dict[str, Any]:
+        """Both gates for one region's draft, measured — never asserted."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        if not decision:
+            raise ValueError("human_decision_not_found")
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+
+        manifest = self._human_draft_manifest(job, ctx["revision_id"], str(region_id))
+        page = int(record.get("page_number") or 0)
+        base_page = Path(job["output_dir"]) / "pages" / f"p{page:03d}.png"
+        if not base_page.is_file():
+            base_page = Path(job["output_dir"]) / "pages" / f"page_{page:03d}.png"
+        draft_path = str((manifest or {}).get("draft_page_path") or "")
+
+        box = tuple(record.get("bounding_box") or ())
+        mask_refinement = next((
+            item for item in ((manifest or {}).get("mask_refinements") or [])
+            if str(item.get("region_id") or "") == str(region_id)
+        ), {})
+        gate_box = tuple(mask_refinement.get("expanded_box_xywh") or box)
+        audit_path = Path(job["output_dir"]) / "quality_revision" / "page_revisions" \
+            / str((manifest or {}).get("page_revision_id") or "") / "incremental_render_audit.json"
+        audit = read_json(audit_path, {})
+        font_runtime = {}
+        for audit_record in audit.get("records", []) or []:
+            if str(region_id) in [str(value) for value in (audit_record.get("changed_regions") or [])]:
+                runtimes = audit_record.get("font_runtime_validation") or {}
+                if isinstance(runtimes, dict):
+                    font_runtime = runtimes.get(str(region_id)) or {}
+                break
+
+        if draft_path and Path(draft_path).is_file() and base_page.is_file() and len(box) == 4:
+            visual = preview_gates.evaluate_visual_gate(base_page, draft_path, boxes=[gate_box])
+            visual["original_mask_bounds"] = list(box)
+            visual["mask_refinement"] = mask_refinement
+        else:
+            # No image is a verdict of its own; the render audit says why.
+            reason = str(((audit.get("records") or [{}])[0]).get("reason_code") or "draft_not_rendered")
+            visual = {"status": preview_gates.FAILED, "reason_codes": [reason],
+                      "gate_version": preview_gates.GATE_VERSION}
+        style_score = {
+            "style_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "stroke_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "slant_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "condensation_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "spacing_similarity": (mask_refinement.get("font_selection") or {}).get("font_match_score", 0.0),
+            "alignment_similarity": 1.0,
+        }
+        font_gate = font_fidelity.typography_gate(font_runtime, style_score) if font_runtime else {
+            "status": preview_gates.NEEDS_REVIEW,
+            "reason_codes": ["font_runtime_validation_missing"],
+            "gate_version": font_fidelity.FONT_FIDELITY_VERSION,
+        }
+        if visual.get("status") == preview_gates.PASSED and font_gate.get("status") != preview_gates.PASSED:
+            visual["status"] = preview_gates.NEEDS_REVIEW
+            visual["reason_codes"] = sorted(set(
+                [str(v) for v in (visual.get("reason_codes") or []) if str(v)]
+                + [str(v) for v in (font_gate.get("reason_codes") or []) if str(v)]
+            ))
+
+        policy = tax_policy = {
+            "normalized_classification": record.get("classification_normalized"),
+            "translatable": True, "preservable": False,
+            "provider_required": False, "needs_human_review": False}
+        linguistic = linguistic_triage.evaluate_linguistic_gate(
+            source_text=str(decision["source_text"]),
+            current_translation=str(decision["human_candidate"]), policy=tax_policy)
+        provider_linguistic = linguistic_triage.evaluate_linguistic_gate(
+            source_text=str(decision["source_text"]),
+            current_translation=str(decision["provider_candidate"]), policy=policy)
+        return {
+            "region_id": str(region_id), "page_number": page,
+            "page_revision_id": str((manifest or {}).get("page_revision_id") or ""),
+            "parent_revision_id": str((manifest or {}).get("parent_revision_id") or ""),
+            "draft_status": str((manifest or {}).get("status") or ""),
+            "draft_available": bool(draft_path and Path(draft_path).is_file()),
+            "human_decision": decision,
+            "visual_gate": visual,
+            "linguistic_gate": linguistic,
+            "provider_linguistic_gate": provider_linguistic,
+            "mask_refinement": mask_refinement,
+            "font_profile": (mask_refinement or {}).get("font_profile") or {},
+            "font_selection": (mask_refinement or {}).get("font_selection") or {},
+            "font_runtime_validation": font_runtime,
+            "font_gate": font_gate,
+            # Nothing here is final: a rendered draft still awaits a human eye.
+            "state": "draft_ready_for_human_visual_approval",
+        }
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def record_visual_review_decision(self, job_id: str, run_id: str, *,
+                                      region_id: str, page_revision_id: str,
+                                      decision: str, user_id: str,
+                                      reason_codes: list[str] | None = None,
+                                      visual_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        engine, manifest = self._validated_page_revision(job, page_revision_id)
+        if str(region_id) not in (manifest.get("region_ids") or manifest.get("regions_changed") or []):
+            raise ValueError("visual_review_region_mismatch")
+        draft_path = Path(str(manifest.get("draft_page_path") or ""))
+        if not draft_path.is_file():
+            raise ValueError("preview_asset_unavailable")
+        human_decision = self.human_translations.get_for_region(
+            str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""), ctx["revision_id"],
+            str(region_id), created_by=str(user_id))
+        if not human_decision:
+            raise ValueError("human_decision_not_found")
+        gates = self.human_preview_gates(job_id, run_id, region_id=region_id, user_id=user_id)
+        if decision == "approved":
+            if str(gates.get("visual_gate", {}).get("status") or "") != preview_gates.PASSED:
+                raise ValueError("visual_gate_not_passed")
+            if str(gates.get("linguistic_gate", {}).get("status") or "") != preview_gates.PASSED:
+                raise ValueError("linguistic_gate_not_passed")
+        preview_hash = self._sha256_file(draft_path)
+        record = self.visual_reviews.upsert(
+            owner=str(user_id), job_id=str(job["id"]), run_id=str(job.get("run_id") or ""),
+            revision_id=str(ctx["revision_id"]), page_id=str(human_decision.get("page_id") or ""),
+            region_id=str(region_id), page_revision_id=str(page_revision_id),
+            source_hash=str(human_decision.get("source_text_hash") or ""),
+            preview_asset_hash=preview_hash, decision=str(decision),
+            authorization="delegated_by_user", reviewer="codex",
+            reason_codes=[str(v) for v in (reason_codes or [])],
+            visual_evidence={
+                **(visual_evidence or {}),
+                "visual_gate": gates.get("visual_gate") or {},
+                "linguistic_gate": gates.get("linguistic_gate") or {},
+                "draft_status": manifest.get("status"),
+            },
+            status="active")
+        outcome = ""
+        if decision == "approved":
+            updated_manifest = engine.set_page_revision_outcome(str(page_revision_id), "approved")
+            outcome = str(updated_manifest.get("status") or "")
+            self.human_translations.set_status(
+                str(human_decision["human_translation_decision_id"]),
+                "visually_approved", created_by=str(user_id))
+        elif decision in {"needs_adjustment", "rejected"}:
+            updated_manifest = engine.set_page_revision_outcome(str(page_revision_id), "rejected")
+            outcome = str(updated_manifest.get("status") or "")
+        else:
+            updated_manifest = manifest
+        self.history_revision += 1
+        return {"ok": True, "visual_review_decision": record,
+                "page_revision_status": outcome or updated_manifest.get("status", "")}
+
+    def pending_human_previews(self, *, user_id: str = "") -> dict[str, Any]:
+        """Owner-scoped human preview drafts that still need a human verdict."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+
+        items: list[dict[str, Any]] = []
+        for record in self._history_payload():
+            job_id = str(record.get("job_id") or "")
+            run_id = str(record.get("run_id") or "")
+            if not job_id or not run_id:
+                continue
+            try:
+                ctx = self._audit_context(job_id, run_id)
+                job = self._page_revision_job(job_id, run_id)
+            except Exception:
+                continue
+            decisions = self.human_translations.list_for(
+                str(ctx["job"]["id"]), str(ctx["job"].get("run_id") or ""),
+                ctx["revision_id"], created_by=str(user_id))
+            for decision in decisions:
+                decision_status = str(decision.get("status") or "")
+                if decision_status in {"visually_approved", "discarded"}:
+                    continue
+                region_id = str(decision.get("region_id") or "")
+                if not region_id:
+                    continue
+
+                source_hash_valid = False
+                lineage_reason = ""
+                try:
+                    resolved = self._provider_execution(
+                        ctx["output_dir"], ctx["revision_id"],
+                        str(decision.get("authorization_request_id") or ""))
+                    human_translation_decisions.validate_against_execution(
+                        decision, resolved["execution"])
+                    source_hash_valid = True
+                except ValueError as exc:
+                    lineage_reason = str(exc)
+
+                manifest = self._human_draft_manifest(job, ctx["revision_id"], region_id) or {}
+                page_revision_id = str(manifest.get("page_revision_id") or "")
+                page_number = int(str(decision.get("page_id") or "p0").lstrip("p") or 0)
+                try:
+                    latest = self._page_revision_engine(job).latest_page_revision(page_number) or {}
+                except Exception:
+                    latest = {}
+                lineage_valid = (
+                    bool(page_revision_id)
+                    and str(manifest.get("parent_job_id") or "") == job_id
+                    and str(manifest.get("parent_run_id") or "") == run_id
+                    and str(manifest.get("parent_revision_id") or "") == str(ctx["revision_id"])
+                    and region_id in (manifest.get("human_overrides") or [])
+                    and (not latest or str(latest.get("page_revision_id") or "") == page_revision_id)
+                    and source_hash_valid
+                )
+                if not lineage_reason and not lineage_valid:
+                    lineage_reason = "preview_lineage_not_current"
+
+                try:
+                    gates = self.human_preview_gates(job_id, run_id, region_id=region_id,
+                                                     user_id=str(user_id))
+                except ValueError as exc:
+                    gates = {
+                        "visual_gate": {"status": preview_gates.FAILED,
+                                        "reason_codes": [str(exc)]},
+                        "linguistic_gate": {"status": preview_gates.FAILED,
+                                            "reason_codes": [str(exc)]},
+                        "mask_refinement": {},
+                        "font_selection": {},
+                        "font_runtime_validation": {},
+                        "font_gate": {"status": preview_gates.NEEDS_REVIEW,
+                                      "reason_codes": [str(exc)]},
+                    }
+                visual = gates.get("visual_gate") or {}
+                linguistic = gates.get("linguistic_gate") or {}
+                draft_path = Path(str(manifest.get("draft_page_path") or ""))
+                draft_available = bool(manifest.get("draft_page_path") and draft_path.is_file())
+                visual_passed = str(visual.get("status") or "") == preview_gates.PASSED
+                linguistic_passed = str(linguistic.get("status") or "") == linguistic_triage.PASSED
+                blocked = not draft_available or not visual_passed or not lineage_valid
+                approval_enabled = (
+                    draft_available and visual_passed and linguistic_passed
+                    and lineage_valid and decision_status == "draft_rendered"
+                    and str(manifest.get("status") or "") == "draft_ready"
+                )
+                crop_query = (
+                    f"job_id={quote(job_id)}&run_id={quote(run_id)}"
+                    f"&region_id={quote(region_id)}"
+                )
+                page_label = page_number or int(gates.get("page_number") or 0)
+                items.append({
+                    "job_id": job_id,
+                    "run_id": run_id,
+                    "revision_id": str(ctx["revision_id"]),
+                    "page_id": str(decision.get("page_id") or ""),
+                    "region_id": region_id,
+                    "page_revision_id": page_revision_id,
+                    "parent_revision_id": str(manifest.get("parent_revision_id") or ""),
+                    "supersedes_page_revision_id": str(manifest.get("supersedes_page_revision_id") or ""),
+                    "chapter_display_name": str(record.get("chapter_name") or record.get("slug") or "Capítulo"),
+                    "page_display_number": page_label,
+                    "preview_image_url": (
+                        f"/api/ui/human-translation/preview-crop?{crop_query}&kind=draft"
+                        if draft_available else ""
+                    ),
+                    "region_crop_url": f"/api/ui/human-translation/preview-crop?{crop_query}&kind=base",
+                    "human_candidate": str(decision.get("human_candidate") or ""),
+                    "visual_gate": visual,
+                    "linguistic_gate": linguistic,
+                    "approval_status": decision_status,
+                    "created_at": str(decision.get("created_at") or ""),
+                    "updated_at": str(decision.get("updated_at") or manifest.get("updated_at") or ""),
+                    "reason_codes": sorted(set(
+                        [str(v) for v in (visual.get("reason_codes") or []) if str(v)]
+                        + [str(v) for v in (linguistic.get("reason_codes") or []) if str(v)]
+                        + ([lineage_reason] if lineage_reason else [])
+                    )),
+                    "source_hash": str(decision.get("source_text_hash") or ""),
+                    "source_hash_valid": source_hash_valid,
+                    "lineage_status": "valid" if lineage_valid else "invalid",
+                    "lineage_valid": lineage_valid,
+                    "draft_available": draft_available,
+                    "blocked": blocked,
+                    "blocked_reason": (
+                        "requires_art_reconstruction" if not draft_available
+                        else "visual_gate_not_passed" if not visual_passed
+                        else "lineage_invalid" if not lineage_valid
+                        else ""
+                    ),
+                    "approval_enabled": approval_enabled,
+                    "mask_refinement": gates.get("mask_refinement") or {},
+                    "font_selection": gates.get("font_selection") or {},
+                    "font_runtime_validation": gates.get("font_runtime_validation") or {},
+                    "font_gate": gates.get("font_gate") or {},
+                    "comparison_url": (
+                        f"?view=review&job_id={quote(job_id)}&run_id={quote(run_id)}"
+                        f"&revision_id={quote(str(ctx['revision_id']))}&audit=1"
+                        f"&audit_mode=previews&review_mode=human_previews"
+                        f"&page_id={quote(str(decision.get('page_id') or ''))}"
+                        f"&region_id={quote(region_id)}&page_revision_id={quote(page_revision_id)}"
+                        f"&preview_compare=1"
+                    ),
+                })
+
+        items.sort(key=lambda item: (
+            1 if item.get("approval_enabled") else 2 if not item.get("blocked") else 3,
+            str(item.get("chapter_display_name") or ""),
+            int(item.get("page_display_number") or 0),
+            str(item.get("region_id") or ""),
+        ))
+        return {
+            "items": items,
+            "item_count": len(items),
+            "ready_count": sum(1 for item in items if item.get("approval_enabled")),
+            "blocked_count": sum(1 for item in items if item.get("blocked")),
+            "pending_count": len(items),
+        }
+
+    def human_preview_crop(self, job_id: str, run_id: str, *, region_id: str,
+                           kind: str = "draft", user_id: str = "") -> Path:
+        """Crop the region out of the current page or out of its draft."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        if kind not in ("base", "draft"):
+            raise ValueError("unknown_crop_kind")
+        ctx = self._audit_context(job_id, run_id)
+        job = self._page_revision_job(job_id, run_id)
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+        box = record.get("bounding_box") or []
+        if len(box) < 4:
+            raise ValueError("region_has_no_geometry")
+        page = int(record.get("page_number") or 0)
+        output_root = Path(job["output_dir"]).resolve()
+        if kind == "base":
+            source = output_root / "pages" / f"page_{page:03d}.png"
+        else:
+            manifest = self._human_draft_manifest(job, ctx["revision_id"], str(region_id))
+            source = Path(str((manifest or {}).get("draft_page_path") or ""))
+        if not source or not source.is_file():
+            raise ValueError("preview_image_not_available")
+        # Path confinement: only images inside this chapter may ever be served.
+        if output_root not in source.resolve().parents:
+            raise ValueError("preview_image_outside_chapter")
+
+        from PIL import Image
+
+        cache_dir = self.runtime_root / "preview_crops" / str(ctx["revision_id"])
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / f"{hashlib.sha256(f'{region_id}:{kind}'.encode()).hexdigest()[:16]}.png"
+        with Image.open(source) as image:
+            x, y, w, h = (int(v) for v in box[:4])
+            pad = 16
+            image.convert("RGB").crop((
+                max(0, x - pad), max(0, y - pad),
+                min(image.width, x + w + pad), min(image.height, y + h + pad))).save(target, "PNG")
+        return target
+
+    def audit_region_crop(self, job_id: str, run_id: str, *, region_id: str,
+                          user_id: str = "", padding: int = 12) -> Path:
+        """Crop one audited region out of its source page, for a human to look at.
+
+        Read-only with respect to the chapter: the crop is written to the local
+        cache, never into the output dir, so no page or PDF is ever touched.
+        """
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        view = self._editorial_view(job_id, run_id, user_id=user_id)
+        record = next((r for r in view["records"]
+                       if str(r.get("region_id")) == str(region_id)), None)
+        if record is None:
+            raise ValueError("region_not_in_audit")
+        box = record.get("bounding_box") or []
+        if len(box) < 4:
+            raise ValueError("region_has_no_geometry")
+
+        ctx = self._audit_context(job_id, run_id)
+        report = read_json(Path(ctx["output_dir"]) / "quality_report.json", {})
+        page_number = int(record.get("page_number") or 0)
+        page = next((p for p in (report.get("pages") or [])
+                     if isinstance(p, dict)
+                     and int(p.get("index") or p.get("sequence_index") or 0) == page_number), None)
+        if page is None:
+            raise ValueError("page_not_in_report")
+        # The *input* page is what the OCR actually read, so that is what a human
+        # has to compare the transcription against.
+        source = next((Path(str(page.get(key) or "")) for key in ("image_path", "output_path")
+                       if str(page.get(key) or "") and Path(str(page[key])).is_file()), None)
+        if source is None:
+            raise ValueError("page_image_not_available")
+        # Path confinement: the page must belong to this chapter's output dir.
+        output_root = Path(ctx["output_dir"]).resolve()
+        if output_root not in source.resolve().parents:
+            raise ValueError("page_image_outside_chapter")
+
+        from PIL import Image
+
+        cache_dir = self.runtime_root / "region_crops" / str(ctx["revision_id"])
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / f"{hashlib.sha256(str(region_id).encode()).hexdigest()[:16]}.png"
+        with Image.open(source) as image:
+            x, y, w, h = (int(v) for v in box[:4])
+            pad = max(0, int(padding))
+            crop = image.convert("RGB").crop((
+                max(0, x - pad), max(0, y - pad),
+                min(image.width, x + w + pad), min(image.height, y + h + pad)))
+            crop.save(target, "PNG")
+        return target
+
+    def request_provider_authorization(self, job_id: str, run_id: str, *, user_id: str,
+                                       confirm: bool = False) -> dict[str, Any]:
+        """Record a pending authorization request. Never contacts the provider."""
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        if not confirm:
+            raise ValueError("explicit_confirmation_required")
+        ctx = self._audit_context(job_id, run_id)
+        plan = self.minimal_provider_set(job_id, run_id, user_id=user_id)
+        # A set that still holds unruled text would spend calls on reads nobody
+        # confirmed. The editorial queue has to be empty first.
+        if plan["awaiting_editorial_count"]:
+            raise ValueError("blocked_pending_editorial_decisions")
+        if not plan["estimated_requests"]:
+            raise ValueError("empty_provider_set")
+        request = {
+            "authorization_request_id": uuid.uuid4().hex,
+            "job_id": plan["job_id"], "run_id": plan["run_id"],
+            "revision_id": plan["revision_id"],
+            "audit_artifact_id": plan["audit_artifact_id"],
+            "source_audit_hash": plan["source_audit_hash"],
+            "requested_by": str(user_id),
+            "requested_at": _utc_now_iso(),
+            "status": "ready_for_human_authorization",
+            "editorial_counters": plan["editorial_counters"],
+            "estimated_requests": plan["estimated_requests"],
+            "pages": plan["pages"],
+            "region_ids": [item["region_id"] for item in plan["items"]],
+            "provider_executed": False,
+        }
+        path = Path(ctx["output_dir"]) / "quality_revision" / "provider_authorization_requests.json"
+        existing = read_json(path, {}) if path.is_file() else {}
+        requests_list = existing.get("requests") if isinstance(existing.get("requests"), list) else []
+        requests_list.append(request)
+        write_json(path, {"requests": requests_list, "updated_at": _utc_now_iso()})
+        self.history_revision += 1
+        return request
+
+    def cancel_provider_authorization(self, job_id: str, run_id: str, *,
+                                      request_id: str, user_id: str) -> dict[str, Any]:
+        ctx = self._audit_context(job_id, run_id)
+        path = Path(ctx["output_dir"]) / "quality_revision" / "provider_authorization_requests.json"
+        existing = read_json(path, {}) if path.is_file() else {}
+        requests_list = [r for r in (existing.get("requests") or [])
+                         if isinstance(r, dict)]
+        target = next((r for r in requests_list if str(r.get("authorization_request_id")) == str(request_id)), None)
+        if not target:
+            raise ValueError("authorization_request_not_found")
+        if str(target.get("requested_by")) != str(user_id):
+            raise ValueError("not_request_owner")
+        remaining = [r for r in requests_list if r is not target]
+        write_json(path, {"requests": remaining, "updated_at": _utc_now_iso()})
+        self.history_revision += 1
+        return {"cancelled": True, "authorization_request_id": str(request_id)}
+
+    def delete_audit_decision(self, job_id: str, run_id: str, *, decision_id: str, user_id: str) -> dict[str, Any]:
+        if not str(user_id or "").strip():
+            raise ValueError("authentication_required")
+        ctx = self._audit_context(job_id, run_id)
+        existing = self.audit_decisions.get(str(decision_id))
+        if not existing or str(existing.get("job_id")) != str(ctx["job"]["id"]) \
+                or str(existing.get("revision_id")) != ctx["revision_id"]:
+            raise ValueError("decision_not_found")
+        removed = self.audit_decisions.delete(str(decision_id), created_by=str(user_id))
+        return {"removed": bool(removed), "audit_decision_id": str(decision_id)}
+
+    def start_quality_revision_canary(self, job_id: str, *, max_regions: int = 10) -> dict[str, Any]:
+        payload = self.quality_review(job_id)
+        if not payload:
+            raise ValueError("quality_review_not_available")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not job.get("output_dir"):
+            raise ValueError("quality_review_not_available")
+        thread = self._quality_revision_threads.get(str(job["id"]))
+        if thread and thread.is_alive():
+            status = self.quality_revision_status(str(job["id"]))
+            return status or {"status": "running", "parent_job_id": str(job["id"])}
+
+        revision = ChapterQualityRevision(
+            str(job["output_dir"]),
+            job_id=str(job["id"]),
+            run_id=str(job.get("run_id") or ""),
+        )
+
+        def target() -> None:
+            try:
+                revision.start_canary(max_regions=max_regions)
+            finally:
+                self.history_revision += 1
+
+        thread = threading.Thread(
+            target=target,
+            name=f"quality-canary-{str(job['id'])[:8]}",
+            daemon=True,
+        )
+        self._quality_revision_threads[str(job["id"])] = thread
+        thread.start()
+        thread.join(timeout=0.2)
+        self.history_revision += 1
+        status = self.quality_revision_status(str(job["id"]))
+        return status or {
+            "parent_job_id": str(job["id"]),
+            "parent_run_id": str(job.get("run_id") or ""),
+            "status": "starting",
+            "phase": "contextual_translation_review",
+            "phase_label": "Testando contrato NVIDIA",
+        }
+
+    def quality_review_page_resolution(
+        self, job_id: str, page_number: int, revision: str = ""
+    ) -> dict[str, Any]:
+        """Resolve a preview page to an explicit state, never a silent fallback.
+
+        States: ``ready`` (file present, inside the output dir), ``not_found`` (no
+        page carries that index — the request never silently resolves to a different
+        page), ``unavailable`` (the page exists in the report but its file is missing),
+        ``processing`` (file missing while the job is still running/queued), and
+        ``denied`` (the resolved path escapes the job's output dir).
+        """
+        try:
+            requested = int(page_number)
+        except (TypeError, ValueError):
+            return {"state": "not_found", "path": None}
+        job = self.store.get_job(str(job_id or ""))
+        if not job:
+            return {"state": "not_found", "path": None}
+        output_dir = Path(str(job.get("output_dir") or "")).resolve()
+        active = str(job.get("status") or "") in (
+            JobStatus.IN_FLIGHT | {JobStatus.QUEUED, JobStatus.STAGING}
+        )
+        if revision:
+            # The page the revision produced, for the side-by-side comparison.
+            # Absent (page unchanged or gate refused it) the caller gets not_found
+            # rather than the published page dressed up as a revised one.
+            revised = output_dir / "quality_revision_pages" / f"page_{requested:03d}.png"
+            return {"state": "ready", "path": revised} if revised.is_file() else {"state": "not_found", "path": None}
+        report = self._quality_report_data(job)
+        if not report:
+            return {"state": "processing" if active else "unavailable", "path": None}
+        for page in report.get("pages", []) or []:
+            if not isinstance(page, dict):
+                continue
+            if self._page_identity(page)[0] != requested:
+                continue
+            escaped = False
+            for candidate in (page.get("output_path"), page.get("image_path")):
+                if not candidate:
+                    continue
+                path = Path(str(candidate)).resolve()
+                if output_dir not in path.parents:
+                    escaped = True
+                    continue
+                if path.is_file():
+                    return {"state": "ready", "path": path}
+            if escaped:
+                return {"state": "denied", "path": None}
+            return {"state": "processing" if active else "unavailable", "path": None}
+        return {"state": "not_found", "path": None}
+
+    def quality_review_page(self, job_id: str, page_number: int, revision: str = "") -> Path | None:
+        resolution = self.quality_review_page_resolution(job_id, page_number, revision=revision)
+        return resolution["path"] if resolution["state"] == "ready" else None
+
+    @staticmethod
+    def _public_job_source_provenance(job: dict[str, Any]) -> dict[str, Any]:
+        """Return only scalar, path-free source evidence for browser/history records."""
+
+        def identifier(value: Any) -> str:
+            text = str(value or "").strip()
+            return text if re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", text) else ""
+
+        def count(value: Any) -> int:
+            try:
+                result = int(value)
+            except (TypeError, ValueError):
+                return 0
+            return result if 0 <= result <= 10_000 else 0
+
+        def score(value: Any) -> float | None:
+            try:
+                result = float(value)
+            except (TypeError, ValueError):
+                return None
+            return result if 0.0 <= result <= 1.0 else None
+
+        return {
+            "source_type": job.get("source_type") if job.get("source_type") in {"local_folder", "local_images"} else "url",
+            "adapter_name": identifier(job.get("adapter_name")),
+            "adapter_version": identifier(job.get("adapter_version")),
+            "transport_name": identifier(job.get("transport_name")),
+            "score": score(job.get("source_score")),
+            "candidate_count": count(job.get("candidate_count")),
+            "accepted_page_count": count(job.get("accepted_count")),
+            "rejected_page_count": count(job.get("rejected_count")),
+            "reason_code": identifier(job.get("reason_code")),
+        }
+
+    @staticmethod
+    def _is_translation_job(job: dict[str, Any] | None) -> bool:
+        if not job:
+            return False
+        # Jobs created before job_type was introduced are legacy translation jobs.
+        job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
+        return job_type == "translation"
+
+    def _is_structurally_publishable_reconstruction_history_job(
+        self,
+        job: dict[str, Any] | None,
+        *,
+        owner_id: str,
+    ) -> bool:
+        if not job:
+            return False
+        if str(job.get("operation_kind") or "") != "artifact_reconstruction":
+            return False
+        config = job.get("configuration") or {}
+        if not isinstance(config, dict) or config.get("job_type") != "artifact_reconstruction":
+            return False
+        if str(config.get("community_owner_id") or "") != str(owner_id or ""):
+            return False
+        parent_job_id = str(job.get("parent_job_id") or "")
+        if not parent_job_id or str(config.get("source_job_id") or "") != parent_job_id:
+            return False
+        parent = self.store.get_job(parent_job_id)
+        if not parent:
+            return False
+        parent_config = parent.get("configuration") or {}
+        if (
+            not isinstance(parent_config, dict)
+            or str(parent_config.get("job_type") or "translation") != "translation"
+        ):
+            return False
+        if str(parent_config.get("community_owner_id") or "") != str(owner_id or ""):
+            return False
+        source_run = str(config.get("source_run_id") or "")
+        if source_run and source_run != str(parent.get("run_id") or ""):
+            return False
+        if job.get("status") != JobStatus.FINISHED:
+            return False
+        try:
+            if int(job.get("exit_code")) != 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+        if not self._reconstruction_publication_manifest_ready(job):
+            return False
+        metrics = self._current_job_result_metrics(job)
+        if metrics.get("quality_gate") is not True:
+            return False
+        try:
+            return int(metrics.get("manual_review_count") or 0) <= 0
+        except (TypeError, ValueError):
+            return False
+
+    def _is_publishable_reconstruction_history_job(
+        self,
+        job: dict[str, Any] | None,
+        *,
+        owner_id: str,
+    ) -> bool:
+        if not self._is_structurally_publishable_reconstruction_history_job(
+            job, owner_id=owner_id
+        ):
+            return False
+        parent_job_id = str((job or {}).get("parent_job_id") or "")
+        for candidate in self.store.artifact_reconstructions_for_parent(parent_job_id):
+            if self._is_structurally_publishable_reconstruction_history_job(
+                candidate, owner_id=owner_id
+            ):
+                return str(candidate.get("id") or "") == str((job or {}).get("id") or "")
+        return False
+
+    @staticmethod
+    def _is_queue_operation(job: dict[str, Any] | None) -> bool:
+        if not job:
+            return False
+        job_type = str((job.get("configuration") or {}).get("job_type") or "translation")
+        return job_type in {"translation", "review_rerun", "review_reexport"}
+
+    def _displayed_source_review(self) -> dict[str, Any] | None:
+        """The one pending review currently shown by the single-review UI surface."""
+        return max(
+            (job for job in self.store.list_jobs(
+                statuses=[JobStatus.AWAITING_SOURCE_REVIEW], limit=None)
+             if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+
+    def _displayed_source_review_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        return max(
+            (job for job in self.store.list_jobs_for_owner(
+                owner_id, statuses=[JobStatus.AWAITING_SOURCE_REVIEW], limit=None)
+             if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+
+    def _displayed_source_ready(self) -> dict[str, Any] | None:
+        return max(
+            (job for job in self.store.list_jobs(
+                statuses=[JobStatus.SOURCE_ANALYSIS_READY], limit=None)
+             if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+
+    def _displayed_source_ready_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        return max(
+            (job for job in self.store.list_jobs_for_owner(
+                owner_id, statuses=[JobStatus.SOURCE_ANALYSIS_READY], limit=None)
+             if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+
+    def bootstrap(self, cursor: int = 0, *, principal: RequestPrincipal) -> dict[str, Any]:
+        if not principal.authenticated:
+            raise ValueError("authentication_required")
+        owner_id = principal.owner_id
+        source_ready = self.latest_source_analysis("local")
+        return {
+            **self.runtime_state_for_owner(owner_id, cursor),
+            "history": self._history_payload_for_owner(owner_id),
+            "settings": self.settings(owner_id=owner_id),
+            "community": {"available": False, "posts": 0},
+            "standalone_source_ready": source_ready,
+        }
+
+    def latest_source_analysis(self, owner: str) -> dict[str, Any] | None:
+        from yomu.review.source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            result = readiness.latest_analysis(owner)
+            if result is None or result.status != "source_analysis_ready":
+                return None
+            if any(
+                str(job.get("run_id") or "") == result.operation_id
+                or result.analysis_id in {
+                    str((job.get("configuration") or {}).get("source_analysis_result_id") or ""),
+                    str((job.get("configuration") or {}).get("preflight_source_analysis_result_id") or ""),
+                }
+                for job in self.store.list_jobs(limit=None)
+            ):
+                return None
+            authorization = readiness.latest_authorization(
+                owner=owner, analysis_result_id=result.analysis_id)
+            return {
+                "id": result.analysis_id,
+                "analysis_result_id": result.analysis_id,
+                "job_id": "",
+                "status": JobStatus.SOURCE_ANALYSIS_READY,
+                "stage": "source_analysis_ready",
+                "source_type": result.source_kind,
+                "source_analysis_result": result.public(),
+                "download_authorization": authorization.public() if authorization else {},
+            }
+        finally:
+            readiness.close()
+
+    def _history_payload(self) -> list[dict[str, Any]]:
+        # Terminal jobs from the store, plus legacy output discovery for old runs.
+        self.history = self.history_store.discover_outputs()
+        # Overlay the authoritative lifecycle state onto discovered output cards.  A
+        # manifest still records the automated gate as review_required, while the job row
+        # records a later human confirmation.
+        jobs = {
+            str(job.get("id")): job
+            for job in self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None)
+            if job.get("id")
+        }
+        for record in self.history:
+            job = jobs.get(str(record.get("job_id") or ""))
+            if not job:
+                continue
+            record["status"] = job.get("status") or record.get("status")
+            config = job.get("configuration") or {}
+            owner_id = str(config.get("community_owner_id") or "") if isinstance(config, dict) else ""
+            record["community_ownership"] = (
+                "owned" if owner_id else
+                "unowned_new" if isinstance(config, dict) and config.get("ownership_schema_version")
+                else "legacy"
+            )
+            record["review_confirmed"] = bool(job.get("review_confirmed_at"))
+            record["review_status"] = (
+                "completed" if job.get("review_confirmed_at") else
+                "required" if job.get("status") == JobStatus.REVIEW_REQUIRED else "none"
+            )
+            record["review_confirmed_at"] = _epoch_to_iso(job.get("review_confirmed_at"))
+        return self.history
+
+    def _history_payload_for_owner(self, owner_id: str) -> list[dict[str, Any]]:
+        """Build private history only from the SQL owner scope.
+
+        Filesystem discovery remains an explicit operator/legacy maintenance surface;
+        it is never part of an authenticated user's bootstrap.
+        """
+        records = []
+        for job in self.store.list_jobs_for_owner(
+            owner_id, statuses=list(JobStatus.TERMINAL), limit=None
+        ):
+            if not (
+                self._is_translation_job(job)
+                or self._is_publishable_reconstruction_history_job(
+                    job, owner_id=owner_id)
+            ):
+                continue
+            record = self._job_record(job)
+            if record:
+                records.append(record)
+        return records
+
+    def runtime_state_for_owner(self, owner_id: str, cursor: int = 0) -> dict[str, Any]:
+        return self._runtime_state(cursor=cursor, owner_id=owner_id)
+
+    def runtime_state(self, cursor: int = 0) -> dict[str, Any]:
+        """Operator-local global state; never expose this method through HTTP."""
+        return self._runtime_state(cursor=cursor, owner_id=None)
+
+    def _runtime_state(self, *, cursor: int = 0, owner_id: str | None) -> dict[str, Any]:
+        list_jobs = (
+            (lambda **kwargs: self.store.list_jobs_for_owner(owner_id, **kwargs))
+            if owner_id is not None
+            else self.store.list_jobs
+        )
+        active_job = (
+            (lambda: self.store.active_job_for_owner(owner_id))
+            if owner_id is not None
+            else self.store.active_job
+        )
+        # Reconcile on every poll, not only at startup: a runner can die at any moment and
+        # the UI must stop claiming PROCESSANDO within one polling interval.
+        self.store.reconcile_confirmed_reviews()
+        self.reconcile_orphans()
+        active_jobs = list_jobs(statuses=JobStatus.IN_FLIGHT, limit=None)
+        active = max(
+            (job for job in active_jobs if self._is_queue_operation(job)),
+            key=lambda job: float(job.get("claimed_at") or 0),
+            default=None,
+        )
+        waiting = self._displayed_source_review_for_owner(owner_id) if owner_id else self._displayed_source_review()
+        source_ready = self._displayed_source_ready_for_owner(owner_id) if owner_id else self._displayed_source_ready()
+        staging_jobs = list_jobs(statuses=[JobStatus.STAGING], limit=None)
+        staging = max(
+            (job for job in staging_jobs if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+        present_job = active or waiting or source_ready or staging
+        record = self._job_record(present_job)
+        status = (present_job["status"] if present_job else "ready")
+        stage = str((present_job or {}).get("stage") or "created")
+        current = int((present_job or {}).get("progress_current") or 0)
+        total = int((present_job or {}).get("progress_total") or 0)
+        # The counter only belongs to the stage that produced it; otherwise a download's
+        # 99/99 would be rendered under the translation label.
+        counter_stage = str((present_job or {}).get("progress_counter_stage") or "")
+        counter_matches = (not counter_stage) or counter_stage == stage
+        if not counter_matches:
+            current = total = 0
+        stage_fraction = (current / total) if current and total else None
+        running = status in JobStatus.IN_FLIGHT or status == JobStatus.STAGING
+        # "running" now means a verified live process, because reconcile_orphans() already
+        # demoted every in-flight job whose runner is gone.
+        # Staging is owned by this async request and bounded by ``_run_source_analysis``;
+        # it is therefore live while present. Worker stages still require a verified runner.
+        live = running and (
+            bool(staging) or (bool(active) and _runner_still_alive(active))
+        )
+        elapsed = _duration(present_job, live=live) if present_job else None
+        stage_started = _normalize_epoch((present_job or {}).get("stage_started_at"))
+        stage_elapsed = (time.time() - stage_started) if live and stage_started else None
+        progress_message = str((present_job or {}).get("progress_message") or "")
+        lower_progress_message = progress_message.casefold()
+        if live and stage == "ocr" and "fallback" in lower_progress_message:
+            eta_label = "Página complexa em OCR; o modo Rápido continuará após o limite configurado."
+        elif live and stage == "ocr" and total > 0 and current <= 0:
+            eta_label = "Calculando estimativa após as primeiras páginas."
+        else:
+            eta_label = None
+        eta_seconds: float | None = None
+        if stage_elapsed is not None and current > 0 and total > current and stage_elapsed >= 2:
+            rate = current / stage_elapsed
+            if rate > 0:
+                eta_seconds = max(0.0, (total - current) / rate)
+        last_update = _normalize_epoch((present_job or {}).get("updated_at"))
+        stale_updates = bool(
+            running and last_update is not None and (time.time() - last_update) > 120
+        )
+        queued = [
+            self._job_record(job)
+            for job in list_jobs(statuses=[JobStatus.QUEUED])
+            if self._is_queue_operation(job)
+        ]
+        resumable = [self._job_record(job) for job in list_jobs(
+            statuses=[JobStatus.INTERRUPTED, JobStatus.RESUMABLE])
+            if self._is_queue_operation(job)]
+        worker = self.store.healthy_worker(stale_seconds=15)
+        logs = self._tail_job_logs(active, cursor)
+        # A queued job is pending work, not "pronto". Reporting it as ready is what made a
+        # successful submit look like nothing happened.
+        pending = (
+            bool(queued) and not running and waiting is None
+            and source_ready is None and staging is None
+        )
+        if pending:
+            status = JobStatus.QUEUED
+        blocked = pending and not worker
+        # A standalone, persisted source analysis is a first-class runtime state.
+        # Bootstrap already restored it, but the polling endpoint previously omitted
+        # it and replaced the ready panel with an unrelated terminal job within one
+        # polling interval. Active/review/staging/queued work still wins.
+        standalone_source_ready = None
+        if not (active or waiting or source_ready or staging or pending):
+            standalone_source_ready = self.latest_source_analysis("local")
+            if standalone_source_ready:
+                status = JobStatus.SOURCE_ANALYSIS_READY
+                stage = JobStatus.SOURCE_ANALYSIS_READY
+                progress_message = "Fonte analisada"
+        latest_result_job = self._latest_terminal_job_for_owner(owner_id) if owner_id else self._latest_terminal_job()
+        latest_operational_job = self._latest_operational_job_for_owner(owner_id) if owner_id else self._latest_operational_job()
+        latest_record = record or self._job_record(latest_operational_job or latest_result_job)
+        latest_result_record = self._job_record(latest_result_job)
+        # A historical review never belongs to an active/staging operation. Returning it
+        # here made a new source analysis render beside another chapter's PDF and metrics.
+        quality_review = (
+            self.quality_review(latest_result_job["id"])
+            if latest_result_job and not (present_job or pending)
+            else None
+        )
+        counter_progress_stages = {
+            "download", "downloading", "downloading_pages", "validating_pages",
+            "validation", "detecting_balloons", "ocr", "reading_text",
+            "classification", "render", "redrawing", "pdf", "generating_pdf",
+            "Baixando imagens", "Validando imagens", "OCR", "Classificação",
+            "Renderização", "Geração de PDF",
+        }
+        return {
+            "status": status if status in JobStatus.ALL else "ready",
+            "pending": pending,
+            "blocked": blocked,
+            "blocked_reason": "worker_offline" if blocked else "",
+            "active": record,
+            "latest": latest_record,
+            "latest_result": latest_result_record,
+            "progress": {
+                "stage": _UI_STAGE_LABELS.get(stage, stage),
+                "stage_key": stage,
+                "current": current,
+                "total": total,
+                "counter_stage": counter_stage,
+                "fraction": stage_fraction,
+                "indeterminate": stage_fraction is None and running,
+                "pages": current if stage in counter_progress_stages else 0,
+                "groups": current if stage in {"classification", "Classificação"} else 0,
+                "errors": 0,
+                "last_message": progress_message,
+                "elapsed_seconds": elapsed,
+                "elapsed_label": _format_seconds(elapsed),
+                "stage_elapsed_seconds": stage_elapsed,
+                "eta_seconds": eta_seconds,
+                "eta_label": _format_seconds(eta_seconds) if eta_seconds is not None else (
+                    eta_label
+                    or ("Calculando estimativa…" if live and total > 0 else "Tempo variável nesta etapa")
+                ),
+                "updated_at": last_update,
+                "stale": stale_updates,
+                "stale_label": "Sem atualização recente" if stale_updates else "",
+                "live": live,
+            },
+            "logs": logs["entries"],
+            "log_cursor": logs["cursor"],
+            "queue": queued,
+            "queue_running": running or pending,   # a queued job is still "em andamento"
+            "resumable": resumable,
+            "source_review": self._job_record(waiting),
+            "source_ready": self._job_record(source_ready) or standalone_source_ready,
+            "standalone_source_ready": standalone_source_ready,
+            "quality_review": quality_review,
+            "worker": {
+                "online": bool(worker),
+                "worker_id": (worker or {}).get("worker_id", ""),
+                "pid": (worker or {}).get("pid", 0),
+            },
+            # The in-memory counter covers this process's own mutations; the
+            # DB-derived term covers the worker's terminal write, which this
+            # process never sees.  Without it a finished chapter stayed out of
+            # History until some unrelated UI action happened to bump the
+            # counter -- the multi-minute delay reported for Chapter 2.
+            "history_revision": (
+                self.history_revision
+                + self.store.terminal_revision(owner_id or "")
+            ),
+        }
+
+    @staticmethod
+    def _is_presentable_result(job: dict[str, Any]) -> bool:
+        """A job worth showing as "the last result".
+
+        Smoke/fixture rows (from authorized smokes) are real jobs but not real chapters:
+        they are flagged in configuration, and their output directory does not exist. Either
+        signal disqualifies them, so a fixture can never be presented as a translation.
+        """
+        config = job.get("configuration") or {}
+        if config.get("fixture") or config.get("smoke"):
+            return False
+        # A cancelled or failed run produced no result: showing it as "the last result" is
+        # how a stopped job kept appearing as a finished chapter.
+        if job.get("status") not in (JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED):
+            return False
+        output_dir = str(job.get("output_dir") or "")
+        return bool(output_dir) and Path(output_dir).is_dir()
+
+    def _latest_terminal_job(self) -> dict[str, Any] | None:
+        jobs = self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None)
+        return next((job for job in jobs
+                     if self._is_translation_job(job) and self._is_presentable_result(job)), None)
+
+    def _latest_terminal_job_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        jobs = self.store.list_jobs_for_owner(
+            owner_id, statuses=list(JobStatus.TERMINAL), limit=None)
+        return next((job for job in jobs
+                     if self._is_translation_job(job) and self._is_presentable_result(job)), None)
+
+    def _latest_operational_job(self) -> dict[str, Any] | None:
+        """Most recent terminal translation attempt, even when it produced no artifact."""
+        jobs = self.store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None)
+        return next((
+            job for job in jobs
+            if self._is_translation_job(job)
+            and (
+                str(job.get("status") or "") in {JobStatus.FAILED, JobStatus.CANCELLED}
+                or self._is_presentable_result(job)
+            )
+        ), None)
+
+    def _latest_operational_job_for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        jobs = self.store.list_jobs_for_owner(
+            owner_id, statuses=list(JobStatus.TERMINAL), limit=None)
+        return next((
+            job for job in jobs
+            if self._is_translation_job(job)
+            and (
+                str(job.get("status") or "") in {JobStatus.FAILED, JobStatus.CANCELLED}
+                or self._is_presentable_result(job)
+            )
+        ), None)
+
+    def _tail_job_logs(self, active: dict[str, Any] | None, cursor: int) -> dict[str, Any]:
+        if not active or not active.get("log_path"):
+            return {"entries": [], "cursor": int(cursor or 0)}
+        path = Path(active["log_path"])
+        if not path.is_file():
+            return {"entries": [], "cursor": int(cursor or 0)}
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return {"entries": [], "cursor": int(cursor or 0)}
+        start = int(cursor or 0)
+        entries = [
+            {
+                "seq": index + 1,
+                "time": "",
+                "kind": "info",
+                "text": _WINDOWS_LOCAL_PATH.sub(
+                    "[CAMINHO LOCAL]", sanitize_diagnostic_text(line)),
+            }
+            for index, line in enumerate(lines[-MAX_LOG_LINES:])
+            if index + 1 > start
+        ]
+        return {"entries": entries, "cursor": len(lines[-MAX_LOG_LINES:])}
+
+    def workspace_source_policy(self) -> dict[str, Any]:
+        """Return the one machine-workspace policy used by pipeline authorization.
+
+        The policy is intentionally workspace-scoped, not account-scoped.  Writers and
+        readers must therefore use the same stable ``local`` owner.  Reading it with the
+        authenticated account id made a persisted activation look inactive after bootstrap.
+        """
+        from yomu.review.source_readiness import SourceReadinessStore, default_workspace_id
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            workspace_id = default_workspace_id(self.store.db_path)
+            policy = readiness.active_workspace_policy(
+                owner="local", workspace_id=workspace_id)
+            return policy.public() if policy else {
+                "owner": "local", "workspace_id": workspace_id,
+                "status": "inactive",
+                "all_submitted_sources_authorized": False,
+                "allowed_operations": [], "denied_operations": ["publish"],
+            }
+        finally:
+            readiness.close()
+
+    def settings(self, *, owner_id: str = "") -> dict[str, Any]:
+        from yomu.download.down import driver_resolution_diagnostics
+        from yomu.download.browser_runtime import BrowserRuntimeResolver
+
+        values = _read_env_file()
+        env = env_status()
+        translation_provider = (
+            os.getenv("NVIDIA_TRANSLATION_PROVIDER")
+            or values.get("NVIDIA_TRANSLATION_PROVIDER", DEFAULT_TRANSLATION_PROVIDER)
+        )
+        translation_provider = str(
+            translation_provider or DEFAULT_TRANSLATION_PROVIDER).strip().lower()
+        # A bare "nvidia" is the legacy family name, and naming it is still an
+        # explicit choice: it resolves to that family's provider, not to the
+        # global default, which is no longer an NVIDIA one.
+        if translation_provider == "nvidia":
+            translation_provider = "nemotron"
+        if not translation_provider:
+            translation_provider = DEFAULT_TRANSLATION_PROVIDER
+        if translation_provider not in TRANSLATION_PROVIDERS:
+            translation_provider = DEFAULT_TRANSLATION_PROVIDER
+        model = os.getenv("NVIDIA_TRANSLATION_MODEL") or values.get(
+            "NVIDIA_TRANSLATION_MODEL", "nvidia/nemotron-3-super-120b-a12b"
+        )
+        riva_model = os.getenv("NVIDIA_RIVA_TRANSLATION_MODEL") or values.get(
+            "NVIDIA_RIVA_TRANSLATION_MODEL", "nvidia/riva-translate-4b-instruct-v2"
+        )
+        driver = driver_resolution_diagnostics()
+        try:
+            browser_runtime = BrowserRuntimeResolver().resolve(
+                operation="source_analysis",
+                preferred_engine=str(os.getenv("SOURCE_BROWSER_ENGINE", "") or ""),
+                configured_executable=str(os.getenv("SOURCE_BROWSER_EXECUTABLE", "") or ""),
+                configured_driver=str(os.getenv("CHROMEDRIVER_PATH", "") or ""),
+                headless=str(os.getenv("SOURCE_BROWSER_HEADLESS", "1")).strip() != "0",
+            ).public()
+        except ValueError as exc:
+            browser_runtime = {
+                "availability_status": str(exc),
+                "engine": "", "runtime_source": "", "headless_mode": "",
+            }
+        workspace_policy = self.workspace_source_policy()
+        return {
+            "env_exists": env["env_exists"],
+            "nvidia_configured": env["nvidia_configured"],
+            "translation_mode": os.getenv("TRANSLATION_MODE") or values.get("TRANSLATION_MODE", "nvidia"),
+            "translation_provider": translation_provider,
+            "translation_model": model,
+            "riva_translation_model": riva_model,
+            "translation_batch_size": os.getenv("NVIDIA_TRANSLATION_BATCH_SIZE")
+            or values.get("NVIDIA_TRANSLATION_BATCH_SIZE", "20"),
+            "max_requests_per_minute": os.getenv("NVIDIA_MAX_REQUESTS_PER_MINUTE")
+            or values.get("NVIDIA_MAX_REQUESTS_PER_MINUTE", "20"),
+            # Not ``OCR_ENGINE``: that is what a *job* process writes once a run
+            # starts, and this process never starts one, so reading it here
+            # reports the packaging default as fact.
+            "ocr_engine": effective_ocr_engine(),
+            "rapidocr_min_confidence": os.getenv("RAPIDOCR_MIN_CONFIDENCE")
+            or values.get("RAPIDOCR_MIN_CONFIDENCE", "0.55"),
+            "ocr_parallel": os.getenv("OCR_PARALLEL") or values.get("OCR_PARALLEL", "False"),
+            "ocr_text_repair_mode": os.getenv("OCR_TEXT_REPAIR_MODE")
+            or values.get("OCR_TEXT_REPAIR_MODE", "conservative"),
+            "translate_sfx": os.getenv("TRANSLATE_SFX") or values.get("TRANSLATE_SFX", "False"),
+            "prioritize_enclosed_text": os.getenv("PRIORITIZE_ENCLOSED_TEXT")
+            or values.get("PRIORITIZE_ENCLOSED_TEXT", "True"),
+            "rapidocr_available": bool(
+                importlib.util.find_spec("rapidocr_onnxruntime")
+                or importlib.util.find_spec("rapidocr")
+            ),
+            "paddle_available": bool(importlib.util.find_spec("paddleocr")),
+            "python_version": platform.python_version(),
+            "nicegui_version": _package_version("nicegui"),
+            "rapidocr_version": _package_version("rapidocr-onnxruntime"),
+            "paddleocr_version": _package_version("paddleocr"),
+            "driver_download_allowed": driver["driver_download_allowed"],
+            "chromedriver_path_configured": driver["chromedriver_path_configured"],
+            "selenium_manager_available": driver["selenium_manager_available"],
+            "driver_resolution_source": driver["driver_resolution_source"],
+            "source_browser_runtime": browser_runtime,
+            "port": int(os.getenv("TRADUTOR_UI_PORT", "8080")),
+            "workspace_source_policy": workspace_policy,
+        }
+
+    def set_workspace_source_policy(self, *, active: bool) -> dict[str, Any]:
+        from yomu.review.source_readiness import SourceReadinessStore, default_workspace_id
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        workspace_id = default_workspace_id(self.store.db_path)
+        try:
+            if active:
+                policy = readiness.activate_workspace_policy(
+                    owner="local", workspace_id=workspace_id, created_by="local",
+                    authorization_statement=(
+                        "Este workspace processa somente conteúdo próprio, licenciado, "
+                        "autorizado, com permissão explícita ou de domínio público."
+                    ),
+                )
+            else:
+                policy = readiness.revoke_workspace_policy(
+                    owner="local", workspace_id=workspace_id, revoked_by="local")
+        finally:
+            readiness.close()
+        self.history_revision += 1
+        return {"ok": True, "policy": policy.public()}
+
+    @staticmethod
+    def _public_source_validation_summary(analysis: Any) -> dict[str, Any]:
+        """Keep the validation response useful without returning page URLs or DOM data."""
+        public = analysis.public() if hasattr(analysis, "public") else {}
+        warnings = public.get("warnings") or []
+        if isinstance(warnings, (str, bytes)):
+            warnings = [warnings]
+        return {
+            "adapter": str(public.get("adapter") or ""),
+            "adapter_version": str(public.get("adapter_version") or ""),
+            "source_kind": "public_url",
+            "outcome": str(public.get("outcome") or getattr(analysis, "outcome", "")),
+            "confidence": float(public.get("confidence") or 0.0),
+            "candidate_count": max(0, int(public.get("candidate_count") or 0)),
+            "accepted_count": max(0, int(public.get("accepted_count") or 0)),
+            "discarded_count": max(0, int(public.get("discarded_count") or 0)),
+            "warnings": [str(value) for value in warnings if str(value or "")][:20],
+        }
+
+    async def analyze_source_candidate(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None = None,
+        diagnostic_callback=None,
+        cancel_check=None,
+    ) -> dict[str, Any]:
+        """Inspect one URL without creating a pipeline job or queue entry."""
+        if self._requested_source_type(payload) != "url":
+            raise ValueError("source_validation_url_required")
+        normalized = self._normalize_payload(payload, require_environment=False)
+        if normalized["full"]:
+            analysis = await self._run_source_analysis(
+                normalized["url"], diagnostic_callback=diagnostic_callback,
+                cancel_check=cancel_check)
+        else:
+            analysis = await self._run_source_analysis(
+                normalized["url"], diagnostic_callback=diagnostic_callback,
+                cancel_check=cancel_check, max_pages=normalized["max_images"])
+
+        from yomu.download.sources.chapter_source import (
+            REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
+            SUPPORTED_SPECIFIC_ADAPTER,
+        )
+
+        summary = self._public_source_validation_summary(analysis)
+        compatible = {
+            SUPPORTED_SPECIFIC_ADAPTER,
+            SUPPORTED_GENERIC_HIGH_CONFIDENCE,
+            REVIEW_REQUIRED_MEDIUM_CONFIDENCE,
+        }
+        if analysis.outcome not in compatible or self._source_analysis_is_incomplete(summary):
+            return {
+                "ok": True,
+                "status": "source_analysis_blocked",
+                "ready": False,
+                "blocked": True,
+                "reason_code": str(analysis.outcome or "source_not_ready"),
+                "analysis": summary,
+                "policy": self.workspace_source_policy(),
+                "job_created": False,
+                "queue_created": False,
+            }
+
+        from yomu.review.source_readiness import (
+            SourceReadinessStore,
+            source_result_from_analysis,
+        )
+
+        operation_id = uuid.uuid4().hex
+        synthetic_operation = {
+            "id": operation_id,
+            "run_id": operation_id,
+            "source_url": normalized["url"],
+            "attempt": 1,
+            "configuration": {"workspace_owner": "local"},
+        }
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            persisted = readiness.persist_analysis(
+                source_result_from_analysis(synthetic_operation, analysis))
+        finally:
+            readiness.close()
+        policy = self.workspace_source_policy()
+        allowed = (
+            policy.get("status") == "active"
+            and policy.get("all_submitted_sources_authorized") is True
+        )
+        return {
+            "ok": True,
+            "status": "source_analysis_ready",
+            "ready": True,
+            "blocked": not allowed,
+            "reason_code": (
+                "workspace_policy_authorized"
+                if allowed else "workspace_source_authorization_required"
+            ),
+            "analysis_result_id": persisted.analysis_id,
+            "source_analysis_result": persisted.public(),
+            "analysis": summary,
+            "policy": policy,
+            "job_created": False,
+            "queue_created": False,
+        }
+
+    def _require_validated_source(self, payload: dict[str, Any]) -> None:
+        """Fail before job creation unless the submitted URL matches a ready analysis."""
+        if payload.get("source_validation_required") is not True:
+            return
+        analysis_id = str(payload.get("source_analysis_result_id") or "")
+        normalized = self._normalize_payload(payload, require_environment=False)
+        from yomu.review.source_readiness import SourceReadinessStore, default_workspace_id
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            analysis = readiness.get_analysis("local", analysis_id) if analysis_id else None
+            expected_hash = hashlib.sha256(normalized["url"].encode("utf-8")).hexdigest()
+            if (
+                analysis is None
+                or analysis.status != JobStatus.SOURCE_ANALYSIS_READY
+                or analysis.normalized_url_hash != expected_hash
+            ):
+                raise ValueError("source_validation_required")
+            policy = readiness.active_workspace_policy(
+                owner="local", workspace_id=default_workspace_id(self.store.db_path))
+            if policy is None or not policy.all_submitted_sources_authorized:
+                raise ValueError("workspace_source_authorization_required")
+        finally:
+            readiness.close()
+
+    async def start(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None = None,
+        local_folder_allowed: bool = False,
+        license_access_token: str = "",
+    ) -> dict[str, Any]:
+        self.store.reconcile_confirmed_reviews()
+        self.reconcile_orphans()
+        commercial_context = None
+        if getattr(self, "commercial_device_authorizer", None) is not None:
+            commercial_context = self._require_commercial_device_access(
+                principal=principal, operation="start_translation", access_token=license_access_token)
+            beta_decision = None
+        else:
+            beta_decision = self._require_beta_access(
+                principal=principal, operation="start_translation",
+                access_token=license_access_token)
+        source_type = self._requested_source_type(payload)
+        media_selection_ids = payload.get("local_media_selection_ids")
+        media_ids = payload.get("ordered_media_ids")
+        has_picker_media = isinstance(media_selection_ids, list) and bool(media_selection_ids) and isinstance(media_ids, list) and bool(media_ids)
+        if has_picker_media:
+            # The browser supplies opaque ids only.  Resolve them here, after the
+            # loopback boundary is established, before reusing the existing local
+            # staging implementation.
+            if local_folder_allowed is not True:
+                raise ValueError("local_media_requires_loopback_ui")
+            from yomu.ui.local_media_registry import LOCAL_MEDIA_REGISTRY
+            paths = LOCAL_MEDIA_REGISTRY.ordered_paths_many(media_selection_ids, media_ids)
+            forwarded = dict(payload)
+            if source_type == "local_folder":
+                # This value is process-internal only and lets the existing folder
+                # containment check defend the already picker-authorized list.
+                forwarded["local_folder"] = str(Path(paths[0]).parent)
+                forwarded["selected_image_paths"] = paths
+            else:
+                forwarded["image_paths"] = paths
+            return await self._start_local_images(
+                forwarded, principal=principal, beta_decision=beta_decision,
+                commercial_context=commercial_context,
+                license_access_token=license_access_token,
+                source_type=source_type)
+        if source_type == "local_images":
+            if local_folder_allowed is not True:
+                raise ValueError("local_images_requires_loopback_ui")
+            return await self._start_local_images(
+                payload, principal=principal, beta_decision=beta_decision,
+                commercial_context=commercial_context,
+                license_access_token=license_access_token)
+        if source_type == "local_folder":
+            # The HTTP boundary calculates this from both the bind address and the peer.
+            # Direct callers are deliberately denied by default so a future endpoint cannot
+            # accidentally turn a local path into a remotely reachable capability.
+            if local_folder_allowed is not True:
+                raise ValueError("local_folder_requires_loopback_ui")
+            if payload.get("selected_image_paths"):
+                return await self._start_local_images(
+                    payload, principal=principal, beta_decision=beta_decision,
+                    commercial_context=commercial_context,
+                    license_access_token=license_access_token,
+                    source_type="local_folder")
+            return await self._start_local_folder(
+                payload, principal=principal, beta_decision=beta_decision,
+                commercial_context=commercial_context,
+                license_access_token=license_access_token)
+        self._require_validated_source(payload)
+        stale_resolution = (
+            None
+            if self._has_current_pipeline_intent(payload)
+            else self._resolve_stale_submit_for_ready_source(payload)
+        )
+        if stale_resolution is not None:
+            if stale_resolution.get("status") == JobStatus.QUEUED:
+                stale_resolution["worker"] = self.ensure_worker()
+            return stale_resolution
+        # A double click (or a retried request) must not queue the same chapter twice.
+        duplicate = self._pending_duplicate(payload)
+        if duplicate:
+            result = {"ok": True, "duplicate": True, "run_id": duplicate.get("run_id") or "",
+                      "job_id": duplicate["id"]}
+            if duplicate.get("status") == JobStatus.AWAITING_SOURCE_REVIEW:
+                result["awaiting_source_review"] = True
+                result["analysis"] = duplicate.get("source_analysis") or {}
+                result["source_provenance"] = self._public_job_source_provenance(duplicate)
+                return result
+            result["worker"] = self.ensure_worker()
+            return result
+        # The submit only enqueues. Source analysis needs a browser and takes as long as the
+        # reader does — measured at 93-101s — so running it here held the HTTP request open
+        # and left the UI on one static message for the whole time. The worker owns it now,
+        # and the browser never starts inside the web process.
+        try:
+            job = self._create_job(
+                {**payload, "source_candidate_ids": []}, principal=principal,
+                require_environment=False, initial_status=JobStatus.QUEUED,
+                source_analysis={"adapter": "", "outcome": "source_analysis_pending", "accepted": []},
+                beta_decision=beta_decision, commercial_context=commercial_context,
+            )
+        except sqlite3.IntegrityError:
+            duplicate = self._pending_duplicate(payload)
+            if duplicate is None:
+                raise
+            return {"ok": True, "duplicate": True, "created_new_job": False,
+                    "reused_existing_job": True, "run_id": duplicate.get("run_id") or "",
+                    "job_id": duplicate["id"], "status": duplicate.get("status")}
+        self.store.update_fields(
+            job["id"], source_type="url", stage="queued", reason_code="",
+            heartbeat_at=time.time(),
+        )
+        job_configuration = self._seal_translation_context(
+            job, job.get("configuration", {}), principal=principal,
+            license_access_token=license_access_token,
+        )
+        if job_configuration != (job.get("configuration") or {}):
+            self.store.update_fields(
+                job["id"],
+                configuration_json=json.dumps(job_configuration, ensure_ascii=False),
+            )
+        # Only after the payload is durably persisted: a worker that claimed earlier could
+        # otherwise analyse a row that is still missing fields it needs.
+        worker = self.ensure_worker()
+        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"],
+                "status": JobStatus.QUEUED, "stage": "queued", "worker": worker}
+
+    @staticmethod
+    def _translation_configuration_snapshot(
+        payload: dict[str, Any], normalized: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the shared, secret-free translation contract for any source type."""
+        # Preserve the URL contract's explicit snapshot shape:
+        # "translation_enabled": normalized["translation_enabled"]
+        provider = str(normalized.get("translation_provider") or "").strip().lower()
+        return {
+            "provider_provenance": {
+                "provider_requested": provider,
+                "provider_command_initial": provider,
+                "provider_command_final": provider,
+                "provider_effective": "",
+                "provider_model": "",
+                "provider_source": "ui_payload",
+                "provider_fallback_used": False,
+                "provider_fallback_reason": "",
+            },
+            "translation_provider": provider,
+            "translation_enabled": bool(normalized.get("translation_enabled")),
+            "translation_policy_source": str(
+                normalized.get("translation_policy_source")
+                or ("control_plane_snapshot"
+                    if "translation_enabled" in payload else "fail_closed_default")
+            ),
+            "translation_policy_resolved_at": time.time(),
+            "translation_request_id": str(
+                normalized.get("translation_request_id")
+                or payload.get("translation_request_id")
+                or payload.get("request_id")
+                or f"translation:{payload.get('trace_id') or normalized.get('id') or ''}"
+            )[:220],
+        }
+
+    @staticmethod
+    def _normalize_output_profile(value: object) -> str:
+        profile = str(value or "").strip().lower()
+        allowed = {OutputProfile.AUTOMATIC, OutputProfile.PROFESSIONAL_QC}
+        return profile if profile in allowed else OutputProfile.AUTOMATIC
+
+    @classmethod
+    def _output_profile_from_config(cls, configuration: object) -> str:
+        config = configuration if isinstance(configuration, dict) else {}
+        if "output_profile" not in config:
+            if (str(config.get("output_format") or "").casefold() == "psd"
+                    and not config.get("download_only")):
+                return OutputProfile.PROFESSIONAL_QC
+        return cls._normalize_output_profile(config.get("output_profile"))
+
+    def _seal_translation_context(
+        self,
+        job: dict[str, Any],
+        configuration: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None,
+        license_access_token: str,
+    ) -> dict[str, Any]:
+        """Seal provider credentials using the same mechanism as URL jobs."""
+        if not bool(configuration.get("translation_enabled")):
+            return dict(configuration)
+        if bool(configuration.get("download_only")):
+            return dict(configuration)
+        access_token = str(license_access_token or "").strip()
+        if not access_token:
+            raise ValueError("auth_handoff_unavailable")
+        from yomu.runtime.runtime_paths import runtime_root
+        from yomu.auth.secure_auth_context import AuthEnvelopeStore
+
+        auth_path = AuthEnvelopeStore(runtime_root()).seal(
+            job["id"], access_token,
+            user_id=getattr(principal, "user_id", "") if principal else "",
+        )
+        sealed = dict(configuration)
+        sealed.update({
+            "auth_context_id": str(job["id"]),
+            "auth_context_ref": "auth/" + auth_path.name,
+        })
+        return sealed
+
+    @staticmethod
+    def _has_current_pipeline_intent(payload: dict[str, Any]) -> bool:
+        """Recognise the current UI's explicit, internally coherent start contract.
+
+        This marker does not grant content authority; workspace policy still does that.
+        It only distinguishes a fresh click from an old asset trying to reconcile an
+        append-only analysis result that has no owning job.
+        """
+        intent = payload.get("pipeline_intent")
+        if not isinstance(intent, dict) or intent.get("requested") is not True:
+            return False
+        requested_mode = (
+            "download_only"
+            if bool(payload.get("download_only"))
+            else str(payload.get("mode") or "")
+        )
+        if requested_mode not in {"fast", "quality", "download_only"}:
+            return False
+        requested_scope = "full" if bool(payload.get("full")) else str(
+            payload.get("max_images") or "")
+        if requested_scope != "full":
+            try:
+                if not 1 <= int(requested_scope) <= 999:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return (
+            str(intent.get("mode") or "") == requested_mode
+            and str(intent.get("scope") or "") == requested_scope
+        )
+
+    def _resolve_stale_submit_for_ready_source(
+        self, payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Resolve an old frontend through the same workspace-policy authority.
+
+        A browser with an older asset can still POST ``/api/ui/run`` after a newer,
+        append-only source analysis reached ``source_analysis_ready``. Matching is
+        content-addressed and owner-scoped. The backend either resolves the original
+        operation atomically or fails closed; it never creates a second job.
+        """
+        source_url = str(payload.get("url") or "").strip()
+        if not source_url:
+            return None
+        from yomu.review.source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            result = readiness.latest_analysis("local")
+            if (
+                result is None
+                or result.status != JobStatus.SOURCE_ANALYSIS_READY
+                or result.normalized_url_hash
+                != hashlib.sha256(source_url.encode("utf-8")).hexdigest()
+            ):
+                return None
+            ready_job = next((
+                job for job in self.store.list_jobs(
+                    statuses=[JobStatus.SOURCE_ANALYSIS_READY], limit=None)
+                if str((job.get("configuration") or {}).get(
+                    "source_analysis_result_id") or "") == result.analysis_id
+            ), None)
+            if ready_job is None:
+                raise ValueError("pipeline_intent_required")
+            resolution = readiness.resolve_ready_pipeline(ready_job["id"])
+        finally:
+            readiness.close()
+        if not resolution.get("ok"):
+            raise ValueError(str(
+                resolution.get("reason_code") or "workspace_source_authorization_required"))
+        return {
+            **resolution,
+            "ok": True,
+            "run_id": str(ready_job.get("run_id") or ""),
+            "workspace_policy_resolved": True,
+        }
+
+
+    def _apply_source_analysis(self, job: dict[str, Any], analysis: Any) -> dict[str, Any]:
+        """Delegate to the shared phase so the worker reaches the identical decision."""
+        from yomu.review.source_analysis_phase import READY_FOR_RUNNER, apply_source_analysis
+
+        def environment_ready() -> bool:
+            status = env_status()
+            return bool(status["env_exists"] and status["nvidia_configured"])
+
+        result = apply_source_analysis(
+            self.store, job, analysis,
+            environment_ready=environment_ready,
+            public_provenance=self._public_job_source_provenance,
+        )
+        payload = dict(result.payload)
+        if result.outcome == READY_FOR_RUNNER:
+            # Persisting a job nobody claims is the whole bug: make the consumer exist and
+            # report honestly when it could not be started.
+            payload["worker"] = self.ensure_worker()
+        return payload
+
+    @staticmethod
+    def _requested_source_type(payload: dict[str, Any]) -> str:
+        """Validate source fields without loading the local image stack for URL jobs."""
+
+        from yomu.download.sources.chapter_source import SourceError
+
+        source_url = str(payload.get("url") or "").strip()
+        local_folder = str(payload.get("local_folder") or "").strip()
+        image_paths = payload.get("image_paths")
+        has_images = isinstance(image_paths, list) and bool(image_paths)
+        media_selection_ids = payload.get("local_media_selection_ids")
+        ordered_media_ids = payload.get("ordered_media_ids")
+        has_picker_media = (
+            isinstance(media_selection_ids, list) and bool(media_selection_ids)
+            and isinstance(ordered_media_ids, list) and bool(ordered_media_ids)
+        )
+        declared = str(payload.get("source_type") or "").strip().casefold()
+        if has_picker_media:
+            if source_url or local_folder or has_images or declared not in {"local_folder", "local_images"}:
+                raise SourceError("invalid_request", "local_media_source_mismatch")
+            return declared
+        if source_url and (local_folder or has_images):
+            raise SourceError("invalid_request", "url_and_folder")
+        if local_folder and has_images:
+            raise SourceError("invalid_request", "folder_and_images")
+        if has_images:
+            actual = "local_images"
+        elif local_folder:
+            actual = "local_folder"
+        elif source_url:
+            actual = "url"
+        else:
+            raise SourceError("invalid_request", "missing_source")
+        if declared and declared not in {"url", "local_folder", "local_images"}:
+            raise SourceError("invalid_request", "unknown_source_type")
+        if declared and declared != actual:
+            raise SourceError("invalid_request", "source_type_mismatch")
+        return actual
+
+    @staticmethod
+    def _remote_source_provenance(public_analysis: dict[str, Any]) -> dict[str, Any]:
+        """Return fixed-width, URL-free provenance fields for a remote source job.
+
+        The full public analysis remains in its JSON diagnostic column.  The indexed job
+        columns intentionally receive only the small adapter/count subset needed to identify
+        a run in history, never a page URL, cookie, selector, source title or signed token.
+        """
+
+        analysis = public_analysis if isinstance(public_analysis, dict) else {}
+
+        def identifier(value: Any) -> str:
+            text = str(value or "").strip()
+            return text if re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", text) else ""
+
+        def count(name: str) -> int:
+            value = analysis.get(name, 0)
+            try:
+                result = int(value)
+            except (TypeError, ValueError):
+                return 0
+            return result if 0 <= result <= 10_000 else 0
+
+        def score() -> float:
+            try:
+                value = float(analysis.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+            return value if 0.0 <= value <= 1.0 else 0.0
+
+        return {
+            "source_type": "url",
+            "adapter_name": identifier(analysis.get("adapter")),
+            "adapter_version": identifier(analysis.get("adapter_version")),
+            # A browser analysis has not selected a network transport yet.  Represent that
+            # explicitly; the runner replaces it with the transport actually used.
+            "transport_name": "pending",
+            "source_score": score(),
+            "candidate_count": count("candidate_count"),
+            "input_count": count("candidate_count"),
+            "accepted_count": count("accepted_count"),
+            "rejected_count": count("discarded_count"),
+        }
+
+    @staticmethod
+    def _source_analysis_is_incomplete(public_analysis: dict[str, Any]) -> bool:
+        """Recognise only bounded collector coverage warnings in a public analysis."""
+
+        warnings = public_analysis.get("warnings", ()) if isinstance(public_analysis, dict) else ()
+        if isinstance(warnings, (str, bytes)):
+            warnings = (warnings,)
+        return bool({
+            str(value or "").strip()
+            for value in (warnings or ())
+        } & {"page_limit_exceeded", "scroll_incomplete", "pagination_incomplete"})
+
+    async def _start_local_folder(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None,
+        beta_decision: BetaAccessDecision | None = None,
+        commercial_context: CommercialDeviceContext | None = None,
+        license_access_token: str = "",
+        snapshot_override: tuple[str, dict[str, Any], list[str]] | None = None,
+    ) -> dict[str, Any]:
+        """Snapshot a loopback-only folder selection and queue its opaque reference.
+
+        The raw path exists only as an argument to the local adapter.  The SQLite row,
+        command, browser DTO, output name and source-analysis JSON contain generated ids,
+        counts, and a non-reversible fingerprint instead.
+        """
+
+        normalized = self._normalize_local_payload(payload)
+        job = self._create_local_folder_staging_job(
+            normalized, principal=principal, beta_decision=beta_decision,
+            commercial_context=commercial_context)
+        self.store.update_fields(
+            job["id"], stage="validating_local_source", reason_code="",
+            started_at=time.time(), heartbeat_at=time.time(),
+        )
+
+        # A local selection is a media operation, not proof that a development dotenv file
+        # exists.  Frozen desktops intentionally do not bundle .env or provider secrets.
+        # Resolve and stage the owned media first; the worker validates the selected provider
+        # at the capability boundary where it is actually needed.  Download-only therefore
+        # remains provider-free, while translation still fails closed in its provider path.
+        raw_folder = str(payload.get("local_folder") or "").strip()
+        try:
+            self.store.update_fields(job["id"], stage="creating_snapshot", heartbeat_at=time.time())
+            if snapshot_override is not None:
+                snapshot_ref, summary, candidate_ids = snapshot_override
+            else:
+                snapshot_ref, summary, candidate_ids = await self._snapshot_local_folder(raw_folder)
+        except asyncio.CancelledError:
+            current = self.store.get_job(job["id"])
+            if current and current.get("status") == JobStatus.STAGING:
+                self.store.transition(
+                    job["id"], JobStatus.CANCELLED, reason_code="user_cancelled",
+                    interrupted_reason="local_snapshot_request_cancelled",
+                )
+            raise
+        except Exception as exc:
+            from yomu.download.sources.chapter_source import SOURCE_NOT_READY, SourceError
+
+            current = self.store.get_job(job["id"])
+            if current and current.get("status") == JobStatus.CANCELLED:
+                return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
+            source_error = exc if isinstance(exc, SourceError) else SourceError(
+                SOURCE_NOT_READY, type(exc).__name__)
+            if current and current.get("status") == JobStatus.STAGING:
+                self.store.transition(
+                    job["id"], JobStatus.FAILED, reason_code=source_error.code,
+                    stage="validating_local_source", error_type="local_source",
+                    error_message=source_error.code,
+                )
+            if isinstance(exc, SourceError):
+                raise
+            raise source_error from exc
+
+        current = self.store.get_job(job["id"])
+        if not current or current.get("status") == JobStatus.CANCELLED:
+            return {"ok": False, "cancelled": True, "run_id": job["run_id"], "job_id": job["id"]}
+
+        from yomu.download.local.local_folder_job import build_local_job_command, job_fields
+
+        command = build_local_job_command(
+            snapshot_ref=snapshot_ref,
+            output=f"{normalized['slug']}/{normalized['id']}",
+            output_path=Path(str(job["output_dir"])).resolve(),
+            mode=normalized["mode"],
+            logical_pages=True,
+            use_cache=normalized["use_cache"],
+            force=normalized["force"],
+            use_context=normalized["use_context"],
+            open_output=normalized["open_output"],
+            output_format=normalized["output_format"],
+            typesetting_mode=normalized.get("typesetting_mode", "on"),
+            python_executable=sys.executable,
+            translation_provider=normalized["translation_provider"],
+        )
+        selection = {
+            "candidate_ids": candidate_ids,
+            "automatic": True,
+            "accepted_candidate_count": len(candidate_ids),
+            "selected_candidate_count": len(candidate_ids),
+            "manual_subset": False,
+        }
+        configuration = dict(current.get("configuration") or {})
+        configuration.update({
+            "local_source_summary": summary,
+            "source_selection": selection,
+            # Keep the selected format alongside the argv. The worker validates
+            # both representations before starting the expensive local pipeline.
+            "output_format": normalized["output_format"],
+            "output_profile": normalized["output_profile"],
+            "typesetting_mode": normalized.get("typesetting_mode", "on"),
+        })
+        configuration.update(self._translation_configuration_snapshot(payload, normalized))
+        configuration = self._seal_translation_context(
+            current, configuration, principal=principal,
+            license_access_token=license_access_token,
+        )
+        self.store.update_fields(
+            job["id"],
+            command_json=json.dumps(command, ensure_ascii=False),
+            configuration_json=json.dumps(configuration, ensure_ascii=False),
+            source_analysis_json=json.dumps(summary, ensure_ascii=False),
+            source_selection_json=json.dumps(selection, ensure_ascii=False),
+            **job_fields(summary, snapshot_ref),
+        )
+        queued = self.store.transition(job["id"], JobStatus.QUEUED, stage="created")
+        self.history_revision += 1
+        return {
+            "ok": True, "run_id": queued["run_id"], "job_id": queued["id"],
+            "worker": self.ensure_worker(), "analysis": summary,
+        }
+
+    async def _start_local_images(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None,
+        beta_decision: BetaAccessDecision | None = None,
+        commercial_context: CommercialDeviceContext | None = None,
+        license_access_token: str = "",
+        source_type: str = "local_images",
+    ) -> dict[str, Any]:
+        """Convert an ordered image selection into the existing local-folder boundary.
+
+        The temporary input contains only generated ordinal names.  It is deleted after the
+        local-folder adapter has made its owned snapshot, so the shared worker/pipeline never
+        needs a second image-processing implementation.
+        """
+        from yomu.download.local.local_images_source import LocalImagesSelection
+        from yomu.download.local.local_folder_input import snapshot_workspace_root
+
+        paths = payload.get("image_paths") if source_type == "local_images" else payload.get("selected_image_paths")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("local_images_empty")
+        selection = LocalImagesSelection()
+        selection.add([str(path) for path in paths], initial=False)
+        if source_type == "local_folder":
+            folder = Path(str(payload.get("local_folder") or "")).resolve(strict=True)
+            if not folder.is_dir() or any(page.path.parent != folder for page in selection.pages):
+                raise ValueError("local_folder_selection_outside_source")
+        temp_parent = Path(tempfile.mkdtemp(prefix="yomu-local-images-"))
+        temp_root = temp_parent / "selection"
+        try:
+            selection.snapshot(temp_parent, job_id="selection")
+            generated = (temp_root / "input").resolve()
+            snapshot_ref, summary, candidate_ids = await asyncio.to_thread(
+                self._snapshot_local_images_sync, generated)
+            forwarded = dict(payload)
+            forwarded.pop("image_paths", None)
+            forwarded["source_type"] = "local_folder"
+            forwarded["local_folder"] = str(generated)
+            result = await self._start_local_folder(
+                forwarded, principal=principal, beta_decision=beta_decision,
+                commercial_context=commercial_context,
+                license_access_token=license_access_token,
+                snapshot_override=(snapshot_ref, summary, candidate_ids))
+            if result.get("job_id"):
+                self.store.update_fields(result["job_id"], source_type=source_type)
+            return result
+        finally:
+            shutil.rmtree(temp_parent, ignore_errors=True)
+
+    @staticmethod
+    def _snapshot_local_images_sync(raw_folder: str) -> tuple[str, dict[str, Any], list[str]]:
+        from yomu.download.local.local_folder_input import snapshot_workspace_root
+        from yomu.download.local.local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+        from yomu.download.local.local_folder_job import public_summary
+
+        root = Path(raw_folder).resolve(strict=True)
+        adapter = LocalFolderChapterAdapter(policy=LocalFolderPolicy(
+            allowed_roots=[root.parent], allow_root_folder=True))
+        snapshot = adapter.snapshot(root, snapshot_workspace_root())
+        manifest = snapshot.public()
+        pages = manifest.get("pages") if isinstance(manifest, dict) else []
+        ids = [str(page.get("id") or "") for page in pages if isinstance(page, dict)]
+        return snapshot.workspace.name, public_summary(snapshot.analysis.source_folder, snapshot.analysis), ids
+
+    async def _snapshot_local_folder(
+        self,
+        raw_folder: str,
+    ) -> tuple[str, dict[str, Any], list[str]]:
+        """Run bounded local validation/copying off the UI loop, returning no path."""
+
+        return await asyncio.to_thread(self._snapshot_local_folder_sync, raw_folder)
+
+    @staticmethod
+    def _snapshot_local_folder_sync(raw_folder: str) -> tuple[str, dict[str, Any], list[str]]:
+        # Imports are intentionally delayed: opening the UI or importing this module neither
+        # creates an input directory nor initialises the local image adapter.
+        from yomu.download.local.local_folder_input import snapshot_workspace_root
+        from yomu.download.local.local_folder_job import public_summary
+        from yomu.download.local.local_folder_source import LocalFolderChapterAdapter
+
+        snapshot = LocalFolderChapterAdapter().snapshot(raw_folder, snapshot_workspace_root())
+        summary = public_summary(snapshot.analysis.source_folder, snapshot.analysis)
+        manifest = snapshot.public()
+        pages = manifest.get("pages") if isinstance(manifest, dict) else []
+        candidate_ids = [
+            str(page.get("id") or "")
+            for page in pages if isinstance(page, dict) and str(page.get("id") or "")
+        ]
+        if not candidate_ids:
+            from yomu.download.sources.chapter_source import NO_CHAPTER_IMAGES, SourceError
+
+            raise SourceError(NO_CHAPTER_IMAGES, "local_snapshot_without_pages")
+        # ``workspace.name`` is generated by the adapter, never a user path/name.
+        return snapshot.workspace.name, summary, candidate_ids
+
+    def _create_local_folder_staging_job(
+        self,
+        normalized: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None,
+        beta_decision: BetaAccessDecision | None = None,
+        commercial_context: CommercialDeviceContext | None = None,
+    ) -> dict[str, Any]:
+        if principal is not None and not isinstance(principal, RequestPrincipal):
+            raise TypeError("principal must be a RequestPrincipal")
+        from yomu.download.local.local_folder_job import SOURCE_TYPE_LOCAL_FOLDER
+
+        output_folder = resolve_run_output_folder(
+            getattr(self, "output_root", OUTPUT_ROOT),
+            normalized["slug"],
+            normalized["id"],
+        )
+        configuration: dict[str, Any] = {
+            "job_type": "translation",
+            "source_type": SOURCE_TYPE_LOCAL_FOLDER,
+            "ownership_schema_version": 1,
+            "mode": normalized["mode"],
+            "output_format": normalized["output_format"],
+            "output_profile": normalized["output_profile"],
+            "download_only": normalized["download_only"],
+            "full": True,
+            "max_images": None,
+            "force": normalized["force"],
+            "use_cache": normalized["use_cache"],
+            "use_context": normalized["use_context"],
+            "chapter_name": normalized["chapter_name"],
+            "open_output": normalized["open_output"],
+            "create_source_profile": False,
+            "chapter_slug": normalized["slug"],
+            "source_analysis": {},
+            "source_selection": {},
+        }
+        configuration.update(self._translation_configuration_snapshot({}, normalized))
+        if beta_decision is not None:
+            configuration["beta_license_authorization"] = beta_decision.to_safe_job_metadata()
+        if commercial_context is not None:
+            configuration["commercial_device_authorization"] = {
+                "authority": "license_devices", "device_uuid": commercial_context.device_uuid,
+                "device_id": commercial_context.device_id, "license_id": commercial_context.license_id,
+                "user_id": commercial_context.user_id, "status": commercial_context.status,
+                "verified": commercial_context.verified,
+            }
+            configuration["device_uuid"] = commercial_context.device_uuid
+        if principal is not None and principal.authenticated:
+            configuration["community_owner_id"] = principal.user_id
+        staging_owner_pid = os.getpid()
+        staging_owner_create_time: float | None = None
+        try:
+            import yomu.runtime.process_tree as process_tree
+
+            snapshot = process_tree.snapshot(staging_owner_pid) or {}
+            value = snapshot.get("create_time")
+            staging_owner_create_time = float(value) if value is not None else None
+        except (ImportError, OSError, TypeError, ValueError):
+            pass
+        _enforce_translation_device_uuid(configuration)
+        job_id = self.store.create_job(
+            # A local folder is never a URL and its original path is never persisted.
+            source_url="",
+            output_dir=str(output_folder),
+            command=[],
+            run_id=str(normalized["id"]),
+            configuration=configuration,
+            series_title=normalized["chapter_name"],
+            series_slug=normalized["slug"],
+            episode_number="",
+            commit_hash=_current_commit(),
+            branch=_current_branch(),
+            initial_status=JobStatus.STAGING,
+            staging_owner_pid=staging_owner_pid,
+            staging_owner_create_time=staging_owner_create_time,
+        )
+        # Keep the universal source discriminator on the row from the moment the job is
+        # visible.  Snapshot-specific provenance is intentionally unavailable until the
+        # local adapter has accepted the folder, but a failed intake must still be
+        # classifiable without inspecting its configuration blob.
+        self.store.update_fields(job_id, source_type=SOURCE_TYPE_LOCAL_FOLDER)
+        self.history_revision += 1
+        return self.store.get_job(job_id)  # type: ignore[return-value]
+
+    @staticmethod
+    def _looks_like_local_path(value: str) -> bool:
+        text = str(value or "").strip()
+        return bool(re.search(
+            r"(?:[A-Za-z]:[\\\\/]|\\\\\\\\|(?:^|\s)/|\bfile:)", text, re.I))
+
+    def _normalize_local_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Normalise local-run settings without deriving any label from the folder path."""
+
+        raw_folder = str(payload.get("local_folder") or "").strip()
+        if not raw_folder:
+            raise ValueError("local_folder_required")
+        mode = str(payload.get("mode") or "fast")
+        full = bool(payload.get("full", True))
+        max_images = None if full else int(payload.get("max_images") or 0)
+        force = bool(payload.get("force", False))
+        use_cache = bool(payload.get("use_cache", not force))
+        download_only = bool(payload.get("download_only", False))
+        requested_format = str(payload.get("output_format") or "pdf").casefold()
+        raw_profile = payload.get("output_profile")
+        output_profile = (
+            OutputProfile.PROFESSIONAL_QC
+            if raw_profile is None and requested_format == "psd" and not download_only
+            else self._normalize_output_profile(raw_profile)
+        )
+        if download_only:
+            output_profile = OutputProfile.AUTOMATIC
+        output_format = requested_format if requested_format in {"pdf", "png", "psd"} else "pdf"
+        if output_profile != OutputProfile.PROFESSIONAL_QC and output_format == "psd":
+            output_format = "pdf"
+        translation_provider = self._normalize_translation_provider(payload)
+        translation_enabled = (not download_only) and payload.get("translation_enabled") is True
+        # Translation is a server/control-plane decision. Absence is fail-closed
+        # (disabled), so a legacy provider value cannot enable DeepL implicitly.
+        if mode not in {"fast", "quality"}:
+            raise ValueError("O modo precisa ser fast ou quality.")
+        if use_cache and force:
+            raise ValueError("Cache e reprocessamento forçado são mutuamente exclusivos.")
+        if not full or max_images is not None:
+            raise ValueError("local_folder_requires_full_scope")
+        chapter_name = str(payload.get("chapter_name") or "Capítulo local").strip()[:120]
+        raw_slug = str(payload.get("slug") or "capitulo_local").strip()
+        if (
+            self._looks_like_local_path(chapter_name)
+            or self._looks_like_local_path(raw_slug)
+            or raw_folder.casefold() in chapter_name.casefold()
+            or raw_folder.casefold() in raw_slug.casefold()
+        ):
+            raise ValueError("local_folder_name_must_not_be_path")
+        return {
+            "id": str(payload.get("id") or uuid.uuid4()),
+            "chapter_name": chapter_name or "Capítulo local",
+            "slug": sanitize_output_name(raw_slug),
+            "mode": mode,
+            "download_only": download_only,
+            "full": True,
+            "max_images": None,
+            "use_cache": use_cache,
+            "force": force,
+            "use_context": bool(payload.get("use_context", True)),
+            "open_output": bool(payload.get("open_output", False)),
+            "output_format": output_format,
+            "output_profile": output_profile,
+            "typesetting_mode": str(payload.get("typesetting_mode") or "on").casefold()
+            if str(payload.get("typesetting_mode") or "on").casefold() in {"on", "off"} else "on",
+            "create_source_profile": False,
+            "translation_provider": translation_provider,
+            "translation_enabled": translation_enabled,
+            "translation_policy_source": (
+                "control_plane_snapshot"
+                if "translation_enabled" in payload else "fail_closed_default"
+            ),
+            "translation_request_id": str(
+                payload.get("translation_request_id")
+                or payload.get("request_id")
+                or f"translation:{payload.get('trace_id') or payload.get('id') or ''}"
+            )[:220],
+        }
+
+    @staticmethod
+    def _analyze_source(url: str, *, cancel_check=None, diagnostic_callback=None,
+                        max_pages=None):
+        """Late import keeps UI bootstrap/import hermetic; only a user submit navigates.
+
+        Tries HTTP-only discovery first (no Chrome) and only falls back to the browser-based
+        analysis when the adapter/page does not support it -- see ``discover_chapter_source``.
+        """
+        from yomu.download.down import discover_chapter_source
+
+        if max_pages is None:
+            return discover_chapter_source(
+                url, cancel_check=cancel_check, diagnostic_callback=diagnostic_callback)
+        return discover_chapter_source(
+            url, cancel_check=cancel_check, diagnostic_callback=diagnostic_callback,
+            max_images=max_pages)
+
+    async def _run_source_analysis(self, url: str, *, cancel_check=None,
+                                   diagnostic_callback=None, max_pages=None):
+        """Run Selenium analysis off the UI loop while retaining cancellation visibility."""
+        source_kwargs = {"cancel_check": cancel_check,
+                         "diagnostic_callback": diagnostic_callback}
+        if max_pages is not None:
+            source_kwargs["max_pages"] = max_pages
+        return await asyncio.wait_for(
+            asyncio.to_thread(self._analyze_source, url, **source_kwargs),
+            timeout=SOURCE_ANALYSIS_TIMEOUT_SECONDS,
+        )
+
+    def _pending_duplicate(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """An identical chapter already queued or in flight, if any."""
+        idempotency_key = self._idempotency_key(payload)
+        if idempotency_key:
+            pending = self.store.list_jobs(
+                statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
+                          JobStatus.SOURCE_ANALYSIS_READY, *JobStatus.IN_FLIGHT], limit=None)
+            for job in pending:
+                if str((job.get("configuration") or {}).get("idempotency_key") or "") == idempotency_key:
+                    return job
+        try:
+            url = clean_url(str(payload.get("url") or "")).strip()
+            slug = sanitize_output_name(str(payload.get("slug") or ""))
+        except Exception:  # noqa: BLE001 - normalization errors surface in _create_job
+            return None
+        if not url:
+            return None
+        pending = self.store.list_jobs(
+            statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
+                      JobStatus.SOURCE_ANALYSIS_READY,
+                      *JobStatus.IN_FLIGHT], limit=None)
+        for job in pending:
+            if not self._is_translation_job(job):
+                continue
+            same_slug = bool(slug and self._chapter_slug_from_job(job) == slug)
+            same_url = job.get("source_url") == url
+            if same_slug or (same_url and not slug):
+                return job
+        return None
+
+    @staticmethod
+    def _idempotency_key(payload: dict[str, Any]) -> str:
+        """Stable identity for one analyzed UI attempt, never based on URL/title."""
+        trace_id = str(payload.get("trace_id") or "").strip()
+        analysis_id = str(payload.get("source_analysis_result_id") or payload.get("analysis_result_id") or "").strip()
+        if not trace_id or not analysis_id:
+            return ""
+        key = f"{trace_id[:80]}:{analysis_id[:120]}"
+        return key if re.fullmatch(r"[A-Za-z0-9._:-]{3,220}", key) else ""
+
+    def confirm_source_pages(self, job_id: str, candidate_ids: list[str]) -> dict[str, Any]:
+        """Queue a medium-confidence reader only after an explicit, validated selection.
+
+        The client sends opaque IDs, never remote URLs.  IDs must be a non-empty subset of the
+        sanitised analysis stored with this job; the worker re-analyses at execution and rejects
+        a changed reader instead of trusting stale source data.
+        """
+        if not isinstance(candidate_ids, list):
+            raise ValueError("invalid_source_candidate_selection")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or job.get("status") != JobStatus.AWAITING_SOURCE_REVIEW:
+            raise ValueError("source_review_not_available")
+        analysis = job.get("source_analysis") or {}
+        accepted_ids = [
+            str(item.get("id") or "")
+            for item in (analysis.get("accepted") or [])
+            if isinstance(item, dict) and str(item.get("id") or "")
+        ]
+        allowed = set(accepted_ids)
+        selected = list(dict.fromkeys(str(value or "") for value in candidate_ids if value))
+        if not selected or not set(selected).issubset(allowed):
+            raise ValueError("invalid_source_candidate_selection")
+        status = env_status()
+        if not status["env_exists"] or not status["nvidia_configured"]:
+            raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
+        config = job.get("configuration") or {}
+        selection = {
+            "candidate_ids": selected,
+            "automatic": False,
+            "accepted_candidate_count": len(allowed),
+            "selected_candidate_count": len(selected),
+            # The selection itself is an explicit user acknowledgement that excluded pages
+            # are not chapter pages. Persist it so a completed output is never mistaken for
+            # an untouched automatic cluster.
+            "manual_subset": len(selected) < len(allowed),
+            # The UI submits opaque IDs in visible order. Preserve an intentional reordering
+            # separately from an ordinary subset so the downloader can retain that sequence
+            # and an audit can distinguish it from adapter order.
+            "manual_reordered": selected != [item for item in accepted_ids if item in selected],
+        }
+        config["source_selection"] = selection
+        # One rebuild helper for both source-selection paths: an argument the rebuild would
+        # otherwise have to remember (the requested provider) is read from the job itself and
+        # verified there, instead of being re-listed by every caller.
+        from yomu.review.source_analysis_phase import command_with_source_selection
+
+        command = command_with_source_selection(job, selection)
+        record_command_provider(config, command, "provider_command_final")
+        self.store.update_fields(
+            job["id"], command_json=json.dumps(command, ensure_ascii=False),
+            source_selection_json=json.dumps(selection, ensure_ascii=False),
+            configuration_json=json.dumps(config, ensure_ascii=False),
+            reason_code="",
+            stage="created",
+        )
+        job = self.store.transition(job["id"], JobStatus.QUEUED)
+        self.history_revision += 1
+        return {"ok": True, "job_id": job["id"], "worker": self.ensure_worker()}
+
+    def authorize_source_download(
+        self,
+        job_id: str,
+        *,
+        principal: RequestPrincipal,
+        rights_basis: str,
+        allowed_operations: list[str],
+    ) -> dict[str, Any]:
+        """Persist explicit rights scope without starting a worker or download."""
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise ValueError("authentication_required")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or job.get("status") != JobStatus.SOURCE_ANALYSIS_READY:
+            raise ValueError("source_analysis_not_ready")
+        config = dict(job.get("configuration") or {})
+        owner = str(config.get("community_owner_id") or "")
+        if not owner or owner != principal.user_id:
+            raise ValueError("source_analysis_owner_mismatch")
+        result_id = str(config.get("source_analysis_result_id") or "")
+        if not result_id:
+            raise ValueError("source_analysis_result_missing")
+        from yomu.review.source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            decision = readiness.authorize(
+                owner=principal.user_id,
+                analysis_result_id=result_id,
+                rights_basis=rights_basis,
+                allowed_operations=allowed_operations,
+                reviewer=principal.user_id,
+            )
+        finally:
+            readiness.close()
+        config["download_authorization"] = decision.public()
+        self.store.update_fields(
+            job["id"], configuration_json=json.dumps(config, ensure_ascii=False),
+            reason_code="download_authorized", stage="source_analysis_ready",
+        )
+        self.history_revision += 1
+        return {
+            "ok": True,
+            "job_id": job["id"],
+            "status": JobStatus.SOURCE_ANALYSIS_READY,
+            "stage": "source_analysis_ready",
+            "authorization": decision.public(),
+            "download_started": False,
+        }
+
+    def authorize_standalone_source_analysis(
+        self,
+        analysis_result_id: str,
+        *,
+        principal: RequestPrincipal,
+        rights_basis: str,
+        allowed_operations: list[str],
+    ) -> dict[str, Any]:
+        """Authorize a machine-scoped analysis without creating or starting a job."""
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise ValueError("authentication_required")
+        from yomu.review.source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            decision = readiness.authorize(
+                owner="local",
+                analysis_result_id=analysis_result_id,
+                rights_basis=rights_basis,
+                allowed_operations=allowed_operations,
+                reviewer=principal.user_id,
+            )
+        finally:
+            readiness.close()
+        return {
+            "ok": True,
+            "analysis_result_id": analysis_result_id,
+            "authorization": decision.public(),
+            "download_started": False,
+        }
+
+    def continue_authorized_download(
+        self,
+        job_id: str,
+        *,
+        principal: RequestPrincipal,
+    ) -> dict[str, Any]:
+        """Queue the existing operation only after a separate scoped authorization."""
+        if not isinstance(principal, RequestPrincipal) or not principal.authenticated:
+            raise ValueError("authentication_required")
+        job = self.store.get_job(str(job_id or ""))
+        if not job or job.get("status") != JobStatus.SOURCE_ANALYSIS_READY:
+            raise ValueError("source_analysis_not_ready")
+        config = dict(job.get("configuration") or {})
+        if str(config.get("community_owner_id") or "") != principal.user_id:
+            raise ValueError("source_analysis_owner_mismatch")
+        result_id = str(config.get("source_analysis_result_id") or "")
+        from yomu.review.source_readiness import SourceReadinessStore
+
+        readiness = SourceReadinessStore(self.store.db_path)
+        try:
+            decision = readiness.require_operation(
+                owner=principal.user_id,
+                analysis_result_id=result_id,
+                operation="download_assets",
+            )
+        finally:
+            readiness.close()
+        if not (job.get("source_selection") or {}).get("candidate_ids"):
+            raise ValueError("missing_source_selection")
+        queued = self.store.transition(
+            job["id"], JobStatus.QUEUED, stage="created", reason_code="download_authorized")
+        self.history_revision += 1
+        return {
+            "ok": True, "job_id": queued["id"], "run_id": queued["run_id"],
+            "authorization_id": decision.authorization_id,
+            "status": JobStatus.QUEUED, "stage": "created",
+            "worker": self.ensure_worker(),
+        }
+
+    def _create_job(
+        self,
+        payload: dict[str, Any],
+        *,
+        require_environment: bool = True,
+        principal: RequestPrincipal | None = None,
+        initial_status: str = JobStatus.QUEUED,
+        source_analysis: dict[str, Any] | None = None,
+        source_selection: dict[str, Any] | None = None,
+        beta_decision: BetaAccessDecision | None = None,
+        commercial_context: CommercialDeviceContext | None = None,
+    ) -> dict[str, Any]:
+        if principal is not None and not isinstance(principal, RequestPrincipal):
+            raise TypeError("principal must be a RequestPrincipal")
+        if payload.get("benchmark_preflight_required") is True:
+            from tools.performance.benchmark_environment import clean_benchmark_preflight
+
+            benchmark_preflight = clean_benchmark_preflight(
+                duration_seconds=float(payload.get("benchmark_preflight_seconds") or 30.0)
+            )
+            if benchmark_preflight.get("status") != "pass":
+                raise ValueError(
+                    str(
+                        benchmark_preflight.get("reason_code")
+                        or "BENCHMARK_ENVIRONMENT_NOT_CLEAN"
+                    )
+                )
+        normalized = self._normalize_payload(payload, require_environment=require_environment)
+        output_folder = resolve_run_output_folder(
+            getattr(self, "output_root", OUTPUT_ROOT),
+            normalized["slug"],
+            normalized["id"],
+        )
+        command = build_run_command(
+            url=normalized["url"],
+            mode=normalized["mode"],
+            output=f"{normalized['slug']}/{normalized['id']}",
+            output_path=output_folder,
+            full=normalized["full"],
+            max_images=normalized.get("max_images"),
+            use_cache=normalized["use_cache"],
+            force=normalized["force"],
+            use_context=normalized["use_context"],
+            source_candidate_ids=list(payload.get("source_candidate_ids") or []),
+            open_output=normalized["open_output"],
+            download_only=normalized["download_only"],
+            translation_provider=normalized["translation_provider"],
+            output_format=normalized.get("output_format", "pdf"),
+            typesetting_mode=normalized.get("typesetting_mode", "on"),
+            python_executable=sys.executable,
+        )
+        details = suggest_chapter_details(normalized["url"])
+        configuration = {
+            "job_type": "translation",
+            # Correlates the UI request with worker/runner diagnostics without retaining
+            # any request URL or credential material.
+            "trace_id": str(payload.get("trace_id") or "")[:80],
+            # Distinguish newly-created jobs from pre-ownership legacy artifacts.
+            "ownership_schema_version": 1,
+            "mode": normalized["mode"],
+            "download_only": normalized["download_only"],
+            "full": normalized["full"],
+            "max_images": normalized["max_images"],
+            "force": normalized["force"],
+            "use_cache": normalized["use_cache"],
+            "use_context": normalized["use_context"],
+            "chapter_name": normalized["chapter_name"],
+            "open_output": normalized["open_output"],
+            "output_format": normalized.get("output_format", "pdf"),
+            "output_profile": normalized.get("output_profile", OutputProfile.AUTOMATIC),
+            "typesetting_mode": normalized.get("typesetting_mode", "on"),
+            "create_source_profile": normalized["create_source_profile"],
+            "source_analysis": source_analysis or {},
+            "source_selection": source_selection or {},
+            "chapter_slug": normalized["slug"],
+        }
+        configuration.update(self._translation_configuration_snapshot(payload, normalized))
+        idempotency_key = self._idempotency_key(payload)
+        if idempotency_key:
+            configuration["idempotency_key"] = idempotency_key
+            configuration["analysis_result_id"] = str(
+                payload.get("source_analysis_result_id") or payload.get("analysis_result_id") or ""
+            )[:120]
+        if beta_decision is not None:
+            configuration["beta_license_authorization"] = beta_decision.to_safe_job_metadata()
+        if commercial_context is not None:
+            configuration["commercial_device_authorization"] = {
+                "authority": "license_devices", "device_uuid": commercial_context.device_uuid,
+                "device_id": commercial_context.device_id, "license_id": commercial_context.license_id,
+                "user_id": commercial_context.user_id, "status": commercial_context.status,
+                "verified": commercial_context.verified,
+            }
+            configuration["device_uuid"] = commercial_context.device_uuid
+        validated_analysis_id = str(payload.get("source_analysis_result_id") or "")
+        if validated_analysis_id:
+            configuration["preflight_source_analysis_result_id"] = validated_analysis_id
+        if source_type := str(payload.get("source_type") or "url"):
+            if source_type == "url":
+                from yomu.review.source_readiness import (
+                    PIPELINE_OPERATIONS, SourceReadinessStore, default_workspace_id,
+                )
+
+                requested_operations = (
+                    ["analyze_metadata", "download_assets"]
+                    if normalized["download_only"] else list(PIPELINE_OPERATIONS)
+                )
+                requested_scope = (
+                    "full" if normalized["full"] else str(normalized["max_images"])
+                )
+                scope_identity = {
+                    "requested_scope": requested_scope,
+                    "full": normalized["full"],
+                    "max_images": normalized["max_images"],
+                }
+                configuration.update({
+                    "workspace_owner": "local",
+                    "workspace_id": default_workspace_id(self.store.db_path),
+                    "user_requested_pipeline": True,
+                    "requested_mode": (
+                        "download_only" if normalized["download_only"] else normalized["mode"]
+                    ),
+                    "requested_scope": requested_scope,
+                    "effective_scope": requested_scope,
+                    "scope_source": "user",
+                    "scope_hash": hashlib.sha256(json.dumps(
+                        scope_identity, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")).hexdigest(),
+                    "requested_operations": requested_operations,
+                    "requested_at": time.time(),
+                })
+                readiness = SourceReadinessStore(self.store.db_path)
+                try:
+                    policy = readiness.active_workspace_policy(
+                        owner="local", workspace_id=configuration["workspace_id"])
+                finally:
+                    readiness.close()
+                if policy is not None:
+                    configuration.update({
+                        "workspace_authorization_policy_id": policy.policy_id,
+                        "workspace_authorization_policy_hash": policy.policy_hash,
+                    })
+        if principal is not None and principal.authenticated:
+            configuration["community_owner_id"] = principal.user_id
+        # Source analysis is an intentionally non-claimable STAGING job owned by this UI
+        # process, not by the background worker.  Persist the process identity before the
+        # browser thread starts so worker recovery can distinguish a live analysis from a
+        # staging row abandoned by a crashed UI.
+        staging_owner_pid: int | None = None
+        staging_owner_create_time: float | None = None
+        if initial_status == JobStatus.STAGING:
+            staging_owner_pid = os.getpid()
+            try:
+                import yomu.runtime.process_tree as process_tree
+
+                snapshot = process_tree.snapshot(staging_owner_pid) or {}
+                value = snapshot.get("create_time")
+                staging_owner_create_time = float(value) if value is not None else None
+            except (ImportError, OSError, TypeError, ValueError):
+                # PID ownership without a creation time is weaker, but still lets the
+                # recovery loop preserve an analysis whose creating UI is demonstrably live.
+                staging_owner_create_time = None
+        _enforce_translation_device_uuid(configuration)
+        job_id = self.store.create_job(
+            source_url=normalized["url"],
+            output_dir=str(output_folder),
+            command=command,
+            run_id=str(normalized["id"]),
+            configuration=configuration,
+            series_title=normalized["chapter_name"],
+            series_slug=str(details.get("slug") or ""),
+            episode_number=str(details.get("episode") or ""),
+            commit_hash=_current_commit(),
+            branch=_current_branch(),
+            initial_status=initial_status,
+            staging_owner_pid=staging_owner_pid,
+            staging_owner_create_time=staging_owner_create_time,
+        )
+        # Every URL job receives scalar adapter evidence before it can enter a queue. A later
+        # fresh downloader diagnosis replaces preliminary values, but a specific-adapter batch
+        # item never becomes an anonymous row while it waits for a worker.
+        from yomu.download.sources.chapter_source import select_adapter
+
+        adapter = select_adapter(normalized["url"])
+        provenance: dict[str, Any] = {
+            "source_type": "url",
+            "adapter_name": str(getattr(adapter, "name", "") or ""),
+            "adapter_version": str(getattr(adapter, "adapter_version", "") or ""),
+            "transport_name": "pending",
+        }
+        if source_analysis is not None:
+            provenance.update(self._remote_source_provenance(source_analysis))
+        if source_analysis is not None or source_selection is not None:
+            provenance.update({
+                "source_analysis_json": json.dumps(source_analysis or {}, ensure_ascii=False),
+                "source_selection_json": json.dumps(source_selection or {}, ensure_ascii=False),
+            })
+        self.store.update_fields(job_id, **provenance)
+        self.history_revision += 1
+        return self.store.get_job(job_id)  # type: ignore[return-value]
+
+    def ensure_worker(self) -> dict[str, Any]:
+        """Make sure a worker exists to claim queued jobs.
+
+        Without this the UI happily persists a job that nobody ever picks up: the queue is
+        not in-flight, so the status stays "pronto" and the click looks like a no-op. Never
+        starts a second worker — start_worker() checks the registered lease first.
+        """
+        healthy = self.store.healthy_worker(stale_seconds=15)
+        if healthy:
+            if not _worker_environment_matches_current(healthy):
+                try:
+                    from yomu.commands.start_tradutor import start_worker, stop_worker
+
+                    if stop_worker(timeout=10.0) != 0:
+                        return {
+                            "online": False,
+                            "started": False,
+                            "error": "worker_environment_mismatch",
+                        }
+                    self._owned_worker_process = start_worker()
+                except Exception:  # noqa: BLE001 - reported to the caller, never swallowed
+                    return {
+                        "online": False,
+                        "started": False,
+                        "error": "worker_environment_mismatch",
+                    }
+                healthy = self.store.healthy_worker(stale_seconds=15)
+                return {
+                    "online": bool(healthy),
+                    "started": bool(healthy),
+                    "restarted": bool(healthy),
+                    "reason": "worker_environment_mismatch",
+                }
+            return {"online": True, "started": False}
+        try:
+            from yomu.commands.start_tradutor import start_worker
+
+            self._owned_worker_process = start_worker()
+        except Exception as exc:  # noqa: BLE001 - reported to the caller, never swallowed
+            return {"online": False, "started": False, "error": type(exc).__name__}
+        healthy = self.store.healthy_worker(stale_seconds=15)
+        return {"online": bool(healthy), "started": bool(healthy)}
+
+    async def cancel(self, *, queue: bool = False, job_id: str = "") -> dict[str, Any]:
+        requested_review_id = str(job_id or "").strip()
+        if requested_review_id:
+            requested = self.store.get_job(requested_review_id)
+            if not requested or not self._is_queue_operation(requested):
+                raise ValueError("job_not_found")
+            if requested.get("status") in JobStatus.TERMINAL:
+                return {
+                    "ok": True, "job_id": requested_review_id,
+                    "previous_status": requested.get("status"),
+                    "status": requested.get("status"), "cancelable": False,
+                    "message": "Não há processamento ativo para cancelar.",
+                }
+            if requested.get("status") in {JobStatus.QUEUED, JobStatus.STAGING}:
+                target = requested.get("status")
+                try:
+                    self.store.transition(
+                        requested_review_id, JobStatus.CANCELLED,
+                        interrupted_reason="cancelled_before_runner",
+                        reason_code="user_cancelled",
+                    )
+                except Exception as exc:  # noqa: BLE001 - concurrent terminalization wins
+                    if self.store.get_job(requested_review_id) and self.store.get_job(requested_review_id).get("status") not in JobStatus.TERMINAL:
+                        raise exc
+                result = self.store.get_job(requested_review_id) or requested
+                self.history_revision += 1
+                return {"ok": True, "job_id": requested_review_id,
+                        "previous_status": target, "status": result.get("status"),
+                        "cancelable": False, "message": "Processamento cancelado."}
+            displayed = self._displayed_source_review()
+            # The source-review panel represents exactly the newest waiting job. Refuse a
+            # stale/forged id rather than cancelling another pending chapter behind it. A
+            # running translation also carries its job id from the UI, so accept it only
+            # when it is the currently active translation; do not treat it as source review.
+            if displayed and displayed.get("id") == requested_review_id:
+                self.store.transition(
+                    requested_review_id, JobStatus.CANCELLED,
+                    interrupted_reason="cancelled_source_review", reason_code="user_cancelled",
+                )
+                self.history_revision += 1
+                return {"ok": True, "job_id": requested_review_id,
+                        "previous_status": JobStatus.AWAITING_SOURCE_REVIEW,
+                         "status": JobStatus.CANCELLED, "cancelable": False,
+                         "message": "Processamento cancelado."}
+            if requested.get("status") == JobStatus.AWAITING_SOURCE_REVIEW:
+                raise ValueError("source_review_not_available")
+            active_requested = self.store.active_job()
+            if (
+                not active_requested
+                or active_requested.get("id") != requested_review_id
+                or not self._is_queue_operation(active_requested)
+            ):
+                raise ValueError("job_not_active")
+        active = self.store.active_job()
+        if self._is_queue_operation(active):
+            previous_status = str(active.get("status") or "")
+            self.store.request_cancel(active["id"])
+            # The runner honours the flag and tears down only its own process tree. When the
+            # runner is already gone nobody would ever act on the flag, so settle the job
+            # here instead of leaving it in flight forever. Outputs are left untouched.
+            if _runner_still_alive(active):
+                try:
+                    if previous_status != JobStatus.CANCELLING:
+                        self.store.transition(active["id"], JobStatus.CANCELLING,
+                                              interrupted_reason="user_cancelled",
+                                              reason_code="user_cancelled")
+                except Exception:  # noqa: BLE001 - a concurrent terminalization wins
+                    pass
+                result = self.store.get_job(active["id"]) or active
+                self.history_revision += 1
+                return {"ok": True, "job_id": active["id"],
+                        "previous_status": previous_status,
+                        "status": result.get("status", JobStatus.CANCELLING),
+                        "cancelable": True,
+                        "cancellation_requested_at": _epoch_to_iso(result.get("cancellation_requested_at")),
+                        "message": "Cancelamento solicitado."}
+            frozen = (_normalize_epoch(active.get("heartbeat_at"))
+                      or _normalize_epoch(active.get("updated_at")) or time.time())
+            try:
+                if previous_status != JobStatus.CANCELLING:
+                    self.store.transition(active["id"], JobStatus.CANCELLING,
+                                          interrupted_reason="cancelled_process_not_found",
+                                          reason_code="user_cancelled")
+                self.store.transition(active["id"], JobStatus.CANCELLED,
+                                      interrupted_reason="cancelled_process_not_found",
+                                      reason_code="user_cancelled", finished_at=frozen)
+            except Exception:  # noqa: BLE001 - already settled by another path
+                pass
+            result = self.store.get_job(active["id"]) or active
+            self.history_revision += 1
+            return {"ok": True, "job_id": active["id"],
+                    "previous_status": previous_status,
+                    "status": result.get("status", JobStatus.CANCELLED),
+                    "cancelable": False,
+                    "cancellation_requested_at": _epoch_to_iso(result.get("cancellation_requested_at")),
+                    "message": "Processamento cancelado."}
+        # A source review needs its explicit displayed job id above. For a source-analysis
+        # request that has not yet returned a review id, cancel at most the newest staging row;
+        # never fan one browser action out to unrelated submissions.
+        staging = max(
+            (candidate for candidate in self.store.list_jobs(statuses=[JobStatus.STAGING])
+             if self._is_translation_job(candidate)),
+            key=lambda candidate: float(candidate.get("updated_at") or 0), default=None)
+        if staging:
+            try:
+                self.store.transition(staging["id"], JobStatus.CANCELLED,
+                                      interrupted_reason="cancelled_source_analysis",
+                                      reason_code="user_cancelled")
+            except Exception:  # noqa: BLE001 - a completed analysis wins
+                pass
+        if queue:
+            for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+                if not self._is_queue_operation(job):
+                    continue
+                try:
+                    self.store.transition(job["id"], JobStatus.CANCELLED,
+                                          interrupted_reason="queue_cleared",
+                                          reason_code="user_cancelled")
+                except Exception:  # noqa: BLE001 - best effort per queued job
+                    pass
+        self.history_revision += 1
+        return {"ok": True, "status": "ready", "cancelable": False,
+                "message": "Nenhum processamento ativo para cancelar."}
+
+    async def cancel_for_owner(
+        self, owner_id: str, *, queue: bool = False, job_id: str = ""
+    ) -> dict[str, Any]:
+        requested_id = str(job_id or "").strip()
+        if requested_id:
+            if self.store.get_job_for_owner(owner_id, requested_id) is None:
+                raise ValueError("job_not_found")
+            return await self.cancel(job_id=requested_id)
+        active = self.store.active_job_for_owner(owner_id)
+        if active and self._is_queue_operation(active):
+            return await self.cancel(job_id=str(active["id"]))
+        if queue:
+            for job in self.store.list_jobs_for_owner(
+                owner_id, statuses=[JobStatus.QUEUED], limit=None
+            ):
+                if self._is_queue_operation(job):
+                    try:
+                        self.store.transition(
+                            job["id"], JobStatus.CANCELLED,
+                            interrupted_reason="queue_cleared",
+                            reason_code="user_cancelled",
+                        )
+                    except Exception:
+                        pass
+        self.history_revision += 1
+        return {"ok": True, "status": "ready", "cancelable": False,
+                "message": "Nenhum processamento ativo para cancelar."}
+
+    async def retry_source_review(self, job_id: str) -> dict[str, Any]:
+        """Discard one displayed review hold and rerun only its safe source analysis."""
+        job = self._displayed_source_review()
+        if not job or job.get("id") != str(job_id or "").strip():
+            raise ValueError("source_review_not_available")
+        config = job.get("configuration") or {}
+        source_url = str(job.get("source_url") or "")
+        if not source_url:
+            # Local snapshots are immutable inputs; retrying their source analysis would mean
+            # rereading a path that is deliberately absent from the job row.
+            raise ValueError("source_review_retry_not_available")
+        self.store.transition(
+            job["id"], JobStatus.CANCELLED,
+            interrupted_reason="source_review_retry_requested", reason_code="cancelled",
+        )
+        self.history_revision += 1
+        payload = {
+            "source_type": "url",
+            "url": source_url,
+            "chapter_name": config.get("chapter_name") or job.get("series_title") or "",
+            "slug": self._chapter_slug_from_job(job),
+            "mode": config.get("mode") or "fast",
+            "download_only": bool(config.get("download_only", False)),
+            "full": bool(config.get("full", True)),
+            "max_images": config.get("max_images"),
+            "use_cache": bool(config.get("use_cache")),
+            "force": bool(config.get("force")),
+            "use_context": bool(config.get("use_context", True)),
+            "open_output": bool(config.get("open_output", False)),
+            "create_source_profile": config.get("create_source_profile") is True,
+        }
+        return await self.start(payload)
+
+    def retry_job(self, job_id: str) -> dict[str, Any]:
+        """Create a fresh, isolated attempt for a terminal URL job.
+
+        A retry never reuses a dead runner or the previous output directory.  The
+        previous row and its artifacts remain available in history.
+        """
+        job = self.store.get_job(str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_retryable")
+        if job.get("status") not in {JobStatus.FAILED, JobStatus.CANCELLED}:
+            raise ValueError("job_not_retryable")
+        if not str(job.get("source_url") or "").strip():
+            raise ValueError("local_retry_requires_new_submit")
+        existing = self.store.retry_for_job(str(job_id))
+        if existing is not None:
+            return self._job_record(existing) or {}
+        config = dict(job.get("configuration") or {})
+        attempt = int(job.get("attempt") or 1) + 1
+        base_slug = self._chapter_slug_from_job(job)
+        slug = sanitize_output_name(f"{base_slug}_retry_{attempt}")
+        payload = {
+            "url": str(job.get("source_url") or ""),
+            "chapter_name": config.get("chapter_name") or job.get("series_title") or "",
+            "slug": slug,
+            "mode": config.get("mode") or "fast",
+            "download_only": bool(config.get("download_only", False)),
+            "full": bool(config.get("full", True)),
+            "max_images": config.get("max_images"),
+            "use_cache": bool(config.get("use_cache", True)),
+            "force": bool(config.get("force", False)),
+            "use_context": bool(config.get("use_context", True)),
+            "open_output": bool(config.get("open_output", False)),
+            "create_source_profile": bool(config.get("create_source_profile", False)),
+        }
+        retry = self._create_job(
+            payload,
+            require_environment=False,
+            principal=RequestPrincipal(
+                user_id=str(job.get("owner_id") or config.get("community_owner_id") or ""),
+                authenticated=True,
+                roles=frozenset({"user"}),
+                auth_source="internal_retry",
+            ),
+            initial_status=JobStatus.QUEUED,
+        )
+        retry_config = dict(retry.get("configuration") or {})
+        retry_config.update({
+            "retry_of": str(job_id),
+            "retry_reason": "user_requested",
+        })
+        retry_command = list(retry.get("command") or [])
+        fixture_retry = bool(
+            os.getenv("APP_ENV") == "test"
+            and os.getenv("ALLOW_LOCAL_TEST_IDENTITIES") == "1"
+            and config.get("fixture") is True
+            and config.get("local_test_only") is True
+        )
+        if fixture_retry:
+            retry_config.update({
+                "fixture": True,
+                "synthetic": bool(config.get("synthetic")),
+                "local_test_only": True,
+            })
+            retry_command = list(job.get("command") or [])
+            if "--output-dir" in retry_command:
+                position = retry_command.index("--output-dir") + 1
+                if position < len(retry_command):
+                    retry_command[position] = str(retry.get("output_dir") or "")
+        try:
+            self.store.update_fields(
+                retry["id"],
+                previous_job_id=str(job_id),
+                attempt=attempt,
+                configuration_json=json.dumps(retry_config, ensure_ascii=False),
+                command_json=json.dumps(retry_command, ensure_ascii=False),
+            )
+        except sqlite3.IntegrityError:
+            existing = self.store.retry_for_job(str(job_id))
+            if existing is None:
+                raise
+            self.store.transition(retry["id"], JobStatus.CANCELLED)
+            return self._job_record(existing) or {}
+        self.history_revision += 1
+        return self._job_record(self.store.get_job(retry["id"])) or {}
+
+    def retry_job_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        if self.store.get_job_for_owner(owner_id, str(job_id or "")) is None:
+            raise ValueError("job_not_retryable")
+        return self.retry_job(job_id)
+
+    # Why a job may not be resumed, as the single source of truth for both the operation
+    # and the capability handed to the browser. The frontend must never re-derive this
+    # from a status string: "interrupted" alone does not mean the state is continuable.
+    _RESUME_REFUSALS = {
+        "job_not_found": "Job não encontrado.",
+        "job_type_not_resumable": "job_type_not_resumable_from_ui",
+        "status_not_resumable": "Somente jobs interrompidos podem ser retomados.",
+        "no_recovery_state": "job_not_recoverable",
+        "previous_attempt_still_running": "previous_attempt_still_running",
+    }
+
+    def resume_block_reason(self, job: dict[str, Any] | None) -> str:
+        """Empty when this exact job may be resumed now; a stable reason code otherwise.
+
+        The order is deliberate: the cheap row checks run before the successor lookup and
+        the process-liveness probe, so rendering unrelated history pays for neither.
+        """
+        if not job:
+            return "job_not_found"
+        if not self._is_translation_job(job):
+            return "job_type_not_resumable"
+        if job.get("status") not in {JobStatus.INTERRUPTED, JobStatus.RESUMABLE}:
+            return "status_not_resumable"
+        # An interruption the runtime marked non-recoverable - a child that never crossed
+        # its own start boundary, a cancelled claim - has no state worth continuing from.
+        if not job.get("recoverable"):
+            return "no_recovery_state"
+        if self.store.retry_for_job(str(job.get("id") or "")) is not None:
+            return "already_resumed"
+        # Mutual exclusion: never start a new attempt while the previous attempt's runner
+        # is still alive, or two trees would process the same chapter at once.
+        if _runner_still_alive(job):
+            return "previous_attempt_still_running"
+        return ""
+
+    def resume(
+        self,
+        job_id: str,
+        *,
+        principal: RequestPrincipal | None = None,
+        license_access_token: str = "",
+    ) -> dict[str, Any]:
+        job = self.store.get_job(job_id)
+        reason = self.resume_block_reason(job)
+        if reason == "already_resumed":
+            # Idempotent: a repeated activation returns the attempt that already exists
+            # instead of queueing the same chapter a second time.
+            existing = self.store.retry_for_job(str(job_id)) or {}
+            return {"ok": True, "job_id": existing.get("id", ""), "already_resumed": True}
+        if reason:
+            raise ValueError(self._RESUME_REFUSALS.get(reason, reason))
+        beta_decision = self._require_beta_access(
+            principal=principal, operation="resume_translation", access_token=license_access_token)
+        configuration = dict(job.get("configuration") or {})
+        logical_job_id = str(
+            configuration.get("logical_job_id")
+            or configuration.get("resume_checkpoint_job_id")
+            or job_id
+        )
+        if job["status"] == JobStatus.INTERRUPTED:
+            self.store.mark_resumable(job_id, resume_from_stage=job.get("resume_from_stage") or "")
+        # A resume is a fresh attempt that reuses the same output dir and command; the
+        # previous attempt is preserved for history.
+        new_id = self.store.create_job(
+            source_url=job["source_url"],
+            output_dir=job["output_dir"],
+            command=job.get("command") or [],
+            configuration={
+                **configuration,
+                "beta_license_authorization": beta_decision.to_safe_job_metadata(),
+                "logical_job_id": logical_job_id,
+                "resume_checkpoint_job_id": logical_job_id,
+            },
+            series_title=job.get("series_title") or "",
+            series_slug=job.get("series_slug") or "",
+            episode_number=job.get("episode_number") or "",
+            commit_hash=_current_commit(),
+            branch=_current_branch(),
+            previous_job_id=job_id,
+            attempt=int(job.get("attempt") or 1) + 1,
+            resume_from_stage=job.get("resume_from_stage") or "",
+        )
+        # ``create_job`` starts an independent attempt. Preserve the path-free scalar
+        # evidence and the sanitised analysis/selection for both local snapshots and URL
+        # jobs so retries remain auditable even before the downloader refreshes its result.
+        provenance = {
+            key: job.get(key)
+            for key in (
+                "source_type", "adapter_name", "adapter_version", "transport_name",
+                "source_score", "candidate_count", "input_root_fingerprint",
+                "snapshot_ref", "logical_pages", "input_count", "accepted_count",
+                "rejected_count", "duplicate_count", "total_size_bytes",
+            )
+            if job.get(key) is not None
+        }
+        provenance["source_analysis_json"] = json.dumps(
+            job.get("source_analysis") or {}, ensure_ascii=False)
+        provenance["source_selection_json"] = json.dumps(
+            job.get("source_selection") or {}, ensure_ascii=False)
+        self.store.update_fields(new_id, **provenance)
+        # The original row is never requeued: it stays as the preserved previous attempt.
+        # Queueing it beside its successor would process the same chapter twice.
+        self.history_revision += 1
+        return {"ok": True, "job_id": new_id}
+
+    def dismiss_resumable_job_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        """Hide one interrupted attempt without deleting history or output files.
+
+        This is deliberately limited to resumable translation rows.  Terminal and
+        active jobs remain protected, while legacy interrupted cards can be dismissed
+        from the UI without touching remote data.
+        """
+        job = self.store.get_job_for_owner(owner_id, str(job_id or ""))
+        if not job or not self._is_translation_job(job):
+            raise ValueError("job_not_dismissible")
+        if job.get("status") not in {JobStatus.INTERRUPTED, JobStatus.RESUMABLE}:
+            raise ValueError("job_not_dismissible")
+        if not job.get("recoverable"):
+            return {"ok": True, "dismissed": True}
+        self.store.update_fields(
+            str(job["id"]), recoverable=0, interrupted_reason="dismissed_by_user"
+        )
+        self.history_revision += 1
+        return {"ok": True, "dismissed": True}
+
+    def _require_commercial_device_access(
+        self, *, principal: RequestPrincipal | None, operation: str, access_token: str = ""
+    ) -> CommercialDeviceContext:
+        authorizer = getattr(self, "commercial_device_authorizer", None)
+        if authorizer is None:
+            raise ValueError("commercial_device_authorizer_unconfigured")
+        try:
+            context = authorizer.authorize(principal=principal, operation=operation, access_token=access_token)
+        except CommercialDeviceAuthorizationError as exc:
+            raise ValueError(exc.code) from exc
+        if not isinstance(context, CommercialDeviceContext):
+            raise ValueError("malformed_commercial_device_context")
+        if principal is None or not principal.authenticated or context.user_id != principal.user_id:
+            raise ValueError("device_user_mismatch")
+        return context
+
+    def _require_beta_access(
+        self,
+        *,
+        principal: RequestPrincipal | None,
+        operation: str,
+        access_token: str = "",
+    ) -> BetaAccessDecision:
+        """Authoritative protected-operation gate before runner/provider work exists."""
+
+        authorizer = getattr(self, "beta_access_authorizer", None)
+        if authorizer is None:
+            if os.getenv("TRADUTOR_IA_HERMETIC_TEST_ENV") == "1":
+                authorizer = LocalDevelopmentBetaAuthorizer()
+            else:
+                raise ValueError("license_authorizer_unconfigured")
+        try:
+            decision = authorizer.authorize(
+                principal=principal, operation=operation, access_token=access_token)
+        except Exception as exc:  # noqa: BLE001 - license service errors fail closed
+            raise ValueError("license_service_unavailable") from exc
+        if not isinstance(decision, BetaAccessDecision):
+            raise ValueError("malformed_license_response")
+        if not decision.allowed:
+            if decision.state is LicenseState.LICENSE_UNAVAILABLE:
+                raise ValueError("license_service_unavailable")
+            raise ValueError(decision.reason_code or decision.state.value)
+        return decision
+
+    def add_queue_item(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: RequestPrincipal | None = None,
+    ) -> dict[str, Any]:
+        # A generic page cannot enter the background queue before its reader cluster is
+        # confirmed.  Specific adapters retain the existing batch flow; a generic source is
+        # intentionally directed through the interactive source-analysis screen.
+        from yomu.download.sources.chapter_source import select_adapter
+        if self._requested_source_type(payload) == "local_folder":
+            # The batch form is URL-only.  Folder intake needs the loopback-only API gate and
+            # a snapshot before a job is queued, so it can only start from the main form.
+            raise ValueError("local_folder_requires_primary_submit")
+        url = clean_url(str(payload.get("url") or ""))
+        if not select_adapter(url).is_specific:
+            raise ValueError("generic_sources_require_interactive_review")
+        job = self._create_job(
+            {**payload, "full": True},
+            require_environment=False,
+            principal=principal,
+        )
+        return self._job_record(job)  # type: ignore[return-value]
+
+    def remove_queue_item_for_owner(self, owner_id: str, item_id: str) -> None:
+        job = self.store.get_job_for_owner(owner_id, item_id)
+        if self._is_queue_operation(job) and job["status"] == JobStatus.QUEUED:
+            self.store.transition(item_id, JobStatus.CANCELLED, interrupted_reason="removed")
+
+    def remove_queue_item(self, item_id: str) -> None:
+        """Operator-local compatibility surface; never expose through HTTP."""
+        job = self.store.get_job(item_id)
+        if self._is_queue_operation(job) and job["status"] == JobStatus.QUEUED:
+            self.store.transition(item_id, JobStatus.CANCELLED, interrupted_reason="removed")
+
+    def clear_queue_for_owner(self, owner_id: str) -> None:
+        for job in self.store.list_jobs_for_owner(
+            owner_id, statuses=[JobStatus.QUEUED], limit=None
+        ):
+            if not self._is_queue_operation(job):
+                continue
+            try:
+                self.store.transition(job["id"], JobStatus.CANCELLED, interrupted_reason="queue_cleared")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def clear_queue(self) -> None:
+        """Operator-local compatibility surface; never expose through HTTP."""
+        for job in self.store.list_jobs(statuses=[JobStatus.QUEUED]):
+            if self._is_queue_operation(job):
+                try:
+                    self.store.transition(
+                        job["id"], JobStatus.CANCELLED,
+                        interrupted_reason="queue_cleared")
+                except Exception:
+                    pass
+
+    async def start_queue_for_owner(self, owner_id: str) -> dict[str, Any]:
+        # Jobs are already queued in the store; the independent worker drains them.
+        if not any(
+            self._is_translation_job(job)
+            for job in self.store.list_jobs_for_owner(
+                owner_id, statuses=[JobStatus.QUEUED], limit=None)
+        ):
+            raise ValueError("A fila não tem itens aguardando.")
+        status = env_status()
+        if not status["env_exists"] or not status["nvidia_configured"]:
+            raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
+        return {"ok": True}
+
+    async def start_queue(self) -> dict[str, Any]:
+        """Operator-local compatibility surface; never expose through HTTP."""
+        if not any(
+            self._is_translation_job(job)
+            for job in self.store.list_jobs(statuses=[JobStatus.QUEUED])
+        ):
+            raise ValueError("A fila não tem itens aguardando.")
+        status = env_status()
+        if not status["env_exists"] or not status["nvidia_configured"]:
+            raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
+        return {"ok": True}
+
+    def _open_artifact_path(self, path_value: str, *, select: bool = False) -> None:
+        path = Path(str(path_value or "")).expanduser().resolve()
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        if path != output_root and output_root not in path.parents:
+            raise ValueError("A interface só abre artefatos dentro de output/.")
+        if not path.exists():
+            raise ValueError("Arquivo ou pasta não encontrado.")
+        if os.name == "nt":
+            if select and path.is_file():
+                subprocess.Popen(["explorer.exe", "/select,", str(path)])
+            else:
+                os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            import webbrowser
+
+            webbrowser.open(path.as_uri())
+
+    def open_artifact_for_owner(
+        self,
+        owner_id: str,
+        job_id: str,
+        artifact: str,
+        *,
+        select: bool = False,
+    ) -> None:
+        """Resolve an opaque artifact name only after an owner-scoped SQL lookup."""
+        job = self.store.get_job_for_owner(
+            str(owner_id or "").strip(), str(job_id or "").strip())
+        if job is None:
+            raise ValueError("artifact_not_found")
+        record = self._job_record(job)
+        fields = {
+            "pdf": "pdf_path",
+            "folder": "output_folder",
+            "report": "quality_report_path",
+            "compare": "compare_sheet_path",
+            "context": "session_context_path",
+        }
+        action = str(artifact or "").strip()
+        if action in {"psd_folder", "qc_folder"}:
+            summary = record.get("completion_summary") if isinstance(record.get("completion_summary"), dict) else {}
+            if not bool((summary.get("actions") or {}).get(action)):
+                raise ValueError("artifact_not_found")
+            output = Path(str(record.get("output_folder") or "")).expanduser().resolve()
+            relative = "psd" if action == "psd_folder" else "qc"
+            target = (output / relative).resolve()
+            root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+            if not target.is_relative_to(root) or not target.is_dir():
+                raise ValueError("artifact_not_found")
+            expected = {".psd"} if action == "psd_folder" else {".json", ".html"}
+            if not any(path.is_file() and path.suffix.lower() in expected for path in target.iterdir()):
+                raise ValueError("artifact_not_found")
+            self._open_artifact_path(str(target))
+            return
+        field = fields.get(action)
+        path_value = str(record.get(field) or "") if field else ""
+        if not path_value:
+            raise ValueError("artifact_not_found")
+        self._open_artifact_path(path_value, select=select)
+
+    # ---- in-app chapter reader -------------------------------------------------
+    #
+    # The browser never names a file. It sends the opaque job id it already holds,
+    # the owner-scoped SQL lookup below turns that into this run's own recorded
+    # ``pdf_path``, and nothing but that one field is ever resolved -- so no other
+    # artifact (manifest, quality report, page image) is reachable from here, and a
+    # traversal or absolute path from the client has nothing to traverse.
+
+    def reader_pdf_for_owner(self, owner_id: str, job_id: str) -> Path:
+        """Resolve the immutable PDF bound to exactly this run, confined to output/."""
+
+        job = self.store.get_job_for_owner(
+            str(owner_id or "").strip(), str(job_id or "").strip())
+        if job is None:
+            raise ValueError("artifact_not_found")
+        record = self._job_record(job)
+        path_value = str(record.get("pdf_path") or "")
+        if not path_value:
+            raise ValueError("artifact_unavailable")
+        path = Path(path_value).expanduser().resolve()
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        if output_root not in path.parents:
+            raise ValueError("artifact_not_found")
+        if not path.is_file():
+            raise ValueError("artifact_unavailable")
+        # The extension is not the trust signal: the file has to actually be a PDF.
+        with open(path, "rb") as handle:
+            if handle.read(5) != b"%PDF-":
+                raise ValueError("artifact_unavailable")
+        return path
+
+    def reader_document_for_owner(self, owner_id: str, job_id: str) -> dict[str, Any]:
+        """Describe this run's chapter for the reader: pages, sizes, review state."""
+
+        job = self.store.get_job_for_owner(
+            str(owner_id or "").strip(), str(job_id or "").strip())
+        if job is None:
+            raise ValueError("artifact_not_found")
+        record = self._job_record(job)
+        path = self.reader_pdf_for_owner(owner_id, job_id)
+        payload: dict[str, Any] = {
+            "job_id": str(record.get("job_id") or job_id),
+            "run_id": str(record.get("run_id") or ""),
+            "title": str(record.get("chapter_name") or record.get("slug") or "Capítulo"),
+            "status": str(record.get("status") or ""),
+            "review_status": str(record.get("review_status") or ""),
+            "quality_gate": record.get("quality_gate"),
+            "review_required": str(record.get("status") or "") == "review_required"
+            or record.get("quality_gate") is False,
+            "pages": [],
+            "page_count": 0,
+            "mode": "embed",
+        }
+        try:
+            document = pdf_reader.open_document(path)
+        except (pdf_reader.UnsupportedPdf, OSError):
+            # A readable PDF this parser does not understand still opens: the browser's
+            # own viewer takes over and the toolbar reports reduced capability.
+            return payload
+        payload["mode"] = "images"
+        payload["page_count"] = document.page_count
+        payload["pages"] = [
+            {"width": page.width, "height": page.height} for page in document.pages
+        ]
+        return payload
+
+    def reader_page_for_owner(self, owner_id: str, job_id: str, page: int) -> bytes:
+        """Return the JPEG already stored inside this run's PDF for one page."""
+
+        path = self.reader_pdf_for_owner(owner_id, job_id)
+        try:
+            return pdf_reader.open_document(path).page_bytes(int(page))
+        except IndexError as exc:
+            raise ValueError("page_not_found") from exc
+        except pdf_reader.UnsupportedPdf as exc:
+            raise ValueError("page_not_available") from exc
+
+    def reader_thumbnail_for_owner(self, owner_id: str, job_id: str,
+                                   page: int) -> bytes:
+        path = self.reader_pdf_for_owner(owner_id, job_id)
+        try:
+            return pdf_reader.page_thumbnail(path, int(page))
+        except IndexError as exc:
+            raise ValueError("page_not_found") from exc
+        except pdf_reader.UnsupportedPdf as exc:
+            raise ValueError("page_not_available") from exc
+
+    def _find_local_artifact_record(
+        self, local_artifact_id: str
+    ) -> tuple[dict[str, Any], str]:
+        """Find the history record for an opaque UI identifier by identity alone.
+
+        Matching never depends on a confinable folder or a positive page count, so a
+        legacy/discovered card is always addressable.  Raises ``local_artifact_not_found``
+        only when no record matches the identifier.
+        """
+        local_artifact_id = str(local_artifact_id or "").strip()
+        if not local_artifact_id:
+            raise ValueError("local_artifact_not_found")
+        for source in (self._history_payload(), self.history_store.load()):
+            for record in source:
+                if not isinstance(record, dict):
+                    continue
+                output_folder = str(record.get("output_folder") or "")
+                match_values = {
+                    str(record.get("id") or ""),
+                    str(record.get("local_artifact_id") or ""),
+                    str(record.get("job_id") or ""),
+                    str(record.get("run_id") or ""),
+                    str(record.get("slug") or ""),
+                }
+                if output_folder:
+                    try:
+                        match_values.add(Path(output_folder).resolve().name)
+                    except OSError:
+                        match_values.add(Path(output_folder).name)
+                if local_artifact_id not in match_values:
+                    continue
+                return record, str(record.get("id") or local_artifact_id)
+        raise ValueError("local_artifact_not_found")
+
+    def _confined_output_folder(self, record: dict[str, Any]) -> Path | None:
+        """Return the record's output folder confined under ``output/``, else ``None``.
+
+        Fail-closed path safety for *file* deletion: any path that is empty, escapes the
+        current output root (``..``, an absolute foreign path, a drive/home/AppData root)
+        or resolves through a symlink/junction outside it yields ``None``.  The caller
+        then preserves the files instead of deleting an unconfined target; it never raises.
+        """
+        output_folder = str(record.get("output_folder") or "")
+        if not output_folder:
+            return None
+        output_root = getattr(self, "output_root", OUTPUT_ROOT).resolve()
+        raw_folder = Path(output_folder)
+        try:
+            if raw_folder.is_absolute():
+                folder = raw_folder.resolve()
+            else:
+                # Legacy cards stored paths such as output\\webtoon_chapter\\<run>.
+                # Resolve only that explicit namespace against the runtime root's
+                # parent; never interpret an arbitrary frontend-relative path.
+                parts = tuple(str(part) for part in raw_folder.parts)
+                if not parts or parts[0].casefold() != output_root.name.casefold():
+                    return None
+                folder = (output_root.parent / raw_folder).resolve()
+        except (OSError, RuntimeError):
+            return None
+        if folder == output_root or output_root not in folder.parents:
+            return None
+        # Reject symlink/junction escapes after normalization, including legacy paths.
+        try:
+            folder.relative_to(output_root)
+        except ValueError:
+            return None
+        return folder
+
+    def resolve_local_artifact_for_action(self, local_artifact_id: str) -> dict[str, Any]:
+        """Resolve an opaque UI history identifier to a confined server-side artifact.
+
+        The returned object is intentionally for backend use only: callers must not
+        serialize it to the browser because it includes the confined output path.
+        Raises ``local_artifact_path_invalid`` when the record's folder is unsafe.
+        """
+        record, record_id = self._find_local_artifact_record(local_artifact_id)
+        folder = self._confined_output_folder(record)
+        if folder is None:
+            raise ValueError("local_artifact_path_invalid")
+        return {
+            "local_artifact_id": record_id,
+            "_record": record,
+            "_output_dir": folder,
+        }
+
+    def delete_local_artifact(
+        self,
+        local_artifact_id: str,
+        *,
+        delete_files: bool = False,
+        confirm: str = "",
+    ) -> dict[str, Any]:
+        """Remove one local history entry and, when safe, its output folder.
+
+        History removal is keyed on the record's canonical identity and is unconditional:
+        it never depends on a positive page count or a confinable folder, so a legacy or
+        discovered card is not immortal.  Files are deleted only when the caller asked,
+        the record is not tied to a community publication, and the folder resolves safely
+        under ``output/`` and still exists; every other case preserves the files
+        (fail-closed) while the card still disappears.
+        """
+        if str(confirm or "") != "EXCLUIR":
+            raise ValueError("confirmation_invalid")
+        record, record_id = self._find_local_artifact_record(local_artifact_id)
+        published = str(record.get("publication_status") or "").lower() == "published"
+        # A published chapter's files back a live community post: never delete them here.
+        if published and delete_files:
+            raise ValueError("local_artifact_published")
+        remaining = [item for item in self.history_store.load() if item.get("id") != record_id]
+        self.history_store._write(remaining)
+        self.history_store.hide_record(record)
+        deleted_files = False
+        files_state = "preserved"
+        if delete_files:
+            folder = self._confined_output_folder(record)
+            if folder is None:
+                # Fail-closed: an unconfined/foreign path is never touched.
+                files_state = "unsafe_path_preserved"
+            elif not folder.exists():
+                # Idempotent: the folder was already removed outside the UI.
+                files_state = "already_absent"
+            else:
+                try:
+                    shutil.rmtree(folder)
+                    deleted_files = True
+                    files_state = "removed"
+                except OSError:
+                    # The card is already gone; do not resurrect it over a file error.
+                    files_state = "delete_failed_preserved"
+        self._refresh_history()
+        return {
+            "code": "local_artifact_deleted" if deleted_files else "local_history_item_hidden",
+            "local_artifact_id": record_id,
+            "deleted_files": deleted_files,
+            "files_state": files_state,
+            "publication_preserved": bool(record.get("publication_id")),
+        }
+
+    def close(self) -> None:
+        """Release every SQLite handle owned by this bridge instance."""
+        for name in (
+            "visual_reviews", "residual_component_reviews", "residual_analyses",
+            "mask_revisions", "human_masks", "human_typography",
+            "human_translations", "audit_decisions", "store",
+        ):
+            resource = getattr(self, name, None)
+            close = getattr(resource, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - shutdown is best effort
+                    pass
+
+    async def shutdown(self) -> None:
+        # Stop only a worker that this UI instance started. A worker owned by another
+        # launcher remains untouched; a running job is transitioned by the worker's
+        # normal shutdown path and remains recoverable.
+        process = self._owned_worker_process
+        if process is not None and getattr(process, "poll", lambda: 0)() is None:
+            try:
+                from yomu.commands.start_tradutor import stop_worker
+                stop_worker(timeout=10.0)
+            except Exception:  # noqa: BLE001 - database handles still need closing
+                pass
+        self._owned_worker_process = None
+        self.close()
+
+    def _normalize_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        require_environment: bool = True,
+    ) -> dict[str, Any]:
+        if require_environment:
+            status = env_status()
+            if not status["env_exists"] or not status["nvidia_configured"]:
+                raise ValueError("Configure o arquivo .env e a NVIDIA_API_KEY antes de processar.")
+        url = clean_url(str(payload.get("url") or "")).strip()
+        details = suggest_chapter_details(url)
+        mode = str(payload.get("mode") or "fast")
+        download_only = bool(payload.get("download_only", False))
+        requested_format = str(payload.get("output_format") or "pdf").casefold()
+        raw_profile = payload.get("output_profile")
+        output_profile = (
+            OutputProfile.PROFESSIONAL_QC
+            if raw_profile is None and requested_format == "psd" and not download_only
+            else self._normalize_output_profile(raw_profile)
+        )
+        if download_only:
+            output_profile = OutputProfile.AUTOMATIC
+        output_format = requested_format if requested_format in {"pdf", "png", "psd"} else "pdf"
+        if output_profile != OutputProfile.PROFESSIONAL_QC and output_format == "psd":
+            output_format = "pdf"
+        full = bool(payload.get("full", True))
+        max_images = None if full else int(payload.get("max_images") or 0)
+        force = bool(payload.get("force", False))
+        use_cache = bool(payload.get("use_cache", not force))
+        # Translation is a server/control-plane decision. Absence is fail-closed
+        # (disabled), so a legacy provider value cannot enable DeepL implicitly.
+        translation_enabled = payload.get("translation_enabled") is True
+        slug = sanitize_output_name(str(payload.get("slug") or details["slug"]))
+        build_run_command(
+            url=url,
+            mode=mode,
+            output=slug,
+            full=full,
+            max_images=max_images,
+            use_cache=use_cache,
+            force=force,
+            use_context=bool(payload.get("use_context", True)),
+            download_only=download_only,
+            translation_provider=self._normalize_translation_provider(payload),
+            output_format=output_format,
+        )
+        return {
+            "id": str(payload.get("id") or uuid.uuid4()),
+            "url": url,
+            "chapter_name": str(payload.get("chapter_name") or details["title"])[:120],
+            "slug": slug,
+            "mode": mode,
+            "download_only": download_only,
+            "full": full,
+            "max_images": max_images,
+            "use_cache": use_cache,
+            "force": force,
+            "use_context": bool(payload.get("use_context", True)),
+            "open_output": bool(payload.get("open_output", False)),
+            "create_source_profile": payload.get("create_source_profile") is True,
+            "translation_provider": self._normalize_translation_provider(payload),
+            "translation_enabled": translation_enabled,
+            "output_format": output_format,
+            "output_profile": output_profile,
+        }
+
+    @staticmethod
+    def _normalize_translation_provider(payload: dict[str, Any]) -> str:
+        raw = (
+            payload.get("translation_provider")
+            or payload.get("provider_requested")
+            or os.getenv("NVIDIA_TRANSLATION_PROVIDER")
+            or DEFAULT_TRANSLATION_PROVIDER
+        )
+        provider = str(raw or "").strip().lower()
+        # "nvidia" is the legacy family name: naming it is still an explicit
+        # choice and must not collapse onto a default from another family.
+        if provider == "nvidia":
+            provider = "nemotron"
+        if not provider:
+            provider = DEFAULT_TRANSLATION_PROVIDER
+        if provider not in (TRANSLATION_PROVIDERS | {"yomu_backend"}):
+            raise ValueError("nvidia_translation_provider_invalid")
+        return provider
+
+    def _refresh_history(self) -> None:
+        self.history = self.history_store.discover_outputs()
+        self.history_revision += 1

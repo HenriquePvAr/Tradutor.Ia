@@ -1,4 +1,4 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import hashlib
 import json
@@ -7,12 +7,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import community_api
-import ui_bridge
-from community_api import ArtifactBindingError, CommunityApi
-from community_auth import RequestPrincipal
-from job_store import JobStatus, JobStore
-from ui_history import UIHistoryStore
+import yomu.community.community_api as community_api
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.community.community_api import ArtifactBindingError, CommunityApi
+from yomu.community.community_auth import RequestPrincipal
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.ui.ui_history import UIHistoryStore
 
 
 OWNER_ID = "owner-recon-ui"

@@ -1,5 +1,5 @@
-import _test_bootstrap  # noqa: F401
-from offline_test_guard import install_offline_network_guard
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchmark_pipeline import ImmutableArtifactConflict, _finalize_immutable_file
+from yomu.pipeline.benchmark_pipeline import ImmutableArtifactConflict, _finalize_immutable_file
 
 
 class OutputArtifactImmutabilityTests(unittest.TestCase):

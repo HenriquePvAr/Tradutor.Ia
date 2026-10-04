@@ -9,8 +9,8 @@ defaulted to pdf, so a psd job produced a pdf while still consuming 1 YK.  ``con
 """
 import unittest
 
-from source_analysis_phase import command_with_source_selection
-from ui_helpers import (
+from yomu.review.source_analysis_phase import command_with_source_selection
+from yomu.ui.ui_helpers import (
     assert_command_output_format,
     build_run_command,
     command_output_format,

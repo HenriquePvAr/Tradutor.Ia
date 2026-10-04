@@ -11,8 +11,8 @@ an isolated SQLite database per test, the TDD #51 hermetic guard, and every Pope
 closed in ``tearDown``. No real worker, UI, launcher, provider, network or Drive is touched.
 """
 
-import _test_bootstrap  # noqa: F401
-from _test_processes import assert_owned_pid, stop_owned_process
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support._test_processes import assert_owned_pid, stop_owned_process
 
 import os
 import subprocess
@@ -25,10 +25,10 @@ from pathlib import Path
 
 import psutil
 
-import hermetic_runtime
-import process_tree
-import ui_bridge
-from job_store import JobStatus, JobStore
+import test_support.hermetic_runtime as hermetic_runtime
+import yomu.runtime.process_tree as process_tree
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.runtime.job_store import JobStatus, JobStore
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -44,7 +44,7 @@ def _wait(predicate, *, timeout: float, label: str) -> bool:
 
 
 def _fake_command(output_dir: Path, *, steps: int = 40, sleep: float = 0.3, hang: bool = True):
-    command = [sys.executable, "-u", str(REPO / "fake_pipeline.py"),
+    command = [sys.executable, "-u", str(REPO / "test_support/fake_pipeline.py"),
                "--output-dir", str(output_dir), "--outcome", "finished",
                "--steps", str(steps), "--sleep", str(sleep)]
     if hang:
@@ -239,9 +239,9 @@ class HardExitProcessTests(unittest.TestCase):
             """
             import os, sys
             sys.path.insert(0, %r)
-            import _test_bootstrap  # noqa: F401
-            import process_tree
-            from job_store import JobStore
+            import test_support._test_bootstrap  # noqa: F401
+            import yomu.runtime.process_tree as process_tree
+            from yomu.runtime.job_store import JobStore
             store = JobStore(%r)
             snapshot = process_tree.snapshot(os.getpid()) or {}
             store.register_worker("crashed", os.getpid(),
@@ -272,9 +272,9 @@ class HardExitProcessTests(unittest.TestCase):
             """
             import os, sys
             sys.path.insert(0, %r)
-            import _test_bootstrap  # noqa: F401
-            import process_tree
-            from job_store import JobStore
+            import test_support._test_bootstrap  # noqa: F401
+            import yomu.runtime.process_tree as process_tree
+            from yomu.runtime.job_store import JobStore
             store = JobStore(%r)
             snapshot = process_tree.snapshot(os.getpid()) or {}
             store.register_worker(sys.argv[1], os.getpid(),

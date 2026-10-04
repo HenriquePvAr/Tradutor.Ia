@@ -1,14 +1,14 @@
 """Hermetic contracts for source readiness and explicitly authorized fixture downloads."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from job_store import JobStatus, JobStore
-from source_analysis_phase import SOURCE_READY, apply_source_analysis, should_spawn_runner
-from source_readiness import (
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.review.source_analysis_phase import SOURCE_READY, apply_source_analysis, should_spawn_runner
+from yomu.review.source_readiness import (
     DOWNLOAD_AUTHORIZATION_REQUIRED,
     SourceReadinessStore,
     download_fixture_assets,

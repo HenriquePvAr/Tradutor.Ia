@@ -1,10 +1,10 @@
 """Artifact-scoped Community publish authorization contracts."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 from pathlib import Path
 
-from publish_authorization import (
+from yomu.community.publish_authorization import (
     REASON_ARTIFACT_MISMATCH,
     REASON_CONSENT_GRANTED,
     REASON_CONSENT_REQUIRED,

@@ -6,7 +6,7 @@ mask fails a nonuniform-background heuristic.  A narrower, provenance-backed
 source-text mask may still be safe.  Everything else keeps failing closed.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -18,16 +18,16 @@ import numpy as np
 
 from test_support import cv_text
 
-import config
-import ocr_balloon
-import source_completeness
-from ocr_balloon import (
+import yomu.config.settings as config
+import yomu.ocr.ocr_balloon as ocr_balloon
+import yomu.ocr.source_completeness as source_completeness
+from yomu.ocr.ocr_balloon import (
     TextGroup,
     _build_text_mask,
     _remove_text_for_group,
     _source_scoped_speech_reason,
 )
-from ocr_engine import OCRLine
+from yomu.ocr.ocr_engine import OCRLine
 
 STRATEGIES = ("primary", "conservative", "glyph_overlay", "caption_overlay")
 FALLBACK = "source_scoped"

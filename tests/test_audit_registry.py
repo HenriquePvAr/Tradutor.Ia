@@ -1,7 +1,7 @@
 """Hermetic tests for additive audit registration/resolution (BLOCO 3)."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -10,10 +10,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import audit_registry as reg
-import linguistic_audit as la
-import linguistic_triage as lt
-import region_taxonomy as tax
+import yomu.review.audit_registry as reg
+import yomu.translation.linguistic_audit as la
+import yomu.translation.linguistic_triage as lt
+import yomu.review.region_taxonomy as tax
 
 
 def _report(revision_id="rev1", records=None):

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import app_version
+import yomu.runtime.version as app_version
 
 
 def test_canonical_versions_are_current():

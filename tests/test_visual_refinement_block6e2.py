@@ -1,7 +1,7 @@
 """BLOCO 6E.2 contracts for delegated font choice and safe mask editing."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -9,9 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import font_fidelity as ff
-import human_mask_decisions as hmd
-import human_typography_decisions as htd
+import yomu.clean.ownership.font_fidelity as ff
+import yomu.clean.ownership.human_mask_decisions as hmd
+import yomu.review.human_typography_decisions as htd
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -147,7 +147,7 @@ class Block6E2UiContractTests(unittest.TestCase):
     def test_mask_editor_ui_is_visible_accessible_and_non_destructive(self):
         ui_js = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         ui_css = (ROOT / "static" / "tradutor_ui.css").read_text(encoding="utf-8")
-        app_py = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app_py = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertIn("/api/ui/human-mask/editor-state", ui_js)
         self.assertIn("REFINAR MÁSCARA", ui_js)
         self.assertIn("blocked_pending_human_mask", ui_js)
@@ -159,7 +159,7 @@ class Block6E2UiContractTests(unittest.TestCase):
         self.assertIn("REFAZER", ui_js)
         self.assertIn("RESTAURAR AUTOMÁTICA", ui_js)
         self.assertIn("validation_halo", ui_js)
-        bridge_py = (ROOT / "ui_bridge.py").read_text(encoding="utf-8")
+        bridge_py = (ROOT / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
         self.assertIn('layers.get("combined_inpainting_mask")', bridge_py)
         self.assertIn('"combined_text_mask"', bridge_py)
         self.assertIn("hm-refine-panel", ui_css)

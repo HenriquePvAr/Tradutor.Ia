@@ -1,10 +1,10 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from browser_runtime import BrowserRuntimeResolver
+from yomu.download.browser_runtime import BrowserRuntimeResolver
 
 
 class BrowserRuntimeResolverTests(unittest.TestCase):

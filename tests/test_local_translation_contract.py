@@ -4,10 +4,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
-import ui_bridge
-from job_store import JobStore
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.runtime.job_store import JobStore
 
 
 class LocalTranslationContractTests(unittest.TestCase):
@@ -65,7 +65,7 @@ class LocalTranslationContractTests(unittest.TestCase):
         config = self.bridge._translation_configuration_snapshot(self.payload(), normalized)
         job = {"id": "local-contract-job"}
         envelope = self.tmp / "auth" / "local-contract-job.auth"
-        with mock.patch("secure_auth_context.AuthEnvelopeStore.seal", return_value=envelope) as seal:
+        with mock.patch("yomu.auth.secure_auth_context.AuthEnvelopeStore.seal", return_value=envelope) as seal:
             sealed = self.bridge._seal_translation_context(
                 job, config, principal=None, license_access_token="secret-token",
             )
@@ -75,7 +75,7 @@ class LocalTranslationContractTests(unittest.TestCase):
         self.assertNotIn("secret-token", serialized)
 
     def test_local_command_carries_provider_but_not_credentials(self):
-        from local_folder_job import build_local_job_command
+        from yomu.download.local.local_folder_job import build_local_job_command
 
         command = build_local_job_command(
             snapshot_ref="snap", output="chapter", mode="quality",
@@ -92,7 +92,7 @@ class LocalTranslationContractTests(unittest.TestCase):
         normalized = self.bridge._normalize_local_payload(payload)
         self.assertFalse(normalized["translation_enabled"])
         config = self.bridge._translation_configuration_snapshot(payload, normalized)
-        with mock.patch("secure_auth_context.AuthEnvelopeStore.seal") as seal:
+        with mock.patch("yomu.auth.secure_auth_context.AuthEnvelopeStore.seal") as seal:
             sealed = self.bridge._seal_translation_context(
                 {"id": "download-only-job"}, config,
                 principal=None, license_access_token="secret-token",

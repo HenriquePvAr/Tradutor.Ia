@@ -8,9 +8,9 @@ no Drive, no Supabase, no new translation job.
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -19,8 +19,8 @@ import re
 import unittest
 from pathlib import Path
 
-import source_completeness
-from ocr_balloon import (
+import yomu.ocr.source_completeness as source_completeness
+from yomu.ocr.ocr_balloon import (
     DO_NOT_RENDER,
     RENDER_WITH_REVIEW,
     TextGroup,

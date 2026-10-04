@@ -1,0 +1,12 @@
+{
+  "canonical_package_hidden_imports": "collect_submodules('yomu')",
+  "ci_compile_targets": [
+    "yomu",
+    "test_support",
+    "historical thin shims",
+    "pytest hooks"
+  ],
+  "pyinstaller_spec": "packaging/tradutor_ia.spec",
+  "resource_search": "active Python environment site-packages; no worktree-local venv assumption",
+  "validation_harness": "tools.harnesses.performance_validation_harness"
+}

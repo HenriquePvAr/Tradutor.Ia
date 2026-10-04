@@ -3,11 +3,11 @@
 The fixtures model public series metadata.  They never contact a real source.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-from canonical_source_identity import (
+from yomu.download.sources.canonical_source_identity import (
     CanonicalSourceError,
     canonicalize_webtoons_url,
 )

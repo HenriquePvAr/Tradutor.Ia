@@ -1,7 +1,7 @@
 """Hermetic tests for the offline linguistic audit (BLOCO 2). No network, no PDF."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -10,8 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import linguistic_audit as audit
-import region_taxonomy as tax
+import yomu.translation.linguistic_audit as audit
+import yomu.review.region_taxonomy as tax
 
 
 class LinguisticAuditContracts(unittest.TestCase):

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from chapter_source import (
+from yomu.download.sources.chapter_source import (
     COMIX,
     ComixAdapter,
     SourceError,

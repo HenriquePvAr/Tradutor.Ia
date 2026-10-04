@@ -2,7 +2,7 @@
 from __future__ import annotations
 import argparse, hashlib, json
 from pathlib import Path
-from app_version import PRODUCT_VERSION
+from yomu.runtime.version import PRODUCT_VERSION
 
 def main() -> None:
     p = argparse.ArgumentParser()

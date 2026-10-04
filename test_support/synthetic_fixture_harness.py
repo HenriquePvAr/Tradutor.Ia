@@ -176,7 +176,7 @@ def _block_network() -> None:
 def _generate_quality(output: Path) -> int:
     _block_network()
     from PIL import Image, ImageDraw
-    from output_manifest import build_run_manifest
+    from yomu.export.output_manifest import build_run_manifest
 
     output = output.resolve()
     manifest_path = output / "job_manifest.json"
@@ -276,8 +276,8 @@ def _remove_exact_tree(root: Path) -> None:
 
 def _run_quality(workspace: Path) -> dict[str, Any]:
     _block_network()
-    from job_runner import run_job
-    from job_store import JobStore
+    from yomu.runtime.job_runner import run_job
+    from yomu.runtime.job_store import JobStore
 
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=False)

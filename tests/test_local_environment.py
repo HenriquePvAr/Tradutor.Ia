@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import subprocess
@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-import community_publish_runner
-import local_environment
-import start_tradutor
-import worker_service
+import yomu.community.community_publish_runner as community_publish_runner
+import yomu.runtime.local_environment as local_environment
+import yomu.commands.start_tradutor as start_tradutor
+import yomu.runtime.worker_service as worker_service
 
 
 ENV_KEYS = (
@@ -222,7 +222,7 @@ def test_drive_auth_import_does_not_open_browser(tmp_path):
     code = (
         "import webbrowser\n"
         "webbrowser.open = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('browser'))\n"
-        "import drive_auth\n"
+        "from yomu.community.storage import drive_auth\n"
         "print('import-ok')\n"
     )
     result = subprocess.run(
@@ -238,7 +238,7 @@ def test_drive_auth_import_does_not_open_network(tmp_path):
     code = (
         "import socket\n"
         "socket.create_connection = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('network'))\n"
-        "import drive_auth\n"
+        "from yomu.community.storage import drive_auth\n"
         "print('import-ok')\n"
     )
     result = subprocess.run(
@@ -271,6 +271,6 @@ def test_publish_runner_fails_safely_when_local_environment_is_invalid(monkeypat
 
 
 def test_app_ui_loads_environment_before_reading_port():
-    source = (local_environment.PROJECT_ROOT / "app_ui.py").read_text(encoding="utf-8")
+    source = (local_environment.PROJECT_ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
 
     assert source.index("load_local_environment_for_entrypoint()") < source.index("APP_PORT =")

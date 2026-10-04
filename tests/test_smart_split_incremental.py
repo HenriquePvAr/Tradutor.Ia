@@ -3,9 +3,9 @@ from hashlib import sha256
 import pytest
 from PIL import Image
 
-from smart_split_incremental import IncrementalSmartSplitter
-from smart_split_incremental import SourceOrderBuffer
-from page_manifest import to_image_entry, to_ocr_job
+from yomu.ocr.splitting.smart_split_incremental import IncrementalSmartSplitter
+from yomu.ocr.splitting.smart_split_incremental import SourceOrderBuffer
+from yomu.export.page_manifest import to_image_entry, to_ocr_job
 
 
 def safe_finder(image, *, target_height, min_height, max_height, protected):
@@ -92,7 +92,7 @@ def test_reorder_buffer_releases_only_logical_order_and_is_bounded():
 
 def test_manifest_adapters_preserve_identity():
     # Adapter shape is tested with a representative immutable manifest item.
-    from page_manifest import FinalPageManifestItem
+    from yomu.export.page_manifest import FinalPageManifestItem
     item = FinalPageManifestItem(1, "page-a", "source", 0, "page.png",
                                  (("height", "3"),))
     image_entry = to_image_entry(item)

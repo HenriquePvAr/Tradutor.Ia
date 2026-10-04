@@ -22,16 +22,16 @@ or sentence.  Nothing in this file calls a provider, a runner, the network,
 Supabase, Community or Drive.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import numpy as np
 
-import semantic_fidelity
-import translator_deepl
-import translator_nvidia
-from ocr_balloon import (
+import yomu.translation.semantic_fidelity as semantic_fidelity
+import yomu.translation.providers.translator_deepl as translator_deepl
+import yomu.translation.providers.translator_nvidia as translator_nvidia
+from yomu.ocr.ocr_balloon import (
     OCRLine,
     TextGroup,
     _token_is_source_vocabulary,

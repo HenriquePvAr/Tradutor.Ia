@@ -5,7 +5,7 @@ a verified Supabase token instead of a local session: owner 200/206, other user 
 anonymous 401, forged headers ignored, and denied requests never touch storage.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import socket
@@ -20,13 +20,13 @@ from jwt.algorithms import ECAlgorithm
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from community_api import CommunityApi
-from community_http import CommunityNetworkBoundaryMiddleware, create_community_router
-from community_storage import FilesystemStorageProvider
-from community_store import FileStatus, Moderation, PostStatus, Visibility
-from job_store import JobStore
-from supabase_auth import SupabaseAuthConfig, SupabaseAuthProvider
-from offline_test_guard import (
+from yomu.community.community_api import CommunityApi
+from yomu.community.community_http import CommunityNetworkBoundaryMiddleware, create_community_router
+from yomu.community.community_storage import FilesystemStorageProvider
+from yomu.community.community_store import FileStatus, Moderation, PostStatus, Visibility
+from yomu.runtime.job_store import JobStore
+from yomu.auth.supabase_auth import SupabaseAuthConfig, SupabaseAuthProvider
+from test_support.offline_test_guard import (
     _loopback_test_connect,
     _loopback_test_connect_ex,
     _loopback_test_create_connection,

@@ -5,7 +5,7 @@ The historical E2E failure: a job requested ``riva``, the submit-time command ca
 IDs dropped the flag, so the runner silently used the Nemotron default.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import os
@@ -16,13 +16,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import benchmark_pipeline
-import job_runner
-import source_analysis_phase
-import ui_bridge
-from chapter_source import REVIEW_REQUIRED_MEDIUM_CONFIDENCE, SUPPORTED_SPECIFIC_ADAPTER
-from job_store import JobStatus, JobStore
-from ui_helpers import (
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.runtime.job_runner as job_runner
+import yomu.review.source_analysis_phase as source_analysis_phase
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.download.sources.chapter_source import REVIEW_REQUIRED_MEDIUM_CONFIDENCE, SUPPORTED_SPECIFIC_ADAPTER
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.ui.ui_helpers import (
     assert_command_provider,
     command_translation_provider,
     requested_translation_provider,

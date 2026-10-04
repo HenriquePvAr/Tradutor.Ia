@@ -3,7 +3,7 @@
 All tests are hermetic: OCR and NVIDIA transport are replaced with fakes and
 no real network, job, or translation path is exercised.
 """
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import threading
 import time
@@ -12,8 +12,8 @@ from unittest import mock
 
 import numpy as np
 
-from ocr_contract import OCRPageResult
-from ocr_engine import OCRLine, mark_ocr_line_recovered, stamp_initial_ocr_provenance
+from yomu.ocr.ocr_contract import OCRPageResult
+from yomu.ocr.ocr_engine import OCRLine, mark_ocr_line_recovered, stamp_initial_ocr_provenance
 
 
 def _image(_path):
@@ -44,7 +44,7 @@ class OcrProvenanceTests(unittest.TestCase):
         self.assertFalse(line.metadata["recovered"])
 
     def test_group_marks_mixed_initial_engines(self):
-        import ocr_balloon
+        import yomu.ocr.ocr_balloon as ocr_balloon
 
         first, second = self._line("nvidia"), self._line("rapidocr")
         stamp_initial_ocr_provenance([first, second])
@@ -56,7 +56,7 @@ class OcrProvenanceTests(unittest.TestCase):
 
 class HybridCancellationTests(unittest.TestCase):
     def test_cancel_stops_new_assignments_and_queue_join_returns(self):
-        import ocr_hybrid_scheduler as sched
+        import yomu.ocr.ocr_hybrid_scheduler as sched
 
         cancel = threading.Event()
         calls = []
@@ -82,7 +82,7 @@ class HybridCancellationTests(unittest.TestCase):
         self.assertEqual(telemetry["RAPIDOCR_PAGES"], 0)
 
     def test_cancel_during_nvidia_in_flight_does_not_start_another_page(self):
-        import ocr_hybrid_scheduler as sched
+        import yomu.ocr.ocr_hybrid_scheduler as sched
 
         cancel = threading.Event()
         started = threading.Event()

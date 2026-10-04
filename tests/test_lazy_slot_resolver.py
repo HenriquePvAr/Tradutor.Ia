@@ -4,12 +4,12 @@ Synthetic reader only — a fake browser whose slots resolve as the viewport app
 No Selenium, no network, no image bytes, no real chapter.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-from chapter_source import SLOT_PENDING, SLOT_REJECTED, SLOT_RESOLVED, select_adapter
-from lazy_slot_resolver import (
+from yomu.download.sources.chapter_source import SLOT_PENDING, SLOT_REJECTED, SLOT_RESOLVED, select_adapter
+from yomu.download.lazy_slot_resolver import (
     COUNTER_STAGE, LAZY_RESOLUTION_ROUNDS, LAZY_RESOLUTION_TIMEOUT, READER_DOM_CHANGED,
     ResolverLimits, resolve_lazy_reader_slots,
 )
@@ -283,7 +283,7 @@ class NoNetworkTests(unittest.TestCase):
     def test_the_resolver_module_fetches_nothing(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "lazy_slot_resolver.py").read_text(
+        source = (Path(__file__).resolve().parents[1] / "yomu/download/lazy_slot_resolver.py").read_text(
             encoding="utf-8")
         imports = [l.strip() for l in source.splitlines()
                    if l.strip().startswith(("import ", "from "))]

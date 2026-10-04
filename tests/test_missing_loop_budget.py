@@ -6,7 +6,7 @@ mislabeled ``no_reader_images``.  These tests pin the new contract without a bro
 """
 import unittest
 
-import scrapling_reader_resolver as r
+import yomu.download.readers.scrapling_reader_resolver as r
 
 BASE = r.MISSING_CHAPTER_BASE_OVERHEAD_SECONDS
 PER = r.MISSING_PAGE_BUDGET_SECONDS

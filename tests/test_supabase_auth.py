@@ -4,7 +4,7 @@ Temporary EC keys are generated in-process; a fake JWKS transport serves the pub
 No network, no real Supabase, no import-time I/O.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import concurrent.futures
@@ -17,15 +17,15 @@ import jwt as pyjwt
 from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm
 
-from community_auth import (
+from yomu.community.community_auth import (
     AuthConfigurationError,
     AuthenticationRequired,
     RequestPrincipal,
     build_auth_provider,
     LocalSessionAuthProvider,
 )
-import supabase_auth
-from supabase_auth import SupabaseAuthConfig, SupabaseAuthProvider, JwksCache
+import yomu.auth.supabase_auth as supabase_auth
+from yomu.auth.supabase_auth import SupabaseAuthConfig, SupabaseAuthProvider, JwksCache
 
 ISSUER = "https://proj.supabase.co/auth/v1"
 JWKS_URL = "https://proj.supabase.co/auth/v1/.well-known/jwks.json"
@@ -315,7 +315,7 @@ class JwksCacheTests(unittest.TestCase):
     def test_jwks_timeout_fails_closed(self):
         class _Boom:
             def request(self, *a, **k):
-                from community_storage import StorageError
+                from yomu.community.community_storage import StorageError
                 raise StorageError("http_transport_error: Timeout", transient=True)
 
         provider = SupabaseAuthProvider(CONFIG, transport=_Boom())

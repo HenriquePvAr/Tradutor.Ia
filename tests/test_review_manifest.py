@@ -8,8 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-from artifact_contract import ArtifactType, OutputProfile, profile_artifacts
-from review_manifest import (
+from yomu.runtime.artifact_contract import ArtifactType, OutputProfile, profile_artifacts
+from yomu.review.review_manifest import (
     build_review_manifest, validate_review_manifest, write_review_manifest,
 )
 
@@ -72,7 +72,7 @@ class ReviewManifestTests(unittest.TestCase):
         self.assertEqual(item["quality_severity"], "REVIEW")
 
     def test_actual_editable_psd_writer_layer_provenance_links(self):
-        import editable_psd_writer as writer
+        import yomu.export.editable_psd_writer as writer
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "psd").mkdir()

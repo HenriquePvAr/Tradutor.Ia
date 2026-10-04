@@ -1,7 +1,7 @@
 """BLOCO 6E.3 contracts for delegated visual approval and reviewed masks."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -12,11 +12,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-import art_text_inpainting
-import human_mask_decisions as hmd
-import visual_review_decisions as vrd
-from chapter_quality_revision import ChapterQualityRevision
-from visual_refinement_provider_guard import (
+import yomu.clean.inpainting.art_text_inpainting as art_text_inpainting
+import yomu.clean.ownership.human_mask_decisions as hmd
+import yomu.clean.ownership.visual_review_decisions as vrd
+from yomu.review.chapter_quality_revision import ChapterQualityRevision
+from yomu.clean.ownership.visual_refinement_provider_guard import (
     FORBIDDEN_REASON,
     NoProviderReviewer,
     ProviderCallsForbiddenInVisualRefinement,

@@ -12,15 +12,15 @@ move itself:
 Everything here is offline: no provider is called, no job is created.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import config
-import ui_helpers
+import yomu.config.settings as config
+import yomu.ui.ui_helpers as ui_helpers
 
 ROOT = Path(__file__).resolve().parents[1]
 LOOKISM_URL = (
@@ -30,7 +30,7 @@ LOOKISM_URL = (
 
 
 def _command(*, mode, translation_provider):
-    from ui_helpers import build_run_command
+    from yomu.ui.ui_helpers import build_run_command
 
     return build_run_command(
         url=LOOKISM_URL, mode=mode, output="lookism ep 50", full=True,
@@ -56,7 +56,7 @@ class CanonicalDefaultTests(unittest.TestCase):
                          frozenset({"nemotron", "riva", "deepl"}))
 
     def test_the_canonical_beta_model_is_quality_optimized(self):
-        import translator_deepl
+        import yomu.translation.providers.translator_deepl as translator_deepl
 
         self.assertEqual(config.DEEPL_MODEL_TYPE, "quality_optimized")
         self.assertEqual(translator_deepl.DEFAULT_MODEL_TYPE, "quality_optimized")
@@ -75,7 +75,7 @@ class BackendDefaultResolutionTests(unittest.TestCase):
     """§14/§23-§27: the omitted-provider path resolves in the backend, not the UI."""
 
     def _normalize(self, payload):
-        import ui_bridge
+        import yomu.ui.ui_bridge as ui_bridge
 
         return ui_bridge.UiBridge._normalize_translation_provider(payload)
 
@@ -109,8 +109,8 @@ class RuntimeResolutionTests(unittest.TestCase):
     """§8/§12: the runner itself -- not only the payload -- defaults to DeepL."""
 
     def test_an_omitted_provider_builds_the_deepl_translator(self):
-        from translator_deepl import DeepLTranslator
-        from translator_nllb import get_translator
+        from yomu.translation.providers.translator_deepl import DeepLTranslator
+        from yomu.translation.providers.translator_nllb import get_translator
 
         translator, _ = get_translator("3")
         self.assertIsInstance(translator, DeepLTranslator)
@@ -118,15 +118,15 @@ class RuntimeResolutionTests(unittest.TestCase):
         self.assertEqual(translator.model, "quality_optimized")
 
     def test_explicit_nemotron_still_builds_the_nvidia_translator(self):
-        from translator_nvidia import TranslatorNvidiaBatch
-        from translator_nllb import get_translator
+        from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
+        from yomu.translation.providers.translator_nllb import get_translator
 
         translator, _ = get_translator("3", translation_provider="nemotron")
         self.assertIsInstance(translator, TranslatorNvidiaBatch)
         self.assertEqual(translator.translation_provider, "nemotron")
 
     def test_explicit_riva_still_builds_the_nvidia_translator(self):
-        from translator_nllb import get_translator
+        from yomu.translation.providers.translator_nllb import get_translator
 
         translator, _ = get_translator("3", translation_provider="riva")
         self.assertEqual(translator.translation_provider, "riva")
@@ -134,15 +134,15 @@ class RuntimeResolutionTests(unittest.TestCase):
     def test_a_non_nvidia_translation_mode_is_not_hijacked_by_the_default(self):
         # TRANSLATION_MODE is a separate, older axis; promoting the provider
         # default must not seize an explicitly configured google/hf install.
-        from translator_nllb import get_translator
+        from yomu.translation.providers.translator_nllb import get_translator
 
         with mock.patch.object(config, "TRANSLATION_MODE", "google"):
             translator, _ = get_translator("3")
         self.assertNotEqual(getattr(translator, "translation_provider", ""), "deepl")
 
     def test_case_f_an_unconfigured_deepl_default_fails_closed(self):
-        from translator_deepl import NOT_CONFIGURED
-        from translator_nllb import get_translator
+        from yomu.translation.providers.translator_deepl import NOT_CONFIGURED
+        from yomu.translation.providers.translator_nllb import get_translator
 
         with mock.patch.object(config, "DEEPL_API_KEY", ""):
             translator, _ = get_translator("3")
@@ -162,7 +162,7 @@ class ProvenanceTests(unittest.TestCase):
     """§15/§33/§39/§40: provenance follows the job, never the global default."""
 
     def _provenance(self, provider):
-        from benchmark_pipeline import report_provider_provenance
+        from yomu.pipeline.benchmark_pipeline import report_provider_provenance
 
         return report_provider_provenance({
             "provider_name": provider,
@@ -181,14 +181,14 @@ class ProvenanceTests(unittest.TestCase):
         self.assertNotIn("deepl", str(provenance).lower())
 
     def test_a_persisted_job_keeps_the_provider_it_recorded(self):
-        from ui_helpers import requested_translation_provider
+        from yomu.ui.ui_helpers import requested_translation_provider
 
         historical = {"translation_provider": "nemotron",
                       "provider_provenance": {"provider_requested": "nemotron"}}
         self.assertEqual(requested_translation_provider(historical), "nemotron")
 
     def test_a_rebuilt_command_carries_the_original_provider(self):
-        from ui_helpers import assert_command_provider
+        from yomu.ui.ui_helpers import assert_command_provider
 
         historical = {"translation_provider": "riva",
                       "provider_provenance": {"provider_requested": "riva"}}
@@ -202,7 +202,7 @@ class ModeIndependenceTests(unittest.TestCase):
     """§21: processing mode and translation provider are orthogonal controls."""
 
     def test_every_mode_and_provider_pair_is_representable(self):
-        from ui_helpers import command_translation_provider
+        from yomu.ui.ui_helpers import command_translation_provider
 
         for mode in ("fast", "quality"):
             for provider in ("deepl", "nemotron", "riva"):
@@ -220,7 +220,7 @@ class StageLabelTests(unittest.TestCase):
     """§16/§30/§32: the generic stage label is neutral; legacy lines still parse."""
 
     def _stage(self, line):
-        from ui_helpers import ProgressSnapshot, parse_progress_line
+        from yomu.ui.ui_helpers import ProgressSnapshot, parse_progress_line
 
         return parse_progress_line(line, ProgressSnapshot()).stage
 
@@ -231,14 +231,14 @@ class StageLabelTests(unittest.TestCase):
         self.assertEqual(self._stage("Tradução NVIDIA: iniciando"), "Tradução")
 
     def test_a_counter_under_the_translation_stage_still_advances(self):
-        from ui_helpers import ProgressSnapshot, parse_progress_line
+        from yomu.ui.ui_helpers import ProgressSnapshot, parse_progress_line
 
         snapshot = parse_progress_line("Tradução: 5/40", ProgressSnapshot())
         self.assertEqual(snapshot.counter_stage, "Tradução")
         self.assertGreater(snapshot.percent, 0.25)
 
     def test_the_runner_no_longer_emits_a_provider_specific_stage(self):
-        source = (ROOT / "benchmark_pipeline.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/pipeline/benchmark_pipeline.py").read_text(encoding="utf-8")
         self.assertNotIn("Tradução NVIDIA", source)
 
     def test_the_frontend_maps_both_the_new_and_the_legacy_label(self):
@@ -251,7 +251,7 @@ class ReportLabelTests(unittest.TestCase):
     """§17/§31/§46: timing report text names the provider only in provenance."""
 
     def _text(self):
-        from benchmark_pipeline import _timing_report_text
+        from yomu.pipeline.benchmark_pipeline import _timing_report_text
 
         report = {
             "mode": "rapido", "force": False, "total_images": 1, "processed_images": 1,
@@ -315,13 +315,13 @@ class Tdd42PreflightUntouchedTests(unittest.TestCase):
     """§22: the OCR engine preflight and its zero-denominator gate are unchanged."""
 
     def test_the_ocr_engine_preflight_still_exists(self):
-        import ocr_engine
+        import yomu.ocr.ocr_engine as ocr_engine
 
         self.assertTrue(hasattr(ocr_engine, "require_available_engine"))
         self.assertTrue(hasattr(ocr_engine, "engine_availability"))
 
     def test_the_ocr_mode_is_not_coupled_to_the_provider(self):
-        import fast_ocr_policy
+        import yomu.ocr.fast_ocr_policy as fast_ocr_policy
 
         source = Path(fast_ocr_policy.__file__).read_text(encoding="utf-8")
         for provider in ("deepl", "nemotron", "riva"):

@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from job_completion import build_job_completion_summary
-from ui_bridge import UiBridge
+from yomu.runtime.job_completion import build_job_completion_summary
+from yomu.ui.ui_bridge import UiBridge
 
 
 def _write(path: Path, payload: bytes = b"x") -> Path:

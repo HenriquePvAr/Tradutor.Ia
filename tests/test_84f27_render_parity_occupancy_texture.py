@@ -8,7 +8,7 @@ leaving visibly flat reconstruction on textured art.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -18,12 +18,12 @@ import unittest
 import cv2
 import numpy as np
 
-import advanced_art_inpainting
-import config
-import ocr_balloon as ob
-import ocr_line_provenance
-import source_completeness
-from ocr_engine import OCRLine
+import yomu.clean.inpainting.advanced_art_inpainting as advanced_art_inpainting
+import yomu.config.settings as config
+import yomu.ocr.ocr_balloon as ob
+import yomu.ocr.ocr_line_provenance as ocr_line_provenance
+import yomu.ocr.source_completeness as source_completeness
+from yomu.ocr.ocr_engine import OCRLine
 
 
 _REAL_RUN = os.path.join(

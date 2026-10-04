@@ -1,7 +1,7 @@
 """Contract + anti-hardcoding tests for the audit UI (BLOCO 3)."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -15,8 +15,9 @@ SHELL = ROOT / "ui" / "ui_shell.html"
 
 # The production sources that must carry no chapter-specific data.
 PRODUCTION_FILES = [
-    "region_taxonomy.py", "audit_registry.py", "audit_decisions.py",
-    "linguistic_audit.py", "static/tradutor_ui.js", "ui/ui_shell.html",
+    "yomu/review/region_taxonomy.py", "yomu/review/audit_registry.py",
+    "yomu/review/audit_decisions.py", "yomu/translation/linguistic_audit.py",
+    "static/tradutor_ui.js", "ui/ui_shell.html",
 ]
 
 
@@ -180,9 +181,9 @@ class AuditUiContracts(unittest.TestCase):
 
     def test_diagnostics_probes_a_method_the_store_really_has(self):
         """A hasattr guard on a name that does not exist always reports offline."""
-        from job_store import JobStore
+        from yomu.runtime.job_store import JobStore
 
-        app = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         probe = re.search(r"BRIDGE\.store\.(\w+)\(\)\s*$", app, re.M)
         block = app[app.index("def api_diagnostics"):app.index("_AUDIT_ERROR_MESSAGES")]
         called = set(re.findall(r"BRIDGE\.store\.(\w+)\(", block))
@@ -192,7 +193,7 @@ class AuditUiContracts(unittest.TestCase):
                             f"diagnostics calls store.{name}(), which does not exist")
 
     def test_diagnostics_reports_the_triage_schema_versions(self):
-        app = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         for key in ("gate_version", "ocr_plausibility_version", "worker_pid"):
             self.assertIn(f'"{key}"', app, key)
         for key in ("gate_version", "ocr_plausibility_version", "worker_pid"):
@@ -253,8 +254,8 @@ class AuditUiContracts(unittest.TestCase):
 
     def test_pending_human_previews_are_discoverable_without_static_ids(self):
         production = "\n".join((ROOT / rel).read_text(encoding="utf-8")
-                               for rel in ("static/tradutor_ui.js", "ui_bridge.py",
-                                           "app_ui.py", "ui/ui_shell.html"))
+                               for rel in ("static/tradutor_ui.js", "yomu/ui/ui_bridge.py",
+                                           "yomu/ui/app.py", "ui/ui_shell.html"))
         for marker in ("homePendingPreviews", "historyPendingPreviews",
                        "reviewPreviewAccess", "loadPendingHumanPreviews",
                        "openPendingPreview", "data-open-pending-preview",
@@ -269,7 +270,7 @@ class AuditUiContracts(unittest.TestCase):
         start = self.js.index("function renderHumanPreviews")
         body = self.js[start:self.js.index("const previewCropUrls", start)]
         self.assertIn("BLOQUEADA", body)
-        self.assertIn("requires_art_reconstruction", (ROOT / "ui_bridge.py").read_text(encoding="utf-8"))
+        self.assertIn("requires_art_reconstruction", (ROOT / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8"))
         blocked_branch = body[body.index("const actionButtons = blocked"):
                               body.index(": `<button", body.index("const actionButtons = blocked"))]
         self.assertNotIn("data-preview-action=\"render\"", blocked_branch)
@@ -300,8 +301,8 @@ class AuditUiContracts(unittest.TestCase):
 
     def test_taxonomy_categories_are_not_page_conditioned(self):
         # No production module keys a decision on a literal page/region number.
-        for rel in ("region_taxonomy.py", "linguistic_audit.py", "audit_registry.py",
-                    "audit_decisions.py"):
+        for rel in ("yomu/review/region_taxonomy.py", "yomu/translation/linguistic_audit.py",
+                    "yomu/review/audit_registry.py", "yomu/review/audit_decisions.py"):
             text = (ROOT / rel).read_text(encoding="utf-8")
             self.assertIsNone(re.search(r"page_number\s*==\s*\d", text), rel)
             self.assertIsNone(re.search(r"region_id\s*==\s*['\"]p\d", text), rel)

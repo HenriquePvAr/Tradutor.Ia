@@ -9,11 +9,11 @@ network noise entered the candidate set.
 Hermetic: a fake driver answering the reader script. No browser, no network.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-from chapter_source import (
+from yomu.download.sources.chapter_source import (
     NO_CHAPTER_IMAGES, SourceError, UniversalChapterAdapter, VortexScansAdapter,
     select_adapter,
 )
@@ -54,7 +54,7 @@ class StrategyDeclarationTests(unittest.TestCase):
             "generic_multisource")
 
     def test_local_folder_never_uses_a_browser_collector(self):
-        from local_folder_source import LocalFolderChapterAdapter
+        from yomu.download.local.local_folder_source import LocalFolderChapterAdapter
 
         adapter = LocalFolderChapterAdapter()
         self.assertEqual(adapter.source_type, "local_folder")
@@ -115,7 +115,7 @@ class CollectorBoundaryTests(unittest.TestCase):
     def test_analyze_routes_by_strategy_not_by_host(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "chapter_source.py").read_text(
+        source = (Path(__file__).resolve().parents[1] / "yomu/download/sources/chapter_source.py").read_text(
             encoding="utf-8")
         # Anchor on the implementation, not the Protocol stub of the same name earlier in
         # the file, or the slice swallows half the module.

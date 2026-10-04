@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 from dataclasses import FrozenInstanceError
 from concurrent.futures import ThreadPoolExecutor
@@ -18,8 +18,8 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
-from community_api import ArtifactBindingError, CommunityApi
-from community_auth import (
+from yomu.community.community_api import ArtifactBindingError, CommunityApi
+from yomu.community.community_auth import (
     AuthenticationRequired,
     AuthConfigurationError,
     AuthorizationDenied,
@@ -32,19 +32,19 @@ from community_auth import (
     configured_bind_host,
     validate_bind_security,
 )
-from community_authorization import (
+from yomu.community.community_authorization import (
     authorize_admin_operation,
     authorize_manage_post,
     authorize_moderation,
     can_read_post,
 )
-from community_http import CommunityNetworkBoundaryMiddleware, create_community_router
-from community_service import CommunityError
-from community_storage import FilesystemStorageProvider
-from community_store import FileStatus, Moderation, PostStatus, Visibility
-from job_store import JobStatus, JobStore
-from ui_history import UIHistoryStore
-from offline_test_guard import (
+from yomu.community.community_http import CommunityNetworkBoundaryMiddleware, create_community_router
+from yomu.community.community_service import CommunityError
+from yomu.community.community_storage import FilesystemStorageProvider
+from yomu.community.community_store import FileStatus, Moderation, PostStatus, Visibility
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.ui.ui_history import UIHistoryStore
+from test_support.offline_test_guard import (
     _loopback_test_connect,
     _loopback_test_connect_ex,
     _loopback_test_create_connection,
@@ -1311,7 +1311,7 @@ def test_real_discovered_history_record_maps_to_owned_job_and_publishes(
         }),
         encoding="utf-8",
     )
-    import ui_history
+    import yomu.ui.ui_history as ui_history
     monkeypatch.setattr(ui_history, "OUTPUT_ROOT", harness.output_root)
     records = UIHistoryStore(harness.output_root.parent / "history.json").discover_outputs()
     record = next(item for item in records if item["slug"] == "history-owned")

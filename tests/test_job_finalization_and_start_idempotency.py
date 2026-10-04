@@ -27,7 +27,7 @@ evidence shows the artifacts were published *before* the terminal DB write
 ordering contract held.  It is pinned below anyway so it stays that way.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import sqlite3
 import tempfile
@@ -35,13 +35,15 @@ import threading
 import unittest
 from pathlib import Path
 
-from job_store import JobStatus, JobStore
+from yomu.runtime.job_store import JobStatus, JobStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(rel: str) -> str:
+    if rel == "ui_bridge.py":
+        rel = "yomu/ui/ui_bridge.py"
     return (ROOT / rel).read_text(encoding="utf-8")
 
 

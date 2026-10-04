@@ -1,13 +1,13 @@
 """Ownership validation and tree termination in the process helper."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import subprocess
 import sys
 import time
 import unittest
 
-import process_tree
+import yomu.runtime.process_tree as process_tree
 
 
 def _spawn_sleeper():

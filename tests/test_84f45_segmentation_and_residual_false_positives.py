@@ -14,7 +14,7 @@ provenance, so a token belonging to both sides - Portuguese "SE VOCE FOR" agains
 English "WAITING FOR YOU" - could never be forgiven, and a correct render was
 rejected for printing its own translation.
 """
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -23,8 +23,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-import semantic_fidelity
-from ocr_balloon import _post_render_source_text_check
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.ocr.ocr_balloon import _post_render_source_text_check
 from tests.test_ocr_quality_regressions import _line, _scored_group
 
 
@@ -129,7 +129,7 @@ class PostRenderResidualEnglishTests(unittest.TestCase):
         group.safe_area = (0, 0, 220, 80)
         image = np.full((100, 240, 3), 255, dtype=np.uint8)
         with patch(
-            "ocr_balloon.OCREngine._detect_with_rapidocr",
+            "yomu.ocr.ocr_balloon.OCREngine._detect_with_rapidocr",
             return_value=[_line(observed)],
         ):
             return _post_render_source_text_check(image, group, page_index=page_index)

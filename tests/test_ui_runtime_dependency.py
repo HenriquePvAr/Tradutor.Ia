@@ -13,7 +13,7 @@ auth provider's Supabase settings) that `app_ui.py` also requires at import time
 that is a separate concern from the dependency-declaration gap this test guards.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import re
 import subprocess
@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_UI_SOURCE = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+APP_UI_SOURCE = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
 REQUIREMENTS_TXT = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 REQUIREMENTS_DEV_TXT = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
 REQUIREMENTS_BETA_TXT = (ROOT / "requirements-beta.txt").read_text(encoding="utf-8")

@@ -18,7 +18,7 @@ Everything runs against an isolated temporary SQLite store. No worker, no provid
 no network, no real jobs database and no real output directory.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import shutil
@@ -29,8 +29,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import ui_bridge
-from job_store import JobStatus, JobStore
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.runtime.job_store import JobStatus, JobStore
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_SOURCE = ROOT / "static" / "tradutor_ui.js"
@@ -252,12 +252,12 @@ class ResumeHttpContractTests(unittest.TestCase):
     """The endpoint the browser is allowed to call, over the real app router."""
 
     def test_resume_route_is_authenticated_and_takes_a_canonical_job_id(self):
-        import app_ui
+        import yomu.ui.app as app_ui
 
         route = next(r for r in app_ui.app.routes
                      if getattr(r, "path", "") == "/api/ui/resume")
         self.assertEqual(set(route.methods), {"POST"})
-        source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         marker = '@app.post("/api/ui/resume")'
         handler = source[source.index(marker):]
         handler = handler[:handler.index("@app.post", len(marker))]

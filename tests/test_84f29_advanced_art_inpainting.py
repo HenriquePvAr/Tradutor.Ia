@@ -6,7 +6,7 @@ means unavailable/review, and a hash mismatch fails closed before inference.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -17,8 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
-import advanced_art_inpainting
-import config
+import yomu.clean.inpainting.advanced_art_inpainting as advanced_art_inpainting
+import yomu.config.settings as config
 
 
 class AdvancedArtInpaintingIntegrityTests(unittest.TestCase):

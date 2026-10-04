@@ -1,12 +1,12 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import unittest
 
-from provider_transport import (
+from yomu.translation.providers.provider_transport import (
     CircuitBreakerPolicy,
     ProviderCircuitBreaker,
     ProviderTransportError,
 )
-from translator_nvidia import (
+from yomu.translation.providers.translator_nvidia import (
     NvidiaCredential,
     NvidiaCredentialPool,
     TranslationResult,

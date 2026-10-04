@@ -4,12 +4,12 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-import installer_update
+import yomu.runtime.installer_update as installer_update
 
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_SOURCE = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-APP_SOURCE = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+APP_SOURCE = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
 
 
 def test_handoff_waits_for_explicit_processes_before_installer():
@@ -24,7 +24,7 @@ def test_handoff_is_external_and_receives_pid_list():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "YomuSekai-0.9.1-beta.4-Setup-x64.exe"
         path.write_bytes(b"fixture")
-        with patch("installer_update.subprocess.Popen") as popen:
+        with patch("yomu.runtime.installer_update.subprocess.Popen") as popen:
             installer_update.spawn_installer_after_processes_exit(path, owned_pids=[11, 12])
     args, kwargs = popen.call_args
     assert args[0][0].casefold() == "powershell.exe"

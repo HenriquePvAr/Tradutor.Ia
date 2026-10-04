@@ -22,22 +22,22 @@ hardcoded in the functions under test - the fixtures below are just examples.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
-from offline_test_guard import install_offline_network_guard
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 
-import chapter_quality_revision as cqr
-from ocr_balloon import (
+import yomu.review.chapter_quality_revision as cqr
+from yomu.ocr.ocr_balloon import (
     TextGroup,
     _echo_is_name_shaped,
     _ignored_decorative_requires_review,
     _score_group_quality,
     group_has_name_only_shape,
 )
-from ocr_engine import OCRLine
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _line(text, box=(10, 10, 400, 60)):

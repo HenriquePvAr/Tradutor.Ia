@@ -7,13 +7,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from image_validation import validate_image_bytes
-from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
-from local_images_source import LocalImagesSelection
-from ocr_engine import OCREngine, OCRLine
-from pdf import MAX_LOGICAL_PAGE_HEIGHT, generate_pdf
-from pdf_reader import parse_document
-from png_output import export_final_pages_png
+from yomu.download.image_validation import validate_image_bytes
+from yomu.download.local.local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+from yomu.download.local.local_images_source import LocalImagesSelection
+from yomu.ocr.ocr_engine import OCREngine, OCRLine
+from yomu.export.pdf import MAX_LOGICAL_PAGE_HEIGHT, generate_pdf
+from yomu.export.pdf_reader import parse_document
+from yomu.export.png_output import export_final_pages_png
 
 
 def _line(text: str, box: tuple[int, int, int, int], confidence: float = 0.9) -> OCRLine:

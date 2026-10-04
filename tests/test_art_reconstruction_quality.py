@@ -12,7 +12,7 @@ provider or the network - the offline guard fails any attempt.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -22,9 +22,9 @@ import unittest
 import cv2
 import numpy as np
 
-import config
-import ocr_balloon as ob
-from ocr_engine import OCRLine
+import yomu.config.settings as config
+import yomu.ocr.ocr_balloon as ob
+from yomu.ocr.ocr_engine import OCRLine
 
 # Persisted real run used as a read-only visual sentinel.  Only the source page
 # images are read, and only into memory: the run itself is never rewritten.  The

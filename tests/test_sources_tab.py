@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import desktop_app
+import yomu.desktop.app as desktop_app
 
 ROOT = Path(__file__).resolve().parents[1]
 SHELL = (ROOT / "ui" / "ui_shell.html").read_text(encoding="utf-8")

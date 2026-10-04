@@ -3,8 +3,8 @@
 Hermetic, no UI/network. Covers §36 A-I plus the warning-label humanization (§14/§15)."""
 import unittest
 
-import review_item as ri
-from review_item import ReviewItem, ReviewStatus, from_quality_review_item as adapt, humanize_warning
+import yomu.review.review_item as ri
+from yomu.review.review_item import ReviewItem, ReviewStatus, from_quality_review_item as adapt, humanize_warning
 
 
 class ReviewItemModelTests(unittest.TestCase):

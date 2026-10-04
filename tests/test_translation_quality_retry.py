@@ -7,7 +7,7 @@ The offline guard makes that fail loudly instead of silently spending money.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -18,9 +18,9 @@ import unittest
 import uuid
 from pathlib import Path
 
-import linguistic_triage as lt
-import provider_execution as pe
-import region_taxonomy as tax
+import yomu.translation.linguistic_triage as lt
+import yomu.translation.providers.provider_execution as pe
+import yomu.review.region_taxonomy as tax
 
 
 def _rid():

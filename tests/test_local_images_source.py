@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from local_images_source import LocalImagesError, LocalImagesSelection
+from yomu.download.local.local_images_source import LocalImagesError, LocalImagesSelection
 
 
 def _image(path: Path, fmt: str = "PNG") -> None:

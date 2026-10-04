@@ -3,7 +3,7 @@ import os
 import threading
 import time
 
-import pipeline_telemetry as t
+import yomu.pipeline.pipeline_telemetry as t
 
 
 def test_default_off(monkeypatch, tmp_path):

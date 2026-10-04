@@ -1,6 +1,6 @@
 """Offline contract for synthetic JobStore fixtures and their subprocess harness."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import os

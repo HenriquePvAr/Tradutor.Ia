@@ -13,7 +13,7 @@ import that exists is fetched, whatever the runtime later decides.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -49,7 +49,7 @@ def strip_comments(source: str) -> str:
 
 def shell_entry_assets() -> list[Path]:
     """The scripts app_ui.py injects into the shell, read from app_ui.py itself."""
-    app_ui = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+    app_ui = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
     names = set(re.findall(r"ROOT / \"static\" / \"([A-Za-z0-9_.-]+\.js)\"", app_ui))
     injected = set(re.findall(r"_asset_url\((\w+_ASSET)\)", app_ui))
     for constant in injected:

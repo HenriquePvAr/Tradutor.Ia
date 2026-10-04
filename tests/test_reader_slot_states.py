@@ -8,11 +8,11 @@ its host as a page host would authorize the placeholder CDN. Neither is acceptab
 Hermetic: plain dictionaries, no browser, no network.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-from chapter_source import (
+from yomu.download.sources.chapter_source import (
     SLOT_PENDING, SLOT_REJECTED, SLOT_RESOLVED, classify_reader_slots, pending_indices,
     reader_coverage_complete, select_adapter, slot_counts, slot_state,
 )
@@ -125,7 +125,7 @@ class CoverageTests(unittest.TestCase):
 
 class ManifestPurityTests(unittest.TestCase):
     def test_the_placeholder_host_is_not_authorized_as_a_page_host(self):
-        from chapter_source import SourceError
+        from yomu.download.sources.chapter_source import SourceError
 
         with self.assertRaises(SourceError):
             WEBTOONS.authorize_related_url(f"https://{PLACEHOLDER_HOST}/x.jpg")

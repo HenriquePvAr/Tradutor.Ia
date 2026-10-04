@@ -1,6 +1,6 @@
 """community_publish job: upload via worker, resume, cancel, verification — offline."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import subprocess
 import sqlite3
@@ -11,14 +11,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import community_publish_runner
-import process_tree
-from community_auth import RequestPrincipal
-from community_storage import FilesystemStorageProvider, StorageError
-from community_store import CommunityStore, FileStatus, PostStatus
-from community_service import CommunityService
-from job_store import JobStatus, JobStore
-from worker_service import Worker
+import yomu.community.community_publish_runner as community_publish_runner
+import yomu.runtime.process_tree as process_tree
+from yomu.community.community_auth import RequestPrincipal
+from yomu.community.community_storage import FilesystemStorageProvider, StorageError
+from yomu.community.community_store import CommunityStore, FileStatus, PostStatus
+from yomu.community.community_service import CommunityService
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.runtime.worker_service import Worker
 
 REPO = Path(__file__).resolve().parents[1]
 OWNER = RequestPrincipal("local", True, auth_source="test", session_id="test-owner")
@@ -81,7 +81,7 @@ class CommunityPublishTests(unittest.TestCase):
         self.jobs.claim_next_job("w1", 1)
         self.jobs.transition(pub["job_id"], JobStatus.STARTING, expected_worker="w1")
         # Corrupt the stored size after upload by patching stat via a corrupt provider.
-        import community_storage
+        import yomu.community.community_storage as community_storage
         real = community_storage.FilesystemStorageProvider.stat_file
 
         def corrupt(self, file_id):
@@ -124,7 +124,7 @@ class CommunityPublishTests(unittest.TestCase):
         try:
             self.assertEqual(
                 worker._runner_fingerprint(pub["job_id"])[0],
-                "community_publish_runner.py",
+                "yomu.community.community_publish_runner",
             )
             worker.run(once=True)
         finally:
@@ -195,7 +195,7 @@ class CommunityPublishTests(unittest.TestCase):
         worker = Worker(self.jobs_db, poll_seconds=0.01, stale_seconds=10)
         try:
             with patch(
-                "community_store.CommunityStore",
+                "yomu.community.community_store.CommunityStore",
                 side_effect=sqlite3.OperationalError("temporarily locked"),
             ):
                 self.assertFalse(worker._recover_interrupted_community_publishes())
@@ -314,7 +314,7 @@ class CommunityPublishTests(unittest.TestCase):
         worker = Worker(self.jobs_db, poll_seconds=0.01, stale_seconds=10)
         try:
             with patch.object(worker, "_reconcile_stale", return_value=False), patch(
-                "worker_service.time.sleep",
+                "yomu.runtime.worker_service.time.sleep",
                 side_effect=AssertionError("--once must not poll forever"),
             ):
                 worker.run(once=True)
@@ -326,7 +326,7 @@ class CommunityPublishTests(unittest.TestCase):
         pub = self._draft_and_publish()
         self.jobs.claim_next_job("w1", 1)
         self.jobs.transition(pub["job_id"], JobStatus.STARTING, expected_worker="w1")
-        import community_storage
+        import yomu.community.community_storage as community_storage
         real = community_storage.build_storage_provider
 
         def flaky(config):

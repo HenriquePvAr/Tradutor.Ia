@@ -15,7 +15,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-import start_tradutor
+import yomu.commands.start_tradutor as start_tradutor
 
 
 class TerminalChildFailureTests(unittest.TestCase):

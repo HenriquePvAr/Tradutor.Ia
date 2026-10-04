@@ -10,7 +10,7 @@ page still fails closed.
 """
 import unittest
 
-import down
+import yomu.download.down as down
 
 
 def _gate(downloaded_indices, selected_ids, *, page_control=105, requested_max=None):

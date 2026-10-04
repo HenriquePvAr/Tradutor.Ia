@@ -4,7 +4,7 @@ The offline guard makes accidental network use fail before any request.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -16,10 +16,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-import art_text_inpainting as ati
-import font_fidelity as ff
-import provider_execution
-from ocr_balloon import get_font
+import yomu.clean.inpainting.art_text_inpainting as ati
+import yomu.clean.ownership.font_fidelity as ff
+import yomu.translation.providers.provider_execution as provider_execution
+from yomu.ocr.ocr_balloon import get_font
 
 
 def _font_path_for(role):

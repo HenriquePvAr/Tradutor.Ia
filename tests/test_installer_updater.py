@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import installer_update
-import update_manifest
+import yomu.runtime.installer_update as installer_update
+import yomu.runtime.update_manifest as update_manifest
 from scripts.sign_release import public_key_material, sign_manifest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -73,7 +73,7 @@ class InstallerUpdaterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "YomuSekai-0.9.0-beta.35-Setup-x64.exe"
             path.write_bytes(b"fixture")
-            with patch("installer_update.subprocess.Popen") as popen:
+            with patch("yomu.runtime.installer_update.subprocess.Popen") as popen:
                 installer_update.spawn_verified_installer(path)
                 args, kwargs = popen.call_args
             self.assertEqual(args[0][0], str(path))

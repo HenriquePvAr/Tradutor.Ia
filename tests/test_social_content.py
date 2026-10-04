@@ -4,19 +4,19 @@ Proves authorization precedes storage: a denied read never constructs or calls t
 provider, no file id/path/checksum leaks, and ownership always comes from the principal.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from community_auth import AuthenticationRequired, RequestPrincipal
-from community_store import FileStatus, PostStatus
-from chapter_asset_repository import (
+from yomu.community.community_auth import AuthenticationRequired, RequestPrincipal
+from yomu.community.community_store import FileStatus, PostStatus
+from yomu.community.chapter_asset_repository import (
     AssetConflict, AssetNotFound, ChapterAssetRepository,
 )
-from social_content import SocialContentService
-from supabase_social import SocialNotFound
+from yomu.community.social_content import SocialContentService
+from yomu.community.supabase_social import SocialNotFound
 
 OWNER = RequestPrincipal("owner-A", True, auth_source="supabase", session_id=None)
 OTHER = RequestPrincipal("user-B", True, auth_source="supabase", session_id=None)
@@ -207,7 +207,7 @@ class ContentAuthorizationTests(unittest.TestCase):
         self.assertEqual(self.spy.opens, 0)  # HEAD answers from metadata, no Drive read
 
     def test_invalid_range_is_416_after_auth(self):
-        from social_content import RangeNotSatisfiable
+        from yomu.community.social_content import RangeNotSatisfiable
         self._link()
         self.social.allow("chapA", {"owner-A"})
         with self.assertRaises(RangeNotSatisfiable):

@@ -5,15 +5,15 @@ world-memory binding.  The historical bad candidate is expected to demonstrate
 the current gap (it is accepted), while the controls protect existing behavior.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from ocr_balloon import validate_and_retry_translations
-from semantic_fidelity import evaluate_local_fidelity
-from session_context import SessionContextStore
+from yomu.ocr.ocr_balloon import validate_and_retry_translations
+from yomu.translation.semantic_fidelity import evaluate_local_fidelity
+from yomu.pipeline.session_context import SessionContextStore
 from tests.test_chapter_terminology_ledger import _StubTranslator, _group
 
 

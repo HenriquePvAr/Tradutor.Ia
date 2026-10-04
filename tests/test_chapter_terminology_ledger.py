@@ -11,7 +11,7 @@ Every term here is synthetic. Nothing in production keys off any specific word,
 chapter, page or job.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import tempfile
@@ -22,13 +22,13 @@ from unittest.mock import patch
 
 import numpy as np
 
-from ocr_balloon import (
+from yomu.ocr.ocr_balloon import (
     OCRLine,
     TextGroup,
     validate_and_retry_translations,
 )
-from session_context import SessionContextStore
-from translator_nvidia import TranslatorNvidiaBatch
+from yomu.pipeline.session_context import SessionContextStore
+from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
 
 
 CHAPTER_A = "https://example.invalid/series/chapter-a"

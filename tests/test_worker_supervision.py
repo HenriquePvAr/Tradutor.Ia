@@ -11,8 +11,8 @@ launcher. Everything runs against isolated runtimes and isolated child processes
 queue, worker, UI and runtime root are never touched.
 """
 
-import _test_bootstrap  # noqa: F401
-from _test_processes import assert_owned_pid, stop_owned_process
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support._test_processes import assert_owned_pid, stop_owned_process
 
 import itertools
 import os
@@ -27,11 +27,11 @@ from unittest.mock import patch
 
 import psutil
 
-import hermetic_runtime
-import process_tree
-import start_tradutor
-import worker_supervisor
-from job_store import JobStatus, JobStore
+import test_support.hermetic_runtime as hermetic_runtime
+import yomu.runtime.process_tree as process_tree
+import yomu.commands.start_tradutor as start_tradutor
+import yomu.runtime.worker_supervisor as worker_supervisor
+from yomu.runtime.job_store import JobStatus, JobStore
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -339,9 +339,9 @@ class RealProcessSupervisionTests(unittest.TestCase):
         """
         import os, sys, time
         sys.path.insert(0, %r)
-        import _test_bootstrap  # noqa: F401
-        import process_tree
-        from job_store import JobStore
+        import test_support._test_bootstrap  # noqa: F401
+        import yomu.runtime.process_tree as process_tree
+        from yomu.runtime.job_store import JobStore
         store = JobStore(%r)
         snapshot = process_tree.snapshot(os.getpid()) or {}
         store.register_worker(sys.argv[1], os.getpid(),
@@ -476,7 +476,7 @@ class SupervisedRecoveryIntegrationTests(unittest.TestCase):
         return proc
 
     def _fake_command(self, output_dir):
-        return [sys.executable, "-u", str(REPO / "fake_pipeline.py"),
+        return [sys.executable, "-u", str(REPO / "test_support/fake_pipeline.py"),
                 "--output-dir", str(output_dir), "--outcome", "finished",
                 "--steps", "40", "--sleep", "0.3", "--hang"]
 

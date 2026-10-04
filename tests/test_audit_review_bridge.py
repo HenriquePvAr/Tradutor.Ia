@@ -6,7 +6,7 @@ production logic.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -17,9 +17,9 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
-from audit_decisions import AuditDecisionStore
-from job_store import JobStore
-from ui_bridge import UiBridge
+from yomu.review.audit_decisions import AuditDecisionStore
+from yomu.runtime.job_store import JobStore
+from yomu.ui.ui_bridge import UiBridge
 
 
 class _AuditBridge(UiBridge):

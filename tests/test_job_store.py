@@ -1,13 +1,13 @@
 """Unit tests for the persistent SQLite job store."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import sqlite3
 import threading
 import time
 import unittest
 
-from job_store import JobStatus, JobStore, TransitionError, transition_allowed
+from yomu.runtime.job_store import JobStatus, JobStore, TransitionError, transition_allowed
 
 
 def _make_store(tmp):

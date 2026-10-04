@@ -11,7 +11,7 @@ Every identity here is fictional. Production code keys off no specific name,
 honorific, chapter, page or job.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import tempfile
@@ -22,15 +22,15 @@ from unittest.mock import patch
 
 import numpy as np
 
-from ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
-from session_context import (
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
+from yomu.pipeline.session_context import (
     CHARACTER_GENDER_CONFLICT_REASON,
     CHARACTER_MAX_IN_PROMPT,
     CHARACTER_PRONOUN_CONFLICT_REASON,
     GENDER_FEATURE,
     SessionContextStore,
 )
-from translator_nvidia import TranslatorNvidiaBatch
+from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
 
 
 CHAPTER_A = "https://example.invalid/series/chapter-a"

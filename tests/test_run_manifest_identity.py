@@ -1,5 +1,5 @@
-import _test_bootstrap  # noqa: F401
-from offline_test_guard import install_offline_network_guard
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import benchmark_pipeline
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
 
 
 class RunManifestIdentityTests(unittest.TestCase):

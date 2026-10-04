@@ -1,11 +1,11 @@
 """Backend-contract state machine tests. No real YK or provider/network calls."""
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from pathlib import Path
-from yomu_backend_provider import BackendTranslationError, BatchItem, BatchRequest, MockBackendClient
+from yomu.translation.providers.yomu_backend_provider import BackendTranslationError, BatchItem, BatchRequest, MockBackendClient
 
 AUTH = "jwt.test"
 

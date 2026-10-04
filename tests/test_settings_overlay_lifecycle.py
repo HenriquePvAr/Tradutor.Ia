@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import scrapling_reader_resolver as resolver
+import yomu.download.readers.scrapling_reader_resolver as resolver
 
 
 class _FakePreloadPage:

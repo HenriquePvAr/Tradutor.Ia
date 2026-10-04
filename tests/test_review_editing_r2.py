@@ -6,14 +6,14 @@ reopened store, that originals stay auditable, that optimistic versioning reject
 stale write, and that none of this calls the provider or spends YK (guaranteed by
 the offline network guard — any provider/network call would raise).
 """
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import pytest
 
-import ui_bridge
-from job_store import JobStatus
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.runtime.job_store import JobStatus
 from tests.test_review_ordering_r1 import _bridge, _review_job, _close
 
 
@@ -184,7 +184,7 @@ def test_persist_after_full_store_reopen(tmp_path, monkeypatch):
 
 def test_source_text_column_migrates_onto_existing_store(tmp_path):
     # A store created fresh must carry the source_text column (migration v13).
-    from job_store import JobStore
+    from yomu.runtime.job_store import JobStore
     store = JobStore(tmp_path / "jobs.sqlite3")
     try:
         cols = {row["name"] for row in store._conn.execute(

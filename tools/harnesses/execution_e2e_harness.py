@@ -58,7 +58,7 @@ async def _start(bridge, payload, *, local_folder_allowed=True):
 
 def _pdf_page_count(path: Path) -> int | None:
     try:
-        from pdf_reader import read_pdf_page_count
+        from yomu.export.pdf_reader import read_pdf_page_count
         return int(read_pdf_page_count(path))
     except Exception:
         try:
@@ -108,14 +108,14 @@ def main() -> int:
         env["SE_CACHE_PATH"] = str(runtime / "selenium-cache")
     os.environ.update(env)
 
-    import ui_bridge
-    from job_store import JobStatus
-    from local_folder_input import snapshot_workspace_root
-    from ui_helpers import find_output_artifacts
+    import yomu.ui.ui_bridge as ui_bridge
+    from yomu.runtime.job_store import JobStatus
+    from yomu.download.local.local_folder_input import snapshot_workspace_root
+    from yomu.ui.ui_helpers import find_output_artifacts
 
     bridge = ui_bridge.UiBridge()
     if "comix_url" in args.sources:
-        from source_readiness import SourceReadinessStore, default_workspace_id
+        from yomu.review.source_readiness import SourceReadinessStore, default_workspace_id
         readiness = SourceReadinessStore(bridge.store.db_path)
         try:
             readiness.activate_workspace_policy(

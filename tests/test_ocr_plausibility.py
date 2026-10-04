@@ -6,7 +6,7 @@ every case is either synthetic or a generic shape.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -14,8 +14,8 @@ import random
 import string
 import unittest
 
-import linguistic_triage as lt
-import region_taxonomy as tax
+import yomu.translation.linguistic_triage as lt
+import yomu.review.region_taxonomy as tax
 
 
 def _garbage(length=6):

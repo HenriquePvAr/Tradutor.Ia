@@ -39,7 +39,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from update_manifest import (  # noqa: E402  (path bootstrap above)
+from yomu.runtime.update_manifest import (  # noqa: E402  (path bootstrap above)
     APP_ID,
     CLIENT_UPDATE_CHANNEL,
     SUPPORTED_SCHEMA_VERSION,

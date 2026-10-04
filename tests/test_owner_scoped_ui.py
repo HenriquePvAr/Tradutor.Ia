@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import inspect
 import json
@@ -10,12 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import app_ui
-from community_auth import RequestPrincipal
-from job_store import JobStatus, JobStore
-from output_manifest import build_run_manifest
-from ui_bridge import UiBridge
-from ui_history import UIHistoryStore
+import yomu.ui.app as app_ui
+from yomu.community.community_auth import RequestPrincipal
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.export.output_manifest import build_run_manifest
+from yomu.ui.ui_bridge import UiBridge
+from yomu.ui.ui_history import UIHistoryStore
 
 
 def _create_job(store: JobStore, owner: str, *, job_id: str) -> str:

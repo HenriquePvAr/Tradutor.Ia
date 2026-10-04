@@ -10,11 +10,11 @@ the colour-coded ``dramatic_red_display``/``mystic_blue_system`` intents still w
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-from ocr_balloon import _resolve_font_role
+from yomu.ocr.ocr_balloon import _resolve_font_role
 
 
 class ShapeOnlyVisualClassYieldsToSemanticRole(unittest.TestCase):

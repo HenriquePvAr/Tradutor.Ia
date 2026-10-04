@@ -26,16 +26,16 @@ Setup-ready output.
 Offline by construction: no job, no provider, no network, no chapter.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 
-import benchmark_pipeline
-import semantic_fidelity
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.translation.semantic_fidelity as semantic_fidelity
 
 
 def _sfx_residual(group_id, text):

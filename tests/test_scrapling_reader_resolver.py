@@ -9,7 +9,7 @@ import time
 
 from PIL import Image
 
-import scrapling_reader_resolver as resolver
+import yomu.download.readers.scrapling_reader_resolver as resolver
 
 
 class _FakePage:
@@ -295,7 +295,7 @@ class ScraplingResolverTests(unittest.TestCase):
             self.assertFalse(psutil.pid_exists(descendant_pid))
 
     def test_dynamic_resolver_child_command_is_available_for_dev_and_frozen(self):
-        import start_tradutor
+        import yomu.commands.start_tradutor as start_tradutor
 
         dev_command = start_tradutor.build_child_command("dynamic-resolver", frozen=False)
         frozen_command = start_tradutor.build_child_command("dynamic-resolver", frozen=True)

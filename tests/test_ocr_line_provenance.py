@@ -5,7 +5,7 @@ text/geometry loss they expose: correctness of the transformation itself belongs
 to a later mission, observability belongs here.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -16,8 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-import ocr_line_provenance as provenance
-from ocr_engine import OCRLine
+import yomu.ocr.ocr_line_provenance as provenance
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def make_line(text, box, confidence=0.99, engine="rapidocr", page=2):
@@ -334,7 +334,7 @@ class ArtifactTest(unittest.TestCase):
 
 class ManifestReferenceTest(unittest.TestCase):
     def build(self, **extra):
-        import output_manifest
+        import yomu.export.output_manifest as output_manifest
 
         return output_manifest.build_run_manifest(
             run_id="r1",
@@ -354,7 +354,7 @@ class ManifestReferenceTest(unittest.TestCase):
         )
 
     def test_manifest_carries_a_bounded_provenance_index(self):
-        import output_manifest
+        import yomu.export.output_manifest as output_manifest
 
         manifest = self.build(
             ocr_line_provenance={
@@ -382,7 +382,7 @@ class ManifestReferenceTest(unittest.TestCase):
         )
 
     def test_legacy_manifest_without_provenance_stays_valid(self):
-        import output_manifest
+        import yomu.export.output_manifest as output_manifest
 
         manifest = self.build()
         self.assertNotIn("ocr_line_provenance", manifest)
@@ -402,7 +402,7 @@ class PipelineInstrumentationTest(unittest.TestCase):
         self.addCleanup(provenance.deactivate)
 
     def test_analyze_image_array_records_raw_lines_groups_and_filters(self):
-        import ocr_balloon
+        import yomu.ocr.ocr_balloon as ocr_balloon
 
         image = np.full((400, 800, 3), 255, dtype=np.uint8)
         lines = [
@@ -423,7 +423,7 @@ class PipelineInstrumentationTest(unittest.TestCase):
             self.assertTrue(group["member_line_ids"])
 
     def test_render_analyzed_image_records_the_render_input(self):
-        import ocr_balloon
+        import yomu.ocr.ocr_balloon as ocr_balloon
 
         image = np.full((400, 800, 3), 255, dtype=np.uint8)
         line = make_line("EVERY TIME I GO", (181, 154, 287, 33), page=1)

@@ -2,8 +2,8 @@
 import unittest
 from pathlib import Path
 
-import artifact_contract as ac
-from artifact_contract import ArtifactType as AT, OutputProfile as OP, Capability as CAP
+import yomu.runtime.artifact_contract as ac
+from yomu.runtime.artifact_contract import ArtifactType as AT, OutputProfile as OP, Capability as CAP
 
 
 class ArtifactContractTests(unittest.TestCase):

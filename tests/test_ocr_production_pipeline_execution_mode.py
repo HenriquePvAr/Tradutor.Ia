@@ -6,16 +6,16 @@ Nothing here calls NVIDIA for real (hermetic guard blocks real sockets) and
 nothing here touches translation -- DeepL/quality_optimized/yomu_backend are
 asserted unchanged.
 """
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest import mock
 
 import numpy as np
 
-import config
-from ocr_contract import OCRPageResult
-from ocr_parallel import detect_ocr_jobs
+import yomu.config.settings as config
+from yomu.ocr.ocr_contract import OCRPageResult
+from yomu.ocr.ocr_parallel import detect_ocr_jobs
 
 
 def _fake_image(width=20, height=10):
@@ -37,11 +37,11 @@ class ProductionPipelineRapidocrDefaultTests(unittest.TestCase):
         self.assertEqual(config.OCR_EXECUTION_MODE, "rapidocr")
 
     def test_rapidocr_mode_never_imports_the_hybrid_scheduler(self):
-        import ocr_hybrid_scheduler as sched
+        import yomu.ocr.ocr_hybrid_scheduler as sched
 
         jobs = [{"index": 0, "image_path": "a.png"}]
         with mock.patch("cv2.imread", side_effect=_fake_cv2_imread), \
-             mock.patch("ocr_engine.OCREngine.detect_lines", return_value=[]), \
+             mock.patch("yomu.ocr.ocr_engine.OCREngine.detect_lines", return_value=[]), \
              mock.patch.object(sched, "run_ocr", side_effect=AssertionError("must not be called")):
             results, run_stats = detect_ocr_jobs(
                 jobs, "en", parallel=False, workers=1
@@ -52,7 +52,7 @@ class ProductionPipelineRapidocrDefaultTests(unittest.TestCase):
     def test_rapidocr_default_output_matches_pre_integration_shape(self):
         jobs = [{"index": 0, "image_path": "a.png"}]
         with mock.patch("cv2.imread", side_effect=_fake_cv2_imread), \
-             mock.patch("ocr_engine.OCREngine.detect_lines", return_value=[]):
+             mock.patch("yomu.ocr.ocr_engine.OCREngine.detect_lines", return_value=[]):
             results, run_stats = detect_ocr_jobs(jobs, "en", parallel=False, workers=1)
         payload = results[0]
         for key in ("index", "error", "elapsed_seconds", "lines", "ocr_metadata", "pid"):
@@ -86,7 +86,7 @@ class ProductionPipelineNvidiaModeTests(unittest.TestCase):
         jobs = [{"index": i, "image_path": f"p{i}.png"} for i in range(3)]
         with mock.patch.object(config, "OCR_EXECUTION_MODE", "nvidia"), \
              mock.patch("cv2.imread", side_effect=_fake_cv2_imread), \
-             mock.patch("nvidia_ocr_provider.NvidiaOCRProvider", return_value=self._fake_provider()):
+             mock.patch("yomu.ocr.nvidia_ocr_provider.NvidiaOCRProvider", return_value=self._fake_provider()):
             results, run_stats = detect_ocr_jobs(jobs, "en", parallel=True, workers=2)
         self.assertEqual(sorted(results.keys()), [0, 1, 2])
         for payload in results.values():
@@ -95,7 +95,7 @@ class ProductionPipelineNvidiaModeTests(unittest.TestCase):
         self.assertEqual(run_stats["OCR_EXECUTION_MODE"], "nvidia")
 
     def test_nvidia_result_lines_are_ocr_line_instances_like_rapidocr(self):
-        from ocr_engine import OCRLine
+        from yomu.ocr.ocr_engine import OCRLine
 
         jobs = [{"index": 0, "image_path": "p0.png"}]
 
@@ -111,7 +111,7 @@ class ProductionPipelineNvidiaModeTests(unittest.TestCase):
 
         with mock.patch.object(config, "OCR_EXECUTION_MODE", "nvidia"), \
              mock.patch("cv2.imread", side_effect=_fake_cv2_imread), \
-             mock.patch("nvidia_ocr_provider.NvidiaOCRProvider", return_value=_ProviderWithText()):
+             mock.patch("yomu.ocr.nvidia_ocr_provider.NvidiaOCRProvider", return_value=_ProviderWithText()):
             results, _ = detect_ocr_jobs(jobs, "en", parallel=True, workers=1)
         line = results[0]["lines"][0]
         self.assertIsInstance(line, OCRLine)
@@ -136,8 +136,8 @@ class ProductionPipelineHybridModeTests(unittest.TestCase):
         jobs = [{"index": i, "image_path": f"p{i}.png"} for i in range(6)]
         with mock.patch.object(config, "OCR_EXECUTION_MODE", "hybrid"), \
              mock.patch("cv2.imread", side_effect=_fake_cv2_imread), \
-             mock.patch("ocr_engine.OCREngine.detect_lines", return_value=[]), \
-             mock.patch("nvidia_ocr_provider.NvidiaOCRProvider", return_value=self._fake_provider()):
+             mock.patch("yomu.ocr.ocr_engine.OCREngine.detect_lines", return_value=[]), \
+             mock.patch("yomu.ocr.nvidia_ocr_provider.NvidiaOCRProvider", return_value=self._fake_provider()):
             results, run_stats = detect_ocr_jobs(jobs, "en", parallel=True, workers=2)
         self.assertEqual(sorted(results.keys()), list(range(6)))
         self.assertEqual(run_stats["OCR_EXECUTION_MODE"], "hybrid")
@@ -153,7 +153,7 @@ class TranslationProviderUntouchedByOcrModeTests(unittest.TestCase):
     TEST_TRANSLATION_PROVIDER_STILL_YOMU_BACKEND / TEST_DEEPL_MODEL_STILL_QUALITY_OPTIMIZED"""
 
     def test_switching_ocr_execution_mode_never_touches_translation_config(self):
-        import ui_helpers
+        import yomu.ui.ui_helpers as ui_helpers
 
         before_provider = ui_helpers.DEFAULT_TRANSLATION_PROVIDER
         before_model = config.DEEPL_MODEL_TYPE
@@ -172,7 +172,7 @@ class NoNemotronFromIntegratedOcrPathTests(unittest.TestCase):
     def test_ocr_parallel_module_never_references_the_nemotron_llm(self):
         import io
 
-        source = io.open("ocr_parallel.py", encoding="utf-8").read()
+        source = io.open("yomu/ocr/ocr_parallel.py", encoding="utf-8").read()
         self.assertNotIn("nemotron", source.lower())
 
 

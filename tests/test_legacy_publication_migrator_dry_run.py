@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 
-from legacy_publication_migrator import (
+from yomu.community.legacy.legacy_publication_migrator import (
     LegacyArtifactInput,
     LegacyMigrationInput,
     LegacyPublicationInput,
@@ -413,7 +413,7 @@ def test_cli_without_dry_run_is_rejected(tmp_path: Path):
     fixture = tmp_path / "fixture.json"
     fixture.write_text(json.dumps(_published_fixture(tmp_path)), encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, "-m", "legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path)],
+        [sys.executable, "-m", "yomu.community.legacy.legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path)],
         cwd=Path(__file__).resolve().parents[1],
         text=True,
         capture_output=True,
@@ -427,7 +427,7 @@ def test_cli_dry_run_success(tmp_path: Path):
     fixture = tmp_path / "fixture.json"
     fixture.write_text(json.dumps(_published_fixture(tmp_path)), encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, "-m", "legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path), "--dry-run"],
+        [sys.executable, "-m", "yomu.community.legacy.legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path), "--dry-run"],
         cwd=Path(__file__).resolve().parents[1],
         text=True,
         capture_output=True,
@@ -443,7 +443,7 @@ def test_cli_dry_run_invalid_input_returns_json_without_traceback(tmp_path: Path
     fixture = tmp_path / "fixture.json"
     fixture.write_text(json.dumps(_draft_fixture(tmp_path, remote_asset_verification="nonsense")), encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, "-m", "legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path), "--dry-run"],
+        [sys.executable, "-m", "yomu.community.legacy.legacy_publication_migrator", "--fixture", str(fixture), "--artifact-root", str(tmp_path), "--dry-run"],
         cwd=Path(__file__).resolve().parents[1],
         text=True,
         capture_output=True,

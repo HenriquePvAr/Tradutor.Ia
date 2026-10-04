@@ -1,6 +1,6 @@
 """Offline tests for generic reader profiles: hints only, never credentials or permission."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import tempfile
@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import chapter_source
-from chapter_source import INCOMPLETE_DOWNLOAD, SUPPORTED_GENERIC_HIGH_CONFIDENCE, UniversalChapterAdapter
-from source_profile import PROFILE_MAX_AGE_SECONDS, PROFILE_VERSION, SourceProfileStore, profile_from_analysis
-from universal_chapter_adapter import (
+import yomu.download.sources.chapter_source as chapter_source
+from yomu.download.sources.chapter_source import INCOMPLETE_DOWNLOAD, SUPPORTED_GENERIC_HIGH_CONFIDENCE, UniversalChapterAdapter
+from yomu.download.sources.source_profile import PROFILE_MAX_AGE_SECONDS, PROFILE_VERSION, SourceProfileStore, profile_from_analysis
+from yomu.download.sources.universal_chapter_adapter import (
     HIGH_CONFIDENCE, REVIEW_REQUIRED_MEDIUM_CONFIDENCE, analyse_candidates, cluster_evidence_id,
 )
 

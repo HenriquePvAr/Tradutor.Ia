@@ -11,7 +11,7 @@ gate into a warning.
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import base64
 import json
@@ -23,10 +23,10 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-import update_installer
-import update_manifest
+import yomu.runtime.update_installer as update_installer
+import yomu.runtime.update_manifest as update_manifest
 from scripts.sign_release import public_key_material, sign_manifest
-from update_manifest import (
+from yomu.runtime.update_manifest import (
     ManifestInvalid,
     PackageHashMismatch,
     PackageSizeMismatch,

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from secure_auth_context import AuthEnvelopeStore
-from yomu_backend_provider import (BackendTranslationError, SystemicTranslationFailure, BatchItem, BatchRequest,
+from yomu.auth.secure_auth_context import AuthEnvelopeStore
+from yomu.translation.providers.yomu_backend_provider import (BackendTranslationError, SystemicTranslationFailure, BatchItem, BatchRequest,
                                    HttpBackendClient, MockBackendClient,
                                    YomuBackendTranslationProvider)
 
@@ -43,7 +43,7 @@ def test_batch_mapping_duplicate_text_and_idempotency(tmp_path: Path):
 
 
 def test_provider_records_only_reservation_metadata_before_translation(tmp_path: Path, monkeypatch):
-    import yk_reservation
+    import yomu.runtime.yk_reservation as yk_reservation
     output_dir = tmp_path / "job-output"
     monkeypatch.setenv("TRADUTOR_JOB_OUTPUT_DIR", str(output_dir))
     AuthEnvelopeStore(tmp_path).seal("job-1", tok())
@@ -236,7 +236,7 @@ def test_multiple_provider_batches_consume_once_after_job_result_is_durable(tmp_
 
 
 def test_restart_and_ten_output_retries_reuse_local_translation_without_provider_or_yk(tmp_path: Path, monkeypatch):
-    import yk_reservation
+    import yomu.runtime.yk_reservation as yk_reservation
     job_id = "job-recovery"
     output = tmp_path / "job-output"
     monkeypatch.setenv("TRADUTOR_JOB_ID", job_id)
@@ -316,7 +316,7 @@ def test_local_result_persist_failure_does_not_commit_yk(tmp_path: Path, monkeyp
     def fail_persist(*_args, **_kwargs):
         raise OSError("disk unavailable")
 
-    monkeypatch.setattr("yomu_backend_provider.ResultStore.persist_for_job", fail_persist)
+    monkeypatch.setattr("yomu.translation.providers.yomu_backend_provider.ResultStore.persist_for_job", fail_persist)
     provider = YomuBackendTranslationProvider(runtime_root=tmp_path, backend=backend)
     with pytest.raises(OSError, match="disk unavailable"):
         provider.translate_many(["source text"])
@@ -467,7 +467,7 @@ def test_translation_execute_incident_shape_9_items_262_chars(monkeypatch):
     ("items", [], "items_empty"),
 ])
 def test_translation_execute_preflight_rejects_invalid_shape(field, value, error):
-    from yomu_backend_provider import _translation_execute_shape
+    from yomu.translation.providers.yomu_backend_provider import _translation_execute_shape
     payload = {"request_id": "req", "job_id": "job",
                "device_id": "550e8400-e29b-41d4-a716-446655440000",
                "reservation_id": "550e8400-e29b-41d4-a716-446655440001",
@@ -479,8 +479,8 @@ def test_translation_execute_preflight_rejects_invalid_shape(field, value, error
 
 
 def test_request_shape_is_persisted_before_http_failure(tmp_path: Path, monkeypatch):
-    from yomu_backend_provider import _persist_translation_execute_shape, _translation_execute_shape
-    monkeypatch.setattr("yomu_backend_provider.runtime_root", lambda: tmp_path)
+    from yomu.translation.providers.yomu_backend_provider import _persist_translation_execute_shape, _translation_execute_shape
+    monkeypatch.setattr("yomu.translation.providers.yomu_backend_provider.runtime_root", lambda: tmp_path)
     payload = {"request_id": "req", "job_id": "job",
                "device_id": "550e8400-e29b-41d4-a716-446655440000",
                "reservation_id": "550e8400-e29b-41d4-a716-446655440001",

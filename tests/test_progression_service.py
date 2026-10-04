@@ -1,5 +1,5 @@
 import sqlite3
-from progression_service import ProgressionLedger, rank_for_xp
+from yomu.runtime.progression_service import ProgressionLedger, rank_for_xp
 
 def test_rank_thresholds_and_idempotency():
     assert rank_for_xp(0) == "Leitor Iniciante"

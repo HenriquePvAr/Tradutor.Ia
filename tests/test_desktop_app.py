@@ -1,12 +1,12 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 from pathlib import Path
 import asyncio
 
-import desktop_app
-import app_ui
+import yomu.desktop.app as desktop_app
+import yomu.ui.app as app_ui
 
 
 def test_desktop_defaults_are_loopback_and_current_port():
@@ -62,7 +62,7 @@ def test_desktop_url_is_loopback():
 
 
 def test_desktop_launcher_has_webview2_and_health_lifecycle():
-    source = Path("desktop_app.py").read_text(encoding="utf-8")
+    source = Path("yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "gui=\"edgechromium\"" in source
     assert "icon=str(APP_ICON_PATH)" in source
     assert "_wait_ready" in source
@@ -73,7 +73,7 @@ def test_desktop_launcher_has_webview2_and_health_lifecycle():
 
 
 def test_desktop_auth_handoff_is_memory_only_and_single_use():
-    source = Path("app_ui.py").read_text(encoding="utf-8")
+    source = Path("yomu/ui/app.py").read_text(encoding="utf-8")
     assert "_DESKTOP_HANDOFFS" in source
     assert "secrets.token_urlsafe" in source
     assert "_DESKTOP_HANDOFF_TTL_SECONDS = 600" in source
@@ -84,7 +84,7 @@ def test_desktop_auth_handoff_is_memory_only_and_single_use():
 
 
 def test_desktop_callback_completes_server_side_without_external_pkce():
-    source = Path("app_ui.py").read_text(encoding="utf-8")
+    source = Path("yomu/ui/app.py").read_text(encoding="utf-8")
     assert "desktop = params.get(\"desktop\") == \"1\"" in source
     assert "Solicitação recebida" in source
     assert "Você pode voltar ao Yomu Sekai" in source
@@ -102,7 +102,7 @@ def test_client_handoff_state_is_sanitized_and_single_source():
 
 
 def test_server_handoff_diagnostics_never_return_capability_values():
-    source = Path("app_ui.py").read_text(encoding="utf-8")
+    source = Path("yomu/ui/app.py").read_text(encoding="utf-8")
     assert "/api/auth/desktop/handoff/diagnostics" in source
     assert '"has_auth_code": bool(ready)' in source
     assert '"active_count"' in source
@@ -128,12 +128,12 @@ def test_official_branding_assets_are_preserved_and_ready_for_packaging():
 
 
 def test_desktop_uses_stable_windows_app_user_model_id():
-    source = Path("desktop_app.py").read_text(encoding="utf-8")
+    source = Path("yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "YomuSekai.Desktop" in source
 
 
 def test_favicon_and_packaging_reference_yomu_sekai_icon():
-    app_source = Path("app_ui.py").read_text(encoding="utf-8")
+    app_source = Path("yomu/ui/app.py").read_text(encoding="utf-8")
     spec = Path("packaging/tradutor_ia.spec").read_text(encoding="utf-8")
     iss = Path("packaging/TradutorIA.iss").read_text(encoding="utf-8")
     assert "yomu-sekai.ico" in app_source

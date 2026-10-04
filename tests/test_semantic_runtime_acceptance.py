@@ -13,8 +13,8 @@ sentinels are the exact persisted strings from the #84 run's ``progress.json``
 (pages 42/43/46), replayed read-only.
 """
 
-import _test_bootstrap  # noqa: F401
-from offline_test_guard import install_offline_network_guard
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -22,12 +22,12 @@ import unittest
 
 import numpy as np
 
-import semantic_fidelity
-from benchmark_pipeline import (
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.pipeline.benchmark_pipeline import (
     _render_plan_accounting,
     _translation_quality_accounting,
 )
-from ocr_balloon import (
+from yomu.ocr.ocr_balloon import (
     OCRLine,
     TextGroup,
     _token_is_source_vocabulary,

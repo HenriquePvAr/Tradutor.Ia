@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
-from local_media_registry import LocalMediaRegistry
+from yomu.ui.local_media_registry import LocalMediaRegistry
 
 
 def _image(path: Path, color: str = "red") -> Path:
@@ -51,11 +51,11 @@ def test_loopback_endpoint_serves_only_registered_media(tmp_path: Path) -> None:
     """The route receives an opaque id; no path-shaped request input exists."""
     from fastapi import HTTPException
     from starlette.requests import Request
-    import app_ui
+    import yomu.ui.app as app_ui
 
     image = _image(tmp_path / "page.png")
     # The route imports the singleton lazily, so use that exact singleton.
-    from local_media_registry import LOCAL_MEDIA_REGISTRY
+    from yomu.ui.local_media_registry import LOCAL_MEDIA_REGISTRY
     registry = LOCAL_MEDIA_REGISTRY
     selection = registry.register_selection([image])
     media_id = selection["items"][0]["media_id"]

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from png_output import PngExportError, export_final_pages_png
+from yomu.export.png_output import PngExportError, export_final_pages_png
 
 
 def _page(path: Path, color: str) -> Path:

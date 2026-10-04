@@ -1,11 +1,11 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-import glyph_art_boundary_review as gabr
+import yomu.clean.ownership.glyph_art_boundary_review as gabr
 
 
 class ConflictArtifactTests(unittest.TestCase):
@@ -88,7 +88,7 @@ class BoundaryEditorUiContractTests(unittest.TestCase):
 
     def test_bridge_exposes_content_addressed_conflict(self):
         source = Path(__file__).resolve().parents[1].joinpath(
-            "ui_bridge.py").read_text(encoding="utf-8")
+            "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
         self.assertIn("build_conflict_artifact(", source)
         self.assertIn('"first_pending_segment_id"', source)
         self.assertNotIn('page_id == "p004"', source)

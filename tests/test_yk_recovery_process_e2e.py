@@ -5,7 +5,7 @@ All remote/economic edges are replaced by a disk-backed mock scoped to a temp ro
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import base64
 import json
@@ -31,7 +31,7 @@ class DiskWalletProvider:
     """Disk-backed wrapper around the canonical deterministic wallet mock."""
 
     def __init__(self, state_path: Path):
-        from yomu_backend_provider import MockBackendClient
+        from yomu.translation.providers.yomu_backend_provider import MockBackendClient
         self.backend = MockBackendClient()
         self.backend.translate_invocation_count = 0
         self.path = state_path
@@ -79,7 +79,7 @@ class DiskWalletProvider:
 
 
 def _provider(runtime_root: Path):
-    from yomu_backend_provider import YomuBackendTranslationProvider
+    from yomu.translation.providers.yomu_backend_provider import YomuBackendTranslationProvider
     backend = DiskWalletProvider(Path(os.environ["YOMU_TEST_WALLET_STATE"]))
     return YomuBackendTranslationProvider(runtime_root=runtime_root, backend=backend)
 
@@ -91,13 +91,13 @@ def _token():
 
 
 def _run_pipeline(manifest: Path, snapshot_root: Path, output: Path):
-    import benchmark_pipeline as bp
-    import config
-    import local_folder_input
-    from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
-    from ocr_balloon import TextCandidate, TextGroup
-    from ocr_engine import OCRLine
-    from png_output import PngExportError
+    import yomu.pipeline.benchmark_pipeline as bp
+    import yomu.config.settings as config
+    import yomu.download.local.local_folder_input as local_folder_input
+    from yomu.download.local.local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+    from yomu.ocr.ocr_balloon import TextCandidate, TextGroup
+    from yomu.ocr.ocr_engine import OCRLine
+    from yomu.export.png_output import PngExportError
 
     runtime = Path(os.environ["TRADUTOR_TEST_RUNTIME_ROOT"])
     old_snapshot_root = local_folder_input.LOCAL_SNAPSHOT_ROOT
@@ -201,12 +201,12 @@ def _child_main(argv):
 
 
 def test_local_folder_recovery_crosses_real_worker_processes(tmp_path, monkeypatch):
-    from job_store import JobStatus, JobStore
-    from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
-    from local_folder_input import local_source_reference
-    from secure_auth_context import AuthEnvelopeStore
-    import ui_bridge
-    import yk_reservation
+    from yomu.runtime.job_store import JobStatus, JobStore
+    from yomu.download.local.local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+    from yomu.download.local.local_folder_input import local_source_reference
+    from yomu.auth.secure_auth_context import AuthEnvelopeStore
+    import yomu.ui.ui_bridge as ui_bridge
+    import yomu.runtime.yk_reservation as yk_reservation
     from PIL import Image, ImageDraw
 
     runtime = tmp_path / "runtime"
@@ -239,7 +239,7 @@ def test_local_folder_recovery_crosses_real_worker_processes(tmp_path, monkeypat
     monkeypatch.setenv("TRADUTOR_DEVICE_UUID", "550e8400-e29b-41d4-a716-446655440000")
     bridge = ui_bridge.UiBridge()
     store = bridge.store
-    command = [sys.executable, "-u", str(Path(__file__).resolve()),
+    command = [sys.executable, "-u", "-m", "tests.test_yk_recovery_process_e2e",
                "--pipeline-child", str(snapshot.manifest_path), str(snapshot_root), str(output),
                "--translation-provider", "deepl", "--output-format", "png"]
     job_id = store.create_job(

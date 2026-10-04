@@ -4,8 +4,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
-from commercial_device import CommercialDeviceAuthorizer, CommercialDeviceAuthorizationError, CommercialDeviceContext
-from community_auth import RequestPrincipal
+from yomu.auth.commercial_device import CommercialDeviceAuthorizer, CommercialDeviceAuthorizationError, CommercialDeviceContext
+from yomu.community.community_auth import RequestPrincipal
 
 
 class _Identity:

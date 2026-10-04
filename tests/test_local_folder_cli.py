@@ -1,6 +1,6 @@
 """Hermetic coverage for the opaque local-folder CLI hand-off."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import contextlib
 import io
@@ -11,9 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import local_folder_input
-import run_local_folder
-import run_webtoon
+import yomu.download.local.local_folder_input as local_folder_input
+import yomu.commands.run_local_folder as run_local_folder
+import yomu.commands.run_webtoon as run_webtoon
 
 
 class LocalFolderCliTests(unittest.TestCase):
@@ -113,7 +113,7 @@ class LocalFolderCliTests(unittest.TestCase):
                 run_webtoon._owned_local_manifest(bad)
 
     def test_local_output_is_constrained_to_runtime_output_root(self):
-        with mock.patch("runtime_paths.output_root", return_value=self.root / "output"):
+        with mock.patch("yomu.runtime.runtime_paths.output_root", return_value=self.root / "output"):
             relative = run_webtoon._resolve_local_output_folder("chapter", "opaque_ref")
             prefixed = run_webtoon._resolve_local_output_folder("output/chapter2", "opaque_ref")
             default = run_webtoon._resolve_local_output_folder("", "opaque_ref")
@@ -126,7 +126,7 @@ class LocalFolderCliTests(unittest.TestCase):
     def test_absolute_local_output_accepts_authoritative_runtime_root_only(self):
         runtime_root = self.root / "user-data" / "output"
         authorized = runtime_root / "webtoon_chapter" / "run-1"
-        with mock.patch("runtime_paths.output_root", return_value=runtime_root):
+        with mock.patch("yomu.runtime.runtime_paths.output_root", return_value=runtime_root):
             self.assertEqual(
                 run_webtoon._resolve_local_output_folder(authorized, "opaque_ref"),
                 authorized.resolve(),
@@ -259,7 +259,7 @@ class LocalFolderCliTests(unittest.TestCase):
         )
 
     def test_runner_cli_contract_accepts_every_frozen_local_command_flag(self):
-        from local_folder_job import build_local_job_command
+        from yomu.download.local.local_folder_job import build_local_job_command
 
         command = build_local_job_command(
             snapshot_ref="snap", output="safe", mode="quality", logical_pages=True,

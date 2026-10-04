@@ -5,7 +5,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-from app_version import BUILD_VERSION
+from yomu.runtime.version import BUILD_VERSION
 
 
 def main() -> int:

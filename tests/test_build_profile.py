@@ -1,7 +1,7 @@
 from pathlib import Path
 
-import build_profile
-import start_tradutor
+import yomu.runtime.build_profile as build_profile
+import yomu.commands.start_tradutor as start_tradutor
 
 
 def test_build_profile_source_is_not_production():

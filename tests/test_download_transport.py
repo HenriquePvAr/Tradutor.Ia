@@ -1,6 +1,6 @@
 """Bounded transports and byte-level image validation. Fully hermetic: no real network."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import io
 import struct
@@ -11,18 +11,18 @@ from unittest import mock
 from PIL import Image
 import requests
 
-import chapter_source
-from chapter_source import (
+import yomu.download.sources.chapter_source as chapter_source
+from yomu.download.sources.chapter_source import (
     CHALLENGE_REQUIRED, ChallengeRequired, INVALID_IMAGE_RESPONSE, SOURCE_ACCESS_DENIED,
     INCOMPLETE_DOWNLOAD, SOURCE_RATE_LIMITED, SourceError, GenericImageChapterAdapter,
     UniversalChapterAdapter, WEBTOONS, select_adapter,
 )
-from download_transport import (
+from yomu.download.download_transport import (
     BrowserSessionTransport, CloudscraperTransport, DownloadLimits, LimitExceeded,
     RequestsTransport, build_transports, cloudscraper_transport_enabled,
     inspect_source_preflight, preflight_browser_navigation,
 )
-from image_validation import (
+from yomu.download.image_validation import (
     DuplicateTracker, looks_like_markup, sniff_format, validate_image_bytes,
 )
 
@@ -391,7 +391,7 @@ class TransportSelectionTests(unittest.TestCase):
     def test_cloudscraper_is_not_a_default_dependency(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "download_transport.py").read_text(
+        source = (Path(__file__).resolve().parents[1] / "yomu/download/download_transport.py").read_text(
             encoding="utf-8")
         self.assertNotIn("import cloudscraper", source)
         for banned in (
@@ -419,7 +419,7 @@ class TransportSelectionTests(unittest.TestCase):
         factory.assert_called_once_with()
 
     def test_optional_cloudscraper_unavailable_fails_closed_when_explicitly_enabled(self):
-        with mock.patch("download_transport.importlib.import_module", side_effect=ImportError):
+        with mock.patch("yomu.download.download_transport.importlib.import_module", side_effect=ImportError):
             with self.assertRaises(SourceError) as ctx:
                 build_transports(adapter(), enable_cloudscraper=True)
         self.assertEqual(ctx.exception.detail, "cloudscraper_unavailable")

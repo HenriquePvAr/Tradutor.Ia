@@ -7,7 +7,7 @@ and assert it never happens for those outcomes.
 Hermetic: fake analyses, no browser, no network, no child process.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import json
@@ -18,14 +18,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import process_tree
-from job_store import JobStatus, JobStore
-from source_readiness import PIPELINE_OPERATIONS, SourceReadinessStore, default_workspace_id
-from source_analysis_phase import (
+import yomu.runtime.process_tree as process_tree
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.review.source_readiness import PIPELINE_OPERATIONS, SourceReadinessStore, default_workspace_id
+from yomu.review.source_analysis_phase import (
     AWAITING_REVIEW, FAILED, READY_FOR_RUNNER, SourceAnalysisPhaseResult,
     has_usable_selection, should_spawn_runner,
 )
-from worker_service import Worker
+from yomu.runtime.worker_service import Worker
 
 URL = "https://www.webtoons.com/en/drama/serie/episode-1/viewer?title_no=1&episode_no=1"
 
@@ -39,7 +39,7 @@ class FakeAnalysis:
     """Mimics the analysis object the phase consumes."""
 
     def __init__(self, outcome, *, accepted=5, warnings=(), canonical_url=""):
-        from universal_chapter_adapter import SUPPORTED_SPECIFIC_ADAPTER  # noqa: F401
+        from yomu.download.sources.universal_chapter_adapter import SUPPORTED_SPECIFIC_ADAPTER  # noqa: F401
 
         self.outcome = outcome
         self.accepted = [FakeCandidate(i) for i in range(accepted)]
@@ -55,13 +55,13 @@ class FakeAnalysis:
 
 
 def specific_outcome():
-    from universal_chapter_adapter import SUPPORTED_SPECIFIC_ADAPTER
+    from yomu.download.sources.universal_chapter_adapter import SUPPORTED_SPECIFIC_ADAPTER
 
     return SUPPORTED_SPECIFIC_ADAPTER
 
 
 def review_outcome():
-    from universal_chapter_adapter import REVIEW_REQUIRED_MEDIUM_CONFIDENCE
+    from yomu.download.sources.universal_chapter_adapter import REVIEW_REQUIRED_MEDIUM_CONFIDENCE
 
     return REVIEW_REQUIRED_MEDIUM_CONFIDENCE
 
@@ -105,7 +105,7 @@ class _BlockingCancellationWorker(_Worker):
         self.started = threading.Event()
 
     def _analyze_source(self, url, *, cancel_check=None, on_progress=None):
-        from chapter_source import SourceError
+        from yomu.download.sources.chapter_source import SourceError
 
         self.started.set()
         while not cancel_check():
@@ -131,8 +131,8 @@ class WorkerPhaseTests(unittest.TestCase):
         return self.store.get_job(job_id)
 
     def env_ok(self):
-        return mock.patch("source_analysis_phase.apply_source_analysis",
-                          wraps=__import__("source_analysis_phase").apply_source_analysis)
+        return mock.patch("yomu.review.source_analysis_phase.apply_source_analysis",
+                          wraps=__import__("yomu.review.source_analysis_phase", fromlist=["*"]).apply_source_analysis)
 
     # ---- runner suppression ------------------------------------------------
     def test_review_outcome_never_spawns_a_runner(self):
@@ -154,7 +154,7 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertEqual(row["reason_code"], "incomplete_source_coverage")
 
     def test_an_analysis_error_is_terminal_and_never_spawns(self):
-        from chapter_source import SourceError
+        from yomu.download.sources.chapter_source import SourceError
 
         job = self.queued_url_job()
         worker = _Worker(self.store, error=SourceError("source_not_ready", "no_driver"))
@@ -165,7 +165,7 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertEqual(row["reason_code"], "source_not_ready")
 
     def test_preflight_failure_persists_sanitized_structured_diagnostics(self):
-        from chapter_source import SourceError
+        from yomu.download.sources.chapter_source import SourceError
 
         error = SourceError("source_unavailable", "navigation_preflight_http")
         error.preflight_result = {
@@ -229,7 +229,7 @@ class WorkerPhaseTests(unittest.TestCase):
     def test_a_high_confidence_analysis_allows_the_runner(self):
         job = self.queued_url_job()
         worker = _Worker(self.store, analysis=FakeAnalysis(specific_outcome()))
-        with mock.patch("source_analysis_phase.apply_source_analysis") as apply:
+        with mock.patch("yomu.review.source_analysis_phase.apply_source_analysis") as apply:
             apply.return_value = SourceAnalysisPhaseResult(
                 outcome=READY_FOR_RUNNER, job_id=job["id"], status=JobStatus.QUEUED)
             prepared = worker._prepare_source(job)
@@ -417,7 +417,7 @@ class WorkerPhaseTests(unittest.TestCase):
         analysis = FakeAnalysis(specific_outcome(), accepted=2)
         job = self.queued_url_job(
             source_analysis_json=json.dumps(analysis.public()))
-        from source_readiness import source_result_from_analysis
+        from yomu.review.source_readiness import source_result_from_analysis
         readiness = SourceReadinessStore(self.store.db_path)
         try:
             persisted = readiness.persist_analysis(source_result_from_analysis(job, analysis))
@@ -439,7 +439,7 @@ class WorkerPhaseTests(unittest.TestCase):
                 "outcome": "source_analysis_pending", "accepted": [
                     {"id": "c000"}, {"id": "c001"}
                 ]}))
-        from source_readiness import source_result_from_analysis
+        from yomu.review.source_readiness import source_result_from_analysis
         readiness = SourceReadinessStore(self.store.db_path)
         try:
             persisted = readiness.persist_analysis(source_result_from_analysis(job, analysis))
@@ -463,7 +463,7 @@ class WorkerPhaseTests(unittest.TestCase):
                 "adapter": "comix", "outcome": specific_outcome(),
                 "accepted": [{"id": f"c{i:03}"} for i in range(105)]
             }))
-        from source_readiness import source_result_from_analysis
+        from yomu.review.source_readiness import source_result_from_analysis
         readiness = SourceReadinessStore(self.store.db_path)
         try:
             persisted = readiness.persist_analysis(source_result_from_analysis(job, analysis))

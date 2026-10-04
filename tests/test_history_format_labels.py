@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
-BRIDGE = (ROOT / "ui_bridge.py").read_text(encoding="utf-8")
+BRIDGE = (ROOT / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #

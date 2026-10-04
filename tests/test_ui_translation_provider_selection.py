@@ -10,7 +10,7 @@ These tests execute the real ``syncSourceFormState`` / ``formPayload`` sources f
 hermetically.  No provider is ever contacted.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import os
@@ -21,8 +21,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from source_readiness import SourceReadinessStore, default_workspace_id
-from ui_helpers import build_run_command
+from yomu.review.source_readiness import SourceReadinessStore, default_workspace_id
+from yomu.ui.ui_helpers import build_run_command
 from tests.test_new_translation_source_policy_state import SourceStateBridge, source_payload
 from tests.test_translation_start import WEBTOON_URL, drive
 

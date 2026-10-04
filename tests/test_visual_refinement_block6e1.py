@@ -5,7 +5,7 @@ runtime rules.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -17,8 +17,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-import font_fidelity as ff
-import human_typography_decisions as htd
+import yomu.clean.ownership.font_fidelity as ff
+import yomu.review.human_typography_decisions as htd
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,7 +126,7 @@ class HumanPreviewUiContractTests(unittest.TestCase):
         ui_js = (ROOT / "static" / "tradutor_ui.js").read_text(encoding="utf-8")
         preview_block = ui_js[ui_js.index("async function previewAction"):
                               ui_js.index("function selectedTriageRegions")]
-        app_py = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        app_py = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         self.assertIn("/api/ui/human-translation/font-candidates", ui_js)
         self.assertIn("/api/ui/human-translation/font-choice", ui_js)
         self.assertIn("font_choice_base_page_unavailable", app_py)
@@ -147,7 +147,7 @@ class HumanPreviewUiContractTests(unittest.TestCase):
         self.assertIn("overflow-wrap:anywhere", ui_css.replace(" ", ""))
 
     def test_font_context_accepts_existing_page_name_variants(self):
-        bridge_py = (ROOT / "ui_bridge.py").read_text(encoding="utf-8")
+        bridge_py = (ROOT / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
         context_block = bridge_py[bridge_py.index("def _human_font_context"):
                                   bridge_py.index("def _font_candidate_cache_dir")]
         self.assertIn('f"p{page:03d}.png"', context_block)

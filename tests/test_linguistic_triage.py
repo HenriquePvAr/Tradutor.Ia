@@ -1,7 +1,7 @@
 """Contracts for the linguistic gate, triage queue and provider set (BLOCO 5)."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -10,8 +10,8 @@ import string
 import unittest
 import uuid
 
-import linguistic_triage as lt
-import region_taxonomy as tax
+import yomu.translation.linguistic_triage as lt
+import yomu.review.region_taxonomy as tax
 
 
 def _policy(category, **kw):

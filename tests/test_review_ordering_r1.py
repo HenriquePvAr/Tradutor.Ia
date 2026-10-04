@@ -6,7 +6,7 @@ physical (page_index → bbox.y → bbox.x → region_id), category never contro
 Smart Split is no longer forced to the end, and the preview route resolves to an
 explicit state instead of silently falling back to another page.
 """
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
-import ui_bridge
-from job_store import JobStatus
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.runtime.job_store import JobStatus
 
 
 def _bridge(tmp_path: Path) -> ui_bridge.UiBridge:

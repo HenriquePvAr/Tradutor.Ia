@@ -1,6 +1,8 @@
 # PyInstaller ONEDIR candidate for the frozen Beta worktree.
 # This is packaging configuration only; no runtime semantics are changed.
 from pathlib import Path
+import site
+import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # PyInstaller exposes SPECPATH differently across invocation styles (directory
@@ -18,8 +20,17 @@ elif _spec_path.is_file():
     ROOT = _spec_path.parent.parent
 else:
     ROOT = _spec_path.parent
-RAPIDOCR_ROOT = ROOT / ".venv-beta/Lib/site-packages/rapidocr_onnxruntime"
-PLAYWRIGHT_ROOT = ROOT / ".venv-beta/Lib/site-packages/playwright"
+_site_packages = [Path(path).resolve() for path in site.getsitepackages()]
+_site_packages.insert(0, (Path(sys.prefix) / "Lib" / "site-packages").resolve())
+_site_packages.insert(0, (Path(sys.prefix) / "lib" / "site-packages").resolve())
+_runtime_site_packages = next(
+    (path for path in _site_packages if (path / "rapidocr_onnxruntime").is_dir()),
+    None,
+)
+if _runtime_site_packages is None:
+    raise SystemExit("Could not locate rapidocr_onnxruntime in the active Python environment")
+RAPIDOCR_ROOT = _runtime_site_packages / "rapidocr_onnxruntime"
+PLAYWRIGHT_ROOT = _runtime_site_packages / "playwright"
 VALIDATION_BUILD = bool(globals().get("VALIDATION_BUILD", False))
 
 datas = [
@@ -42,8 +53,8 @@ hiddenimports = [
     # then imports its browser driver stack dynamically.  Keep the complete frozen
     # capability explicit: otherwise the optional import is swallowed by the resolver
     # and the UI falls through to a misleading source_access_denied result.
-    "scrapling_reader_resolver",
-    "dynamic_resolver_process",
+    "yomu.download.readers.scrapling_reader_resolver",
+    "yomu.download.readers.dynamic_resolver_process",
     "scrapling.fetchers",
     "scrapling.fetchers.chrome",
     "scrapling.core.storage",
@@ -53,6 +64,7 @@ hiddenimports = [
     "playwright",
     "playwright.sync_api",
     "orjson",
+    *collect_submodules("yomu"),
     *collect_submodules("rapidocr_onnxruntime"),
     *collect_submodules("scrapling"),
     *collect_submodules("patchright"),
@@ -67,7 +79,7 @@ datas += collect_data_files("apify_fingerprint_datapoints")
 # Keep it beside the frozen playwright package so the browser controller can start.
 datas.append((str(PLAYWRIGHT_ROOT / "driver"), "playwright/driver"))
 if VALIDATION_BUILD:
-    hiddenimports.append("performance_validation_harness")
+    hiddenimports.append("tools.harnesses.performance_validation_harness")
 
 a = Analysis(
     [str(ROOT / "desktop_app.py")],

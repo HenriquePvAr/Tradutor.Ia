@@ -1,26 +1,49 @@
-# Estrutura do projeto
+# Repository structure
 
-O repositório mantém deliberadamente os módulos Python de runtime na raiz por compatibilidade com imports legados, inicialização desktop e configuração PyInstaller. A reorganização desta versão removeu testes e harnesses da raiz sem tentar uma migração `src/` que ampliaria o risco de packaging.
+The canonical Python runtime package is `yomu/`. Root modules are limited to documented
+entrypoints and Python startup hooks; runtime/domain implementations live in packages.
 
-| Local | Conteúdo |
-| --- | --- |
-| `app_ui.py`, `desktop_app.py`, `worker_service.py`, `job_runner.py` e módulos Python da raiz | Runtime e entrypoints legados do produto |
-| `apps/`, `ui/`, `static/`, `supabase/`, `packaging/`, `assets/` | Aplicações auxiliares, interface, migrations, empacotamento e recursos |
-| `tests/` | Testes Python e JavaScript; os testes Python são descobertos pelo pytest |
-| `tests/integration/`, `tests/sql/` | Integrações e fixtures SQL já organizadas |
-| `experiments/` | Experimentos isolados e seus testes próprios |
-| `research/` | Ferramentas e evidências de pesquisa; não importadas pelo runtime |
-| `scripts/` | Operação, validação de ambiente e smokes explicitamente opt-in |
-| `tools/` | Administração, build, release, desenvolvimento e harnesses |
-| `docs/` | Documentação de produto, desenvolvimento, arquitetura e histórico |
-| `reports/` | Evidência pequena e canônica; outputs grandes ficam externos |
+```text
+yomu/
+  auth/                    authentication and licensing
+  clean/                   semantic ownership, masks, inpainting, reconstruction
+  community/               community APIs, storage, publication
+  commands/                user-facing launchers and CLI implementations
+  config/                  runtime settings
+  core/                    shared domain contracts and utilities
+  desktop/                 desktop shell
+  download/                download transport, local intake, readers, sources
+  export/                  PDF, PNG, PSD, manifests
+  ocr/                     OCR engines, scheduling, splitting
+  pipeline/                orchestration and pipeline state
+  review/                  review contracts, reports, workflows
+  runtime/                 jobs, workers, process/runtime services
+  security/                URL and security policies
+  translation/             language decisions and provider adapters
+  ui/                      NiceGUI app, bridge, helpers, history
+test_support/               hermetic runtime and synthetic subprocess fixtures
+tests/                      Python, frontend, integration and contract tests
+tools/                      audits, research, reports, harnesses
+scripts/                    explicit operational commands
+```
 
-## Onde adicionar trabalho
+## Where does a new Python module go?
 
-- Novo teste de produto: `tests/`, com nome `test_*.py` ou `test_*.mjs`.
-- Novo harness reutilizável: `tools/harnesses/`; smoke operacional: `scripts/`.
-- Novo experimento: `experiments/<nome>/` ou `research/<domínio>/`, com README, ambiente e limites de produção explícitos.
-- Novo relatório: `reports/` apenas quando pequeno, sanitizado e necessário para rastreabilidade; caso contrário mantenha o output fora do Git e versione apenas um manifesto enxuto.
-- Novo módulo de runtime: preserve os imports e entrypoints existentes; qualquer mudança de localização requer uma migração independente com testes e verificação do packaging.
+- OCR engine, policy, or page splitting: `yomu/ocr/` (`splitting/` for page splitting).
+- CLEAN ownership, masks, or review decisions: `yomu/clean/ownership/`.
+- Inpainting or reconstruction: `yomu/clean/inpainting/` or `yomu/clean/reconstruction/`.
+- Translation behavior: `yomu/translation/`; provider transport/adapters: `yomu/translation/providers/`.
+- Download intake, source identity, or reader adapter: `yomu/download/` under its matching domain.
+- Jobs, workers, process policy, or filesystem runtime paths: `yomu/runtime/`.
+- UI implementation: `yomu/ui/`; desktop entrypoint implementation: `yomu/desktop/`.
+- Tests: `tests/`; test-only helpers: `test_support/`.
+- R&D and one-off diagnostics: `tools/research/` or `experiments/<mission>/`, never runtime packages.
+- Supported product CLI implementations: `yomu/commands/`; operational scripts: `scripts/`.
 
-O fluxo de desenvolvimento e a política de artefatos estão em [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) e [ARTIFACT_POLICY.md](ARTIFACT_POLICY.md).
+Historical command names such as `python app_ui.py`, `python start_tradutor.py`, and
+`python run_webtoon.py` remain thin compatibility launchers. Their implementations live
+in `yomu/`. Root exceptions and their rationale are declared in
+[`config/repository_root_allowlist.json`](../config/repository_root_allowlist.json) and
+checked with `python tools/repository/check_root_policy.py`.
+
+See [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) for test and packaging commands.

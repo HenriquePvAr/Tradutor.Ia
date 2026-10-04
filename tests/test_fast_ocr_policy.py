@@ -1,6 +1,6 @@
 """Hermetic tests for bounded Fast OCR and progress ownership."""
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -12,13 +12,13 @@ from unittest.mock import patch
 
 import numpy as np
 
-import config
-from ocr_engine import OCREngine
-import ocr_parallel
-import run_webtoon
-import process_options
-from fast_ocr_policy import FastOCRBudget, run_ocr_with_timeout
-from ui_helpers import ProgressSnapshot, parse_progress_line
+import yomu.config.settings as config
+from yomu.ocr.ocr_engine import OCREngine
+import yomu.ocr.ocr_parallel as ocr_parallel
+import yomu.commands.run_webtoon as run_webtoon
+import yomu.runtime.process_options as process_options
+from yomu.ocr.fast_ocr_policy import FastOCRBudget, run_ocr_with_timeout
+from yomu.ui.ui_helpers import ProgressSnapshot, parse_progress_line
 
 
 def _sleep_child(connection):
@@ -189,7 +189,7 @@ class FastOCRPolicyTests(unittest.TestCase):
         # to be installed before it configures anything.  This test is about the
         # fallback policy, not about this machine's dependencies, so the engine
         # is declared available here.
-        import ocr_engine
+        import yomu.ocr.ocr_engine as ocr_engine
 
         with patch.object(ocr_engine, "require_available_engine", lambda engine: engine):
             run_webtoon._configure_mode("quality")

@@ -15,18 +15,18 @@ what these tests mainly pin.
 Fully hermetic: fake sessions, stubbed DNS, no site is contacted.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest import mock
 
 import requests
 
-import chapter_source
-from chapter_source import (
+import yomu.download.sources.chapter_source as chapter_source
+from yomu.download.sources.chapter_source import (
     SOURCE_ACCESS_DENIED, SourceError, UniversalChapterAdapter, select_adapter,
 )
-from download_transport import (
+from yomu.download.download_transport import (
     DownloadLimits, inspect_source_preflight, preflight_browser_navigation,
 )
 
@@ -305,7 +305,7 @@ class ReaderSelectorOwnershipTests(unittest.TestCase):
     def test_downloader_holds_no_webtoons_selectors(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "yomu/download/down.py").read_text(encoding="utf-8")
         for leaked in ("#_imageList", "viewer_img", "img._images", "viewer_lst"):
             self.assertNotIn(leaked, source, leaked)
 

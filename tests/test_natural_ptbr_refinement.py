@@ -1,9 +1,9 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import json
 import tempfile
 import unittest
 
-import natural_ptbr_refinement as npr
+import yomu.translation.natural_ptbr_refinement as npr
 
 
 def request():

@@ -1,6 +1,6 @@
 """Security contract for the explicit local-test community storage provider."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 from pathlib import Path
@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-import community_api
-from community_storage import LocalTestStorageProvider, StorageError, build_storage_provider
+import yomu.community.community_api as community_api
+from yomu.community.community_storage import LocalTestStorageProvider, StorageError, build_storage_provider
 
 
 def _provider(tmp_path: Path, owner: str = "owner-a") -> LocalTestStorageProvider:
@@ -40,7 +40,7 @@ def test_local_test_rejects_missing_or_remote_storage_before_provider_build(
         "COMMUNITY_STORAGE_PROVIDER": "google_drive",
     }
     with patch.dict(os.environ, env, clear=True), patch(
-        "google_drive_factory.build_google_drive_provider"
+        "yomu.community.storage.google_drive_factory.build_google_drive_provider"
     ) as remote:
         with pytest.raises(StorageError, match="local_test_external_storage_blocked"):
             community_api.storage_provider_name()

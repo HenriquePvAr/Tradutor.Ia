@@ -1,13 +1,13 @@
 """Hermetic tests for the semantic region taxonomy (BLOCO 2). Offline, no network."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 
-import region_taxonomy as tax
+import yomu.review.region_taxonomy as tax
 
 
 class SemanticTranslatableCases(unittest.TestCase):

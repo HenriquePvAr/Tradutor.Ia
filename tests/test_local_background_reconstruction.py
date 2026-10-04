@@ -3,8 +3,8 @@
 import cv2
 import numpy as np
 
-import ocr_balloon as ob
-from ocr_engine import OCRLine
+import yomu.ocr.ocr_balloon as ob
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _group(box=(40, 40, 140, 40)):

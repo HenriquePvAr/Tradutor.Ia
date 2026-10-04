@@ -10,7 +10,7 @@ Three separate contracts, all hermetic:
   fallback whose empty result is rejected by the #84F5 guard.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
@@ -21,10 +21,10 @@ from unittest.mock import patch
 
 import requests
 
-import chapter_source
-import down
-import ocr_engine
-import run_webtoon
+import yomu.download.sources.chapter_source as chapter_source
+import yomu.download.down as down
+import yomu.ocr.ocr_engine as ocr_engine
+import yomu.commands.run_webtoon as run_webtoon
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,18 +66,18 @@ class SourceDispatchIsolationTests(unittest.TestCase):
     def test_vortex_analysis_succeeds_while_webtoons_canonicalizer_times_out(self):
         sentinel = SimpleNamespace(outcome="supported_specific_adapter", accepted=[])
         with (
-            patch("canonical_source_identity.canonicalize_webtoons_url", _webtoons_is_down),
+            patch("yomu.download.sources.canonical_source_identity.canonicalize_webtoons_url", _webtoons_is_down),
             patch.object(requests.Session, "get", _webtoons_is_down),
             patch.object(chapter_source.socket, "getaddrinfo", return_value=PUBLIC_DNS),
-            patch("down.inspect_source_preflight", side_effect=lambda _a, value, **_k: value),
-            patch("down._create_driver", return_value=_QuitDriver()),
-            patch("down._capture_driver_ownership", return_value={}),
-            patch("down._refresh_driver_ownership"),
-            patch("down._bounded_driver_teardown", return_value={}),
-            patch("down._scroll_incrementally",
+            patch("yomu.download.down.inspect_source_preflight", side_effect=lambda _a, value, **_k: value),
+            patch("yomu.download.down._create_driver", return_value=_QuitDriver()),
+            patch("yomu.download.down._capture_driver_ownership", return_value={}),
+            patch("yomu.download.down._refresh_driver_ownership"),
+            patch("yomu.download.down._bounded_driver_teardown", return_value={}),
+            patch("yomu.download.down._scroll_incrementally",
                   return_value={"reached_document_end": True, "stabilized": True}),
-            patch("down._load_source_profile", return_value=None),
-            patch("down.time.sleep"),
+            patch("yomu.download.down._load_source_profile", return_value=None),
+            patch("yomu.download.down.time.sleep"),
             patch.object(chapter_source.VortexScansAdapter, "analyze", return_value=sentinel),
         ):
             self.assertIs(down.analyze_chapter_source(VORTEX_URL), sentinel)
@@ -85,7 +85,7 @@ class SourceDispatchIsolationTests(unittest.TestCase):
     def test_webtoons_url_still_routes_through_the_webtoons_canonicalizer(self):
         adapter = chapter_source.select_adapter(WEBTOONS_URL)
         self.assertEqual(adapter.name, "webtoons")
-        with patch("canonical_source_identity.canonicalize_webtoons_url") as resolver:
+        with patch("yomu.download.sources.canonical_source_identity.canonicalize_webtoons_url") as resolver:
             down._resolve_canonical_source(adapter, WEBTOONS_URL)
         self.assertEqual(resolver.call_args.args[0], WEBTOONS_URL)
 
@@ -100,8 +100,8 @@ class PreJobSourceFailureVisibilityTests(unittest.TestCase):
     """SOURCE-ANALYSIS-OBSERVABILITY-001: a pre-job failure must not be silent."""
 
     def setUp(self):
-        import app_ui
-        from ui_bridge import UiBridge
+        import yomu.ui.app as app_ui
+        from yomu.ui.ui_bridge import UiBridge
 
         self.app_ui = app_ui
         self.tmp = tempfile.TemporaryDirectory()
@@ -231,7 +231,7 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
     """quality_optimized is RapidOCR-primary; Paddle is an optional fallback."""
 
     def setUp(self):
-        import config
+        import yomu.config.settings as config
 
         env = patch.dict("os.environ", {"TRADUTOR_OCR_ENGINE_OVERRIDE": ""})
         env.start()
@@ -251,7 +251,7 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
         return object() if str(name).startswith("rapidocr") else None
 
     def test_quality_mode_configures_rapidocr_when_paddle_is_not_installed(self):
-        import config
+        import yomu.config.settings as config
 
         with patch.object(
             ocr_engine.importlib.util, "find_spec", side_effect=self._only_rapidocr
@@ -263,7 +263,7 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
         self.assertFalse(config.FAST_OCR_MODE)
 
     def test_beta_quality_has_no_cross_engine_fallback(self):
-        import config
+        import yomu.config.settings as config
 
         with patch.object(
             ocr_engine.importlib.util, "find_spec", side_effect=self._only_rapidocr
@@ -339,7 +339,7 @@ class QualityModeOcrPolicyTests(unittest.TestCase):
         self.assertEqual(engine.last_run_metadata.get("ocr_sufficiency"), ocr_engine.OCR_REVIEW)
 
     def test_zero_line_story_box_still_fails_closed_after_regional_retry_fails(self):
-        import ocr_parallel
+        import yomu.ocr.ocr_parallel as ocr_parallel
 
         engine = ocr_engine.OCREngine("en", engine="rapidocr", fallback_engine="paddle")
         with (
@@ -386,20 +386,20 @@ class OptionalFallbackGuardTests(unittest.TestCase):
         return [SimpleNamespace(text="palavra") for _ in range(count)]
 
     def test_empty_paddle_fallback_is_rejected(self):
-        import benchmark_pipeline
+        import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
 
         self.assertTrue(benchmark_pipeline._fallback_discards_source_text(
             self._lines(20), []))
 
     def test_slightly_different_fallback_is_not_rejected(self):
-        import benchmark_pipeline
+        import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
 
         # 20 lines of "palavra" = 140 letters; 19 lines = 133 letters (95%).
         self.assertFalse(benchmark_pipeline._fallback_discards_source_text(
             self._lines(20), self._lines(19)))
 
     def test_quality_mode_full_page_fallback_uses_that_same_guard(self):
-        source = (ROOT / "benchmark_pipeline.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/pipeline/benchmark_pipeline.py").read_text(encoding="utf-8")
         block = source[source.index("pipeline.full_page_paddle_fallback"):]
         block = block[:block.index("_boxes_substantially_overlap")]
         self.assertIn("if _fallback_discards_source_text(", block)

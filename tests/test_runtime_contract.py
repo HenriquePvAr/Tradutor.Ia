@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_store import JobStore
-from runtime_contract import canonical_runtime_identity, current_runtime_contract
+from yomu.runtime.job_store import JobStore
+from yomu.runtime.runtime_contract import canonical_runtime_identity, current_runtime_contract
 
 
 class RuntimeContractTests(unittest.TestCase):

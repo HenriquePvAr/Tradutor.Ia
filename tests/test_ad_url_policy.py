@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-import desktop_app
-from ad_url_policy import canonical_ad_url, is_allowed_ad_navigation, is_allowed_ad_url
+import yomu.desktop.app as desktop_app
+from yomu.security.ad_url_policy import canonical_ad_url, is_allowed_ad_navigation, is_allowed_ad_url
 
 
 def test_canonical_and_legacy_redirect_urls_are_accepted():

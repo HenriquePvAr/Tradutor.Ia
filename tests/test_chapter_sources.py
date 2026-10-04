@@ -4,13 +4,13 @@ Hermetic: no real site is ever contacted. Host resolution is stubbed where a DNS
 would otherwise be needed.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest import mock
 
-import chapter_source
-from chapter_source import (
+import yomu.download.sources.chapter_source as chapter_source
+from yomu.download.sources.chapter_source import (
     ALLOWED_IMAGE_MIME, CHALLENGE_REQUIRED, GenericImageChapterAdapter, SourceError,
     UNSUPPORTED_SOURCE, UnsupportedSource, UniversalChapterAdapter, WEBTOONS, host_of, is_private_host,
     VORTEXSCANS, VortexScansAdapter, looks_like_challenge, select_adapter, supported_hosts,
@@ -241,7 +241,7 @@ class SelectorOwnershipTests(unittest.TestCase):
 
     def test_downloader_holds_no_site_specific_selectors(self):
         from pathlib import Path
-        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "yomu/download/down.py").read_text(encoding="utf-8")
         for leaked in ("#_imageList", "_viewerBox", "viewer_img", "img._images"):
             self.assertNotIn(leaked, source, leaked)
 
@@ -290,7 +290,7 @@ class DownloaderGateTests(unittest.TestCase):
         self.assertNotIn("example.org", supported_hosts())
 
     def test_private_target_fails_before_any_browser_opens(self):
-        import down
+        import yomu.download.down as down
 
         with mock.patch.object(down, "_create_driver") as driver:
             with self.assertRaises(SourceError):
@@ -298,7 +298,7 @@ class DownloaderGateTests(unittest.TestCase):
         driver.assert_not_called()
 
     def test_unsafe_scheme_fails_before_any_browser_opens_even_with_fallback(self):
-        import down
+        import yomu.download.down as down
 
         with mock.patch.object(down, "_create_driver") as driver:
             with self.assertRaises(SourceError) as ctx:

@@ -5,7 +5,7 @@ real chapter: the fixtures are synthetic tokens chosen only to exercise the
 policy branches.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -15,9 +15,9 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-import config
-import ocr_balloon
-from ocr_balloon import (
+import yomu.config.settings as config
+import yomu.ocr.ocr_balloon as ocr_balloon
+from yomu.ocr.ocr_balloon import (
     TextGroup,
     _should_translate_group,
     analyze_image_array,
@@ -27,7 +27,7 @@ from ocr_balloon import (
     rapidocr_region_decision,
     score_group_ocr_quality,
 )
-from ocr_engine import OCRLine
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _line(text, box, confidence=0.92):

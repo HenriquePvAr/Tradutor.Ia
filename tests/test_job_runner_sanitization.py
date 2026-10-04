@@ -1,6 +1,6 @@
 """Hermetic checks for runner diagnostics and terminal source outcomes."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import io
 import json
@@ -9,11 +9,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from artifact_contract import ArtifactType, OutputProfile, build_artifact_manifest
-from job_runner import (
+from yomu.runtime.artifact_contract import ArtifactType, OutputProfile, build_artifact_manifest
+from yomu.runtime.job_runner import (
     _OutputPump, _artifact_manifest_contract, _finalize, _requested_output_contract, _write_manifest,
 )
-from job_store import JobStatus, JobStore
+from yomu.runtime.job_store import JobStatus, JobStore
 
 
 class JobRunnerSanitizationTests(unittest.TestCase):
@@ -128,7 +128,7 @@ class JobRunnerSanitizationTests(unittest.TestCase):
     def test_success_without_fresh_generic_analysis_does_not_record_profile(self):
         job, output = self._running_job()
         self._write_success_artifacts(output)
-        with mock.patch("source_profile.SourceProfileStore.record_success") as record:
+        with mock.patch("yomu.download.sources.source_profile.SourceProfileStore.record_success") as record:
             _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
         terminal = self.store.get_job(job["id"])
         self.assertEqual(terminal["status"], JobStatus.FINISHED)
@@ -329,7 +329,7 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         )
         fresh_selection = {"candidate_ids": ["fresh-page"], "automatic": False}
         fresh_analysis = self._write_successful_generic_download(output, fresh_selection)
-        with mock.patch("source_profile.SourceProfileStore.record_success") as record:
+        with mock.patch("yomu.download.sources.source_profile.SourceProfileStore.record_success") as record:
             _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
         terminal = self.store.get_job(job["id"])
         record.assert_called_once_with(fresh_analysis, fresh_selection)
@@ -382,7 +382,7 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         )
         fresh_selection = {"candidate_ids": ["fresh-page"], "automatic": True}
         self._write_successful_generic_download(output, fresh_selection)
-        with mock.patch("source_profile.SourceProfileStore.record_success") as record:
+        with mock.patch("yomu.download.sources.source_profile.SourceProfileStore.record_success") as record:
             _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
         record.assert_not_called()
 
@@ -395,7 +395,7 @@ class JobRunnerSanitizationTests(unittest.TestCase):
                 )
                 fresh_selection = {"candidate_ids": ["fresh-page"], "automatic": False}
                 self._write_successful_generic_download(output, fresh_selection)
-                with mock.patch("source_profile.SourceProfileStore.record_success") as record:
+                with mock.patch("yomu.download.sources.source_profile.SourceProfileStore.record_success") as record:
                     _finalize(
                         self.store, job["id"], job, output, 0, False, str(self.tmp / "log")
                     )

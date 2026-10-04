@@ -1,0 +1,12 @@
+{
+  "auth_service_build": "PASS",
+  "auth_service_typecheck": "PASS",
+  "auth_service_vitest": {
+    "failed": 0,
+    "passed": 4
+  },
+  "javascript_node_check_files": 12,
+  "npm_audit_note": "npm ci reported 2 moderate dependency advisories; no audit fix was applied",
+  "workflow_checks_failed": 0,
+  "workflow_checks_passed": 18
+}

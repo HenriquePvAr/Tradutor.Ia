@@ -1,12 +1,12 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import io, threading, time, tempfile, statistics
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from unittest import mock
 from PIL import Image
 import requests
-import down
-from chapter_source import SourceError
+import yomu.download.down as down
+from yomu.download.sources.chapter_source import SourceError
 
 def png(seed):
     im=Image.new("RGB",(480,640),(seed,30,60)); b=io.BytesIO(); im.save(b,"PNG"); return b.getvalue()

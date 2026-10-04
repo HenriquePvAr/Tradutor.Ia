@@ -7,7 +7,7 @@ translation stages are exercised through fake_pipeline.py, which produces real c
 a timing report and a PDF without calling any provider.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import subprocess
@@ -19,13 +19,13 @@ from pathlib import Path
 
 from PIL import Image
 
-from job_store import JobStatus, JobStore
-from local_folder_job import (
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.download.local.local_folder_job import (
     SOURCE_TYPE_LOCAL_FOLDER, ensure_not_both_sources, folder_fingerprint, job_fields,
     public_summary,
 )
-from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
-from pdf import prepare_smart_webtoon_pages
+from yomu.download.local.local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+from yomu.export.pdf import prepare_smart_webtoon_pages
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -140,7 +140,7 @@ class LocalPipelineE2ETests(unittest.TestCase):
     # ---- full run through the controlled pipeline ---------------------------
     def test_end_to_end_produces_a_valid_pdf_and_finishes(self):
         out = self.tmp / "chapter_out"
-        command = [sys.executable, "-u", str(REPO / "fake_pipeline.py"),
+        command = [sys.executable, "-u", str(REPO / "test_support/fake_pipeline.py"),
                    "--output-dir", str(out), "--outcome", "finished",
                    "--steps", "2", "--sleep", "0.01"]
         job_id = self.store.create_job(
@@ -201,13 +201,13 @@ class LocalPipelineE2ETests(unittest.TestCase):
 
 class OfflineGuardTests(unittest.TestCase):
     def test_no_provider_module_is_imported_by_the_local_path(self):
-        for module in ("local_folder_job", "local_folder_source", "local_folder_input"):
-            source = (REPO / f"{module}.py").read_text(encoding="utf-8")
+        for module in ("yomu/download/local/local_folder_job.py", "yomu/download/local/local_folder_source.py", "yomu/download/local/local_folder_input.py"):
+            source = (REPO / module).read_text(encoding="utf-8")
             for banned in ("import requests", "translator_nvidia", "googleapis", "supabase"):
                 self.assertNotIn(banned, source, f"{module}: {banned}")
 
     def test_command_is_an_argument_list_never_a_shell_string(self):
-        from local_folder_job import build_local_job_command
+        from yomu.download.local.local_folder_job import build_local_job_command
 
         command = build_local_job_command(
             snapshot_ref="abc123", output="cap", mode="fast", logical_pages=True,

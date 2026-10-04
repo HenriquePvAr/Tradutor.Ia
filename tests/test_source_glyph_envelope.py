@@ -1,11 +1,11 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import cv2
 import numpy as np
 
-import source_glyph_envelope as sge
+import yomu.clean.ownership.source_glyph_envelope as sge
 
 
 def fixture():

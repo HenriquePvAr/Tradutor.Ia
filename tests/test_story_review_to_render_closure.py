@@ -4,8 +4,8 @@ The fixtures are synthetic and offline: they encode the #60 failure classes with
 the real PDF, source pages, provider, network, Drive, Community or Supabase.
 """
 
-import _test_bootstrap  # noqa: F401
-from offline_test_guard import install_offline_network_guard
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -13,9 +13,9 @@ import unittest
 
 import numpy as np
 
-import config
-import source_completeness
-from ocr_balloon import (
+import yomu.config.settings as config
+import yomu.ocr.source_completeness as source_completeness
+from yomu.ocr.ocr_balloon import (
     TextGroup,
     enforce_rapidocr_quality_gate,
     score_group_ocr_quality,
@@ -24,7 +24,7 @@ from ocr_balloon import (
     apply_group_translations,
     validate_translation_text,
 )
-from ocr_engine import OCRLine
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _line(text="STORY TEXT", box=(10, 10, 180, 40), line_id="L0"):

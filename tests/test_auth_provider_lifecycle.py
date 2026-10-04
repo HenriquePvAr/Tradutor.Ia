@@ -15,7 +15,7 @@ closed, just at startup/first-use instead of at import.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import asyncio
 import os
@@ -26,7 +26,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import community_auth
+import yomu.community.community_auth as community_auth
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,7 +89,7 @@ class ImportHasNoSideEffectsTests(unittest.TestCase):
 
     def test_import_does_not_call_build_auth_provider(self):
         code = (
-            "import community_auth\n"
+            "import yomu.community.community_auth as community_auth\n"
             "def _boom(*a, **k):\n"
             "    raise AssertionError('build_auth_provider called at import time')\n"
             "community_auth.build_auth_provider = _boom\n"
@@ -122,7 +122,7 @@ class ImportHasNoSideEffectsTests(unittest.TestCase):
     def test_import_does_not_build_or_cache_a_provider_session(self):
         code = (
             "import app_ui\n"
-            "import community_auth\n"
+            "import yomu.community.community_auth as community_auth\n"
             "assert community_auth._AUTH_PROVIDER_CACHE is None, "
             "'a provider (and any session it holds) was built at import time'\n"
             "print('OK')\n"
@@ -198,7 +198,7 @@ class StartupHookTests(unittest.TestCase):
     """Items 7, 8: the @app.on_startup hook builds once and fails closed."""
 
     def setUp(self):
-        import app_ui  # noqa: F401  (import after community_auth is already loaded)
+        import yomu.ui.app as app_ui  # noqa: F401  (import after community_auth is already loaded)
         community_auth.reset_auth_provider_cache()
         self.addCleanup(community_auth.reset_auth_provider_cache)
         self._tmp = tempfile.mkdtemp()
@@ -219,7 +219,7 @@ class StartupHookTests(unittest.TestCase):
         os.environ.update(values)
 
     def test_startup_hook_builds_the_provider_once(self):
-        import app_ui
+        import yomu.ui.app as app_ui
         self._set_env(_local_test_env(self._tmp))
         asyncio.run(app_ui._build_auth_provider_at_startup())
         built = community_auth._AUTH_PROVIDER_CACHE
@@ -229,7 +229,7 @@ class StartupHookTests(unittest.TestCase):
                       "a second startup call must not build a duplicate provider")
 
     def test_startup_hook_fails_closed_without_config(self):
-        import app_ui
+        import yomu.ui.app as app_ui
         self._set_env({})
         with self.assertRaises(community_auth.AuthConfigurationError):
             asyncio.run(app_ui._build_auth_provider_at_startup())
@@ -239,7 +239,7 @@ class FakeInjectionTests(unittest.TestCase):
     """Item 11: hermetic tests can inject an explicit fake without touching env/network."""
 
     def test_module_attribute_accepts_an_explicit_fake(self):
-        import app_ui
+        import yomu.ui.app as app_ui
         sentinel = object()
         original = app_ui.AUTH
         app_ui.AUTH = sentinel

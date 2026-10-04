@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from source_support_report import (
+from yomu.review.source_support_report import (
     InMemorySourceSupportReporter,
     LocalOutboxSourceSupportReporter,
     build_source_support_report,

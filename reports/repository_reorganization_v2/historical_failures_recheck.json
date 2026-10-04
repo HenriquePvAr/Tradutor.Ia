@@ -1,0 +1,11 @@
+{
+  "classification": {
+    "ignored_local_artifact_path_or_capability_contract": 3,
+    "recoverable_worker_state_bug": 1
+  },
+  "historical_failure_count": 4,
+  "new_skips_or_xfails_added_to_hide_failures": 0,
+  "remaining": 0,
+  "resolution": "optional artifact-aware handling for the three local-only cases; worker declared-output validation/recovery fix committed as bd406b9",
+  "resolved": 4
+}

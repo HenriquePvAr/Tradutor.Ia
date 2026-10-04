@@ -11,7 +11,7 @@ job store and the real runner contract while the pipeline itself is fake_pipelin
 network, no browser, no provider, no chapter content.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import subprocess
@@ -22,8 +22,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import ui_bridge
-from job_store import JobStatus, JobStore
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.runtime.job_store import JobStatus, JobStore
 
 REPO = Path(__file__).resolve().parents[1]
 CHAPTER_URL = ("https://www.webtoons.com/en/drama/daytime-in-the-bunker/episode-1/viewer"
@@ -132,7 +132,7 @@ class RunnerHandoffTests(unittest.TestCase):
         self.bridge.store.close()
 
     def run_pipeline(self, outcome="finished"):
-        command = [sys.executable, "-u", str(REPO / "fake_pipeline.py"),
+        command = [sys.executable, "-u", str(REPO / "test_support/fake_pipeline.py"),
                    "--output-dir", str(self.out), "--outcome", outcome,
                    "--steps", "2", "--sleep", "0.01"]
         job_id = self.bridge.store.create_job(
@@ -241,7 +241,7 @@ class NoProviderTests(unittest.TestCase):
     def test_fake_pipeline_imports_no_provider_and_no_network(self):
         # Assert on imports, not prose: the stage label "Tradução NVIDIA" and a docstring
         # promising the opposite both contain the word.
-        source = (REPO / "fake_pipeline.py").read_text(encoding="utf-8")
+        source = (REPO / "test_support/fake_pipeline.py").read_text(encoding="utf-8")
         imports = [line.strip() for line in source.splitlines()
                    if line.strip().startswith(("import ", "from "))]
         for banned in ("requests", "selenium", "socket", "urllib", "http"):

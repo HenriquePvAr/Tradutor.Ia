@@ -1,6 +1,6 @@
 """Hermetic fixtures for the controlled generic chapter-reader fallback."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import base64
 import io
@@ -10,8 +10,8 @@ from unittest import mock
 
 from PIL import Image
 
-import chapter_source
-from chapter_source import (
+import yomu.download.sources.chapter_source as chapter_source
+from yomu.download.sources.chapter_source import (
     AUTHENTICATION_REQUIRED,
     CHALLENGE_REQUIRED,
     INCOMPLETE_DOWNLOAD,
@@ -25,7 +25,7 @@ from chapter_source import (
     UniversalChapterAdapter,
     WEBTOONS,
 )
-from universal_chapter_adapter import (
+from yomu.download.sources.universal_chapter_adapter import (
     HIGH_CONFIDENCE,
     MAX_AUTOMATIC_PAGES,
     MAX_CANDIDATES,

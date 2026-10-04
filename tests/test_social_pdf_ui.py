@@ -1,6 +1,6 @@
 """Contract/security tests for the explicit-publishing + reader frontend (source-level)."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import re
 import unittest
@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(rel):
+    if rel == "app_ui.py":
+        rel = "yomu/ui/app.py"
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
@@ -97,7 +99,7 @@ class PdfWiringTests(unittest.TestCase):
 
     def test_backend_never_returns_drive_id_in_asset_dto(self):
         # The asset status DTO is booleans + owner-only mime/updated_at, never storage id.
-        repo = read("chapter_asset_repository.py")
+        repo = read("yomu/community/chapter_asset_repository.py")
         self.assertIn('"linked"', repo)
         self.assertIn('"available"', repo)
         # storage_file_id only used internally, never in get_asset_status output.

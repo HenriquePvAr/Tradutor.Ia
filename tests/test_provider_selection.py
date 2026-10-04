@@ -10,20 +10,22 @@ static/social_community.js (mountCommunityProvider/fetchCommunityProviderState) 
 .runtime/claude-community-supabase-mount/test_provider_mount.js for the frontend half.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import app_ui
-from community_auth import RequestPrincipal
+import yomu.ui.app as app_ui
+from yomu.community.community_auth import RequestPrincipal
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(rel: str) -> str:
+    if rel == "app_ui.py":
+        rel = "yomu/ui/app.py"
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
@@ -62,7 +64,7 @@ class BootstrapSocialStatusTests(unittest.TestCase):
         app_ui._SOCIAL_STATUS = self._orig_status
 
     def _bootstrap(self, auth, bridge=None):
-        import app_ui as mod
+        import yomu.ui.app as mod
         orig_auth, orig_bridge = mod.AUTH, mod.BRIDGE
         orig_enrich = mod._enrich_history_publications
         mod.AUTH = auth

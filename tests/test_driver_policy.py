@@ -5,11 +5,11 @@ install. Selenium Manager is the official resolver; tests keep it hermetic by de
 explicit configuration still has exact-match semantics.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-from down import driver_download_allowed, driver_resolution_diagnostics
+from yomu.download.down import driver_download_allowed, driver_resolution_diagnostics
 
 
 class _Runtime:
@@ -52,7 +52,7 @@ class DriverPolicyTests(unittest.TestCase):
     def test_single_flag_name_no_competing_alias(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "yomu/download/down.py").read_text(encoding="utf-8")
         self.assertIn("TRADUTOR_ALLOW_DRIVER_DOWNLOAD", source)
         for alias in ("SELENIUM_MANAGER_ENABLED", "ALLOW_CHROMEDRIVER_DOWNLOAD"):
             self.assertNotIn(alias, source, alias)
@@ -60,19 +60,19 @@ class DriverPolicyTests(unittest.TestCase):
     def test_failure_message_names_every_option(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "yomu/download/down.py").read_text(encoding="utf-8")
         block = source[source.index("CHROMEDRIVER_UNAVAILABLE"):][:500]
         for hint in ("CHROMEDRIVER_PATH", "PATH", "TRADUTOR_ALLOW_DRIVER_DOWNLOAD"):
             self.assertIn(hint, block, hint)
 
     def test_browser_found_legacy_driver_missing_uses_selenium_manager_once(self):
-        import down
+        import yomu.download.down as down
         from unittest import mock
 
         created = []
 
         with mock.patch.object(down, "CHROMEDRIVER_PATH", ""), \
-             mock.patch("browser_runtime.BrowserRuntimeResolver.resolve", return_value=_Runtime()), \
+             mock.patch("yomu.download.browser_runtime.BrowserRuntimeResolver.resolve", return_value=_Runtime()), \
              mock.patch.object(down, "driver_download_allowed", return_value=True), \
              mock.patch.object(down.webdriver, "Chrome",
                                side_effect=lambda service, options: created.append(
@@ -84,12 +84,12 @@ class DriverPolicyTests(unittest.TestCase):
         self.assertIn(getattr(created[0][0], "path", None), {"", None})
 
     def test_missing_driver_is_reported_with_specific_source_code_when_manager_disabled(self):
-        import down
-        from chapter_source import CHROMEDRIVER_UNAVAILABLE, SourceError
+        import yomu.download.down as down
+        from yomu.download.sources.chapter_source import CHROMEDRIVER_UNAVAILABLE, SourceError
         from unittest import mock
 
         with mock.patch.object(down, "CHROMEDRIVER_PATH", ""), \
-             mock.patch("browser_runtime.BrowserRuntimeResolver.resolve", return_value=_Runtime()), \
+             mock.patch("yomu.download.browser_runtime.BrowserRuntimeResolver.resolve", return_value=_Runtime()), \
              mock.patch.object(down, "driver_download_allowed", return_value=False):
             with self.assertRaises(SourceError) as raised:
                 down._create_driver()
@@ -100,12 +100,12 @@ class DriverPolicyTests(unittest.TestCase):
         )
 
     def test_selenium_manager_failure_is_categorized_and_cleans_profile(self):
-        import down
-        from chapter_source import BROWSER_DRIVER_UNAVAILABLE, SourceError
+        import yomu.download.down as down
+        from yomu.download.sources.chapter_source import BROWSER_DRIVER_UNAVAILABLE, SourceError
         from unittest import mock
 
         with mock.patch.object(down, "CHROMEDRIVER_PATH", ""), \
-             mock.patch("browser_runtime.BrowserRuntimeResolver.resolve", return_value=_Runtime()), \
+             mock.patch("yomu.download.browser_runtime.BrowserRuntimeResolver.resolve", return_value=_Runtime()), \
              mock.patch.object(down, "driver_download_allowed", return_value=True), \
              mock.patch.object(down.webdriver, "Chrome",
                                side_effect=RuntimeError("Unable to obtain driver")), \
@@ -117,7 +117,7 @@ class DriverPolicyTests(unittest.TestCase):
         self.assertTrue(rmtree.called)
 
     def test_existing_explicit_driver_path_still_wins(self):
-        import down
+        import yomu.download.down as down
         from unittest import mock
 
         runtime = _Runtime()
@@ -125,7 +125,7 @@ class DriverPolicyTests(unittest.TestCase):
         created = []
 
         with mock.patch.object(down, "CHROMEDRIVER_PATH", runtime.driver_path), \
-             mock.patch("browser_runtime.BrowserRuntimeResolver.resolve", return_value=runtime), \
+             mock.patch("yomu.download.browser_runtime.BrowserRuntimeResolver.resolve", return_value=runtime), \
              mock.patch.object(down.webdriver, "Chrome",
                                side_effect=lambda service, options: created.append(
                                    (service, options)) or _Driver()):
@@ -136,7 +136,7 @@ class DriverPolicyTests(unittest.TestCase):
         self.assertEqual(getattr(created[0][0], "path", None), runtime.driver_path)
 
     def test_driver_diagnostics_are_sanitized_and_show_selenium_manager(self):
-        import down
+        import yomu.download.down as down
         from unittest import mock
 
         with mock.patch.object(down, "CHROMEDRIVER_PATH", ""), \
@@ -152,7 +152,7 @@ class DriverPolicyTests(unittest.TestCase):
 
     def test_no_space_left_on_device_is_reported_as_disk_full(self):
         import errno
-        import down
+        import yomu.download.down as down
 
         self.assertEqual(
             down._pipeline_exception_code(OSError(errno.ENOSPC, "No space left on device")),
@@ -160,7 +160,7 @@ class DriverPolicyTests(unittest.TestCase):
         )
 
     def test_browser_failures_keep_actionable_reason_codes(self):
-        import down
+        import yomu.download.down as down
 
         cases = {
             RuntimeError("session not created: Chrome failed to start"):

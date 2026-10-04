@@ -5,9 +5,9 @@ from unittest.mock import patch
 import numpy as np
 import cv2
 
-import ocr_balloon
-import ocr_engine
-from ocr_balloon import OCRLine, TextGroup
+import yomu.ocr.ocr_balloon as ocr_balloon
+import yomu.ocr.ocr_engine as ocr_engine
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup
 
 
 class Mission2ValidationFixTests(unittest.TestCase):

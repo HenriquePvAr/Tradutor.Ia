@@ -10,7 +10,7 @@ These tests execute the real ``publicationEligibility`` / ``publicationAction`` 
 boundaries -- no DOM, no network, no Supabase, no Drive.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import shutil

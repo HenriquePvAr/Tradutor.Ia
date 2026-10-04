@@ -19,7 +19,7 @@ of these strings.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -32,10 +32,10 @@ import unittest
 import uuid
 from pathlib import Path
 
-import linguistic_triage as lt
-import provider_execution as pe
-import region_taxonomy as tax
-import translator_nvidia as tn
+import yomu.translation.linguistic_triage as lt
+import yomu.translation.providers.provider_execution as pe
+import yomu.review.region_taxonomy as tax
+import yomu.translation.providers.translator_nvidia as tn
 
 
 def _rid():
@@ -527,7 +527,7 @@ class RestartIdempotency(NaturalityRetryHarness):
         script = textwrap.dedent(f"""
             import json, sys
             sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
-            import provider_execution as pe
+            from yomu.translation.providers import provider_execution as pe
             records = json.loads(open({str(records_path)!r}, encoding="utf-8").read())
             spent = pe.find_request({self.output!r}, {request["authorization_request_id"]!r})
             try:
@@ -594,7 +594,7 @@ class DownloaderAndNetworkIsolation(NaturalityRetryHarness):
             self.assertNotIn(f"from {name} ", source)
 
     def test_translator_nvidia_prompt_change_does_not_import_downloader_modules(self):
-        source = Path("translator_nvidia.py").read_text(encoding="utf-8")
+        source = Path("yomu/translation/providers/translator_nvidia.py").read_text(encoding="utf-8")
         forbidden_modules = ("down", "chapter_source", "browser_runtime")
         for name in forbidden_modules:
             self.assertNotIn(f"import {name}", source)

@@ -6,8 +6,8 @@ import pytest
 from PIL import Image
 from psd_tools import PSDImage
 
-import psd_exporter
-from psd_exporter import PsdExportError, export_final_pages_psd
+import yomu.export.psd_exporter as psd_exporter
+from yomu.export.psd_exporter import PsdExportError, export_final_pages_psd
 
 
 def _image(path: Path, size=(24, 18), color="white", mode="RGB") -> None:

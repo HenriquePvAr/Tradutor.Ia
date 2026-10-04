@@ -1,0 +1,7 @@
+{
+  "final_commit_recorded_in_final_report": "bd406b97c8d9f17f7ea559d7a9380f44d9bc4351",
+  "observed_before_final_reorganization_commit": [
+    "bd406b9 (HEAD -> chore/repository-structure-cleanup-v2) fix(runtime): validate declared outputs before recovery"
+  ],
+  "push": "NO"
+}

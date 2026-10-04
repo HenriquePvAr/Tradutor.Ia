@@ -12,7 +12,7 @@ from pathlib import Path
 
 from psd_tools import PSDImage
 
-from job_store import JobStatus
+from yomu.runtime.job_store import JobStatus
 from tests.test_review_reexport_worker_e2e import _fixture, _run_worker, _wait_job
 
 
@@ -83,7 +83,7 @@ def test_review_psd_off_recovery_preserves_mode(tmp_path):
         _run_worker(db, tmp_path / "rt", fault="export")  # crash once after validate
         first = _wait_job(store, queued["job_id"], {JobStatus.INTERRUPTED})
         assert first.get("recoverable") == 1
-        from ui_bridge import UiBridge
+        from yomu.ui.ui_bridge import UiBridge
         bridge2 = object.__new__(UiBridge)
         bridge2.store = store
         bridge2.history_revision = 0

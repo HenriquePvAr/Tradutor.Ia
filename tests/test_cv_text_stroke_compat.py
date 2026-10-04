@@ -10,7 +10,7 @@ These tests pin our contract -- the stroke width we asked for, connected
 glyphs, outline survival -- not any particular OpenCV rendering.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 

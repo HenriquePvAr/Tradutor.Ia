@@ -10,7 +10,7 @@ Every engine here is a stub.  No RapidOCR/Paddle inference, no network, no
 chapter: the fixtures are synthetic tokens chosen only to exercise the policy.
 """
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -19,9 +19,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-import config
-import ocr_balloon
-from ocr_balloon import (
+import yomu.config.settings as config
+import yomu.ocr.ocr_balloon as ocr_balloon
+from yomu.ocr.ocr_balloon import (
     RECOVERY_RECONCILE,
     RECOVERY_REJECT,
     RECOVERY_REPLACE,
@@ -30,8 +30,8 @@ from ocr_balloon import (
     reconcile_recovery_lines,
     score_group_ocr_quality,
 )
-from ocr_engine import OCRLine
-from source_completeness import compact, meaningful_tokens
+from yomu.ocr.ocr_engine import OCRLine
+from yomu.ocr.source_completeness import compact, meaningful_tokens
 
 
 def _line(text, box, confidence=0.92):

@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
-from job_store import JobStatus
-from local_folder_job import build_local_job_command
-from ui_bridge import UiBridge
+from yomu.runtime.job_store import JobStatus
+from yomu.download.local.local_folder_job import build_local_job_command
+from yomu.ui.ui_bridge import UiBridge
 
 
 def test_frozen_local_command_can_bind_output_to_authoritative_job_dir(tmp_path):

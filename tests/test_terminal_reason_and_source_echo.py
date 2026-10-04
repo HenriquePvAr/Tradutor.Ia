@@ -11,7 +11,7 @@
 Real chapter text appears only as fixtures; nothing in production keys off any word.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest.mock import patch
@@ -19,8 +19,8 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-import config
-from ocr_balloon import (
+import yomu.config.settings as config
+from yomu.ocr.ocr_balloon import (
     OCRLine,
     TextGroup,
     PROPER_NAME_ONLY_REASON,
@@ -151,7 +151,7 @@ class CandidateBearingTerminalTests(unittest.TestCase):
 
     def test_every_strategy_refusing_is_an_explicit_review_not_a_silent_preserve(self):
         image, grp = self._uniform_balloon_group()
-        with patch("ocr_balloon._remove_text_for_group") as remove:
+        with patch("yomu.ocr.ocr_balloon._remove_text_for_group") as remove:
             remove.side_effect = lambda current, original, group, strategy="primary": (
                 current.copy(),
                 np.zeros(original.shape[:2], dtype=np.uint8),

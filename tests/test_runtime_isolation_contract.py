@@ -13,7 +13,7 @@ or mutated.  ``hermetic_runtime`` refuses each attempt before the side effect ha
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import sqlite3
@@ -25,9 +25,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import hermetic_runtime
-import ui_bridge
-from hermetic_runtime import (
+import test_support.hermetic_runtime as hermetic_runtime
+import yomu.ui.ui_bridge as ui_bridge
+from test_support.hermetic_runtime import (
     REAL_JOBS_DB,
     REAL_OUTPUT_ROOT,
     REAL_RUNTIME_ROOT,
@@ -37,9 +37,9 @@ from hermetic_runtime import (
     is_real_user_state_path,
     sqlite_uri_path,
 )
-from job_store import JobStatus, JobStore
-from ui_history import UIHistoryStore
-from runtime_paths import default_user_data_root
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.ui.ui_history import UIHistoryStore
+from yomu.runtime.runtime_paths import default_user_data_root
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -280,7 +280,7 @@ class RealWorkerSpawnTripwireTests(unittest.TestCase):
         The launcher module resolves its DB at import time, so the hermetic runtime root
         has to be visible to ``runtime_paths`` before the module is imported.
         """
-        import start_tradutor
+        import yomu.commands.start_tradutor as start_tradutor
 
         self.assertEqual(start_tradutor.DB_PATH, Path(os.environ["TRADUTOR_TEST_RUNTIME_ROOT"]) / "jobs.sqlite3")
         self.assertFalse(is_real_runtime_path(start_tradutor.DB_PATH))
@@ -293,7 +293,7 @@ class IsolatedRuntimeVisibilityTests(unittest.TestCase):
         return Path(os.environ["TRADUTOR_TEST_RUNTIME_ROOT"])
 
     def test_all_default_mutable_paths_stay_inside_test_root(self):
-        import runtime_paths
+        import yomu.runtime.runtime_paths as runtime_paths
 
         overrides = {key: "" for key in (
             "CACHE_ROOT", "TEMP_FOLDER", "TEMP_OUT", "TRADUTOR_OUTPUT_ROOT",
@@ -338,7 +338,7 @@ class IsolatedRuntimeVisibilityTests(unittest.TestCase):
                     folder.rmdir()
 
     def test_app_ui_bridge_resolves_only_isolated_paths(self):
-        import app_ui
+        import yomu.ui.app as app_ui
 
         bridge = app_ui.BRIDGE
         for path in (
@@ -382,10 +382,10 @@ class FailClosedConstructionTests(unittest.TestCase):
 
         Read-only source inspection: no bridge is constructed, so nothing is opened.
         """
-        source = (REPO_ROOT / "ui_bridge.py").read_text(encoding="utf-8")
+        source = (REPO_ROOT / "yomu/ui/ui_bridge.py").read_text(encoding="utf-8")
         self.assertIn('JOBS_DB_PATH = DEFAULT_RUNTIME_ROOT / "jobs.sqlite3"', source)
         self.assertIn('DEFAULT_RUNTIME_ROOT.resolve()', source)
-        launcher = (REPO_ROOT / "start_tradutor.py").read_text(encoding="utf-8")
+        launcher = (REPO_ROOT / "yomu/commands/start_tradutor.py").read_text(encoding="utf-8")
         self.assertIn('DB_PATH = RUNTIME_ROOT / "jobs.sqlite3"', launcher)
 
     def test_a_clean_production_interpreter_uses_user_data_runtime_root(self):
@@ -404,7 +404,7 @@ class FailClosedConstructionTests(unittest.TestCase):
         completed = subprocess.run(
             [
                 sys.executable, "-c",
-                "import runtime_paths;"
+                "from yomu.runtime import runtime_paths;"
                 "print(runtime_paths.runtime_root() == runtime_paths.default_user_data_root() / 'runtime')",
             ],
             cwd=REPO_ROOT, env=environment, capture_output=True, text=True, timeout=120,

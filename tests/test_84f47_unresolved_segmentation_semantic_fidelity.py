@@ -16,13 +16,13 @@ target semantically wrong, no *literal* debris.
 No page, region, provider or string is special-cased; the residual and the
 candidate are the only inputs.
 """
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 
-import semantic_fidelity
+import yomu.translation.semantic_fidelity as semantic_fidelity
 
 
 def _fidelity(source, candidate, **kwargs):

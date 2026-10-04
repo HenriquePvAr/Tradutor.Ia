@@ -1,10 +1,10 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import unittest
 
-from ocr_memory_policy import MemorySnapshot, choose_workers
+from yomu.ocr.ocr_memory_policy import MemorySnapshot, choose_workers
 
 
 class OcrMemoryPolicyTests(unittest.TestCase):

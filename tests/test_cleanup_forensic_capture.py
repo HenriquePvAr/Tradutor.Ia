@@ -1,20 +1,20 @@
 """Opt-in cleanup forensic capture contracts."""
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 from pathlib import Path
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import cv2
 import numpy as np
 
-import ocr_balloon as ob
-from ocr_engine import OCRLine
+import yomu.ocr.ocr_balloon as ob
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _fixture():

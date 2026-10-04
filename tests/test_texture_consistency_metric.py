@@ -1,10 +1,10 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import numpy as np
 
-import art_text_inpainting as ati
+import yomu.clean.inpainting.art_text_inpainting as ati
 
 
 class TextureConsistencyMetricTests(unittest.TestCase):

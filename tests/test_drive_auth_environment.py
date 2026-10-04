@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import hashlib
 import os
@@ -15,9 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import drive_auth
-import google_drive_factory
-import local_environment
+import yomu.community.storage.drive_auth as drive_auth
+import yomu.community.storage.google_drive_factory as google_drive_factory
+import yomu.runtime.local_environment as local_environment
 
 
 DRIVE_ENV_KEYS = (
@@ -201,16 +201,19 @@ def test_real_status_subprocess_uses_only_temporary_env_from_other_cwd(tmp_path)
     elsewhere = tmp_path / "elsewhere"
     project.mkdir()
     elsewhere.mkdir()
-    shutil.copy2(local_environment.PROJECT_ROOT / "drive_auth.py", project / "drive_auth.py")
-    shutil.copy2(local_environment.PROJECT_ROOT / "local_environment.py", project / "local_environment.py")
-    (project / "community_storage.py").write_text(
-        "class StorageError(Exception):\n"
-        "    def __init__(self, message='', *, status=500, transient=False):\n"
-        "        super().__init__(message)\n"
-        "        self.status = status\n"
-        "        self.transient = transient\n",
-        encoding="utf-8",
-    )
+    package_root = project / "yomu"
+    package_storage = package_root / "community" / "storage"
+    package_runtime = package_root / "runtime"
+    for directory in (package_root, package_root / "community", package_storage, package_runtime):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "__init__.py").write_text("", encoding="utf-8")
+    for source, target in (
+        ("yomu/community/storage/drive_auth.py", package_storage / "drive_auth.py"),
+        ("yomu/community/community_storage.py", package_root / "community" / "community_storage.py"),
+        ("yomu/runtime/local_environment.py", package_runtime / "local_environment.py"),
+        ("yomu/runtime/paths.py", package_runtime / "paths.py"),
+    ):
+        shutil.copy2(local_environment.PROJECT_ROOT / source, target)
     fake_client = "subprocess-client-id.example"
     fake_secret = "subprocess-client-secret"
     fake_token_path = r"C:\__tradutor_offline_test__\drive_token.json"
@@ -224,11 +227,12 @@ def test_real_status_subprocess_uses_only_temporary_env_from_other_cwd(tmp_path)
     )
 
     result = subprocess.run(
-        [sys.executable, str(project / "drive_auth.py"), "status"],
+        [sys.executable, "-m", "yomu.community.storage.drive_auth", "status"],
         cwd=elsewhere,
         capture_output=True,
         text=True,
-        env={k: v for k, v in os.environ.items() if k != local_environment.HERMETIC_TEST_ENV},
+        env={**{k: v for k, v in os.environ.items() if k != local_environment.HERMETIC_TEST_ENV},
+             "PYTHONPATH": str(project)},
         check=False,
     )
     output = result.stdout + result.stderr

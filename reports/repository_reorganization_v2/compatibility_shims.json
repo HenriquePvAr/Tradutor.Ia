@@ -1,0 +1,55 @@
+{
+  "count": 8,
+  "implementation_copies": 0,
+  "root_entrypoint_logic_lines": "thin imports/dispatch only",
+  "shims": [
+    {
+      "canonical_target": "yomu/ui/app.py",
+      "main_guard": true,
+      "root_file": "app_ui.py",
+      "thin_shim": true
+    },
+    {
+      "canonical_target": "yomu/desktop/app.py",
+      "main_guard": true,
+      "root_file": "desktop_app.py",
+      "thin_shim": true
+    },
+    {
+      "canonical_target": "yomu/download/down.py",
+      "main_guard": false,
+      "root_file": "down.py",
+      "thin_shim": true
+    },
+    {
+      "canonical_target": "yomu/commands/legacy_gui.py",
+      "main_guard": true,
+      "root_file": "main.py",
+      "thin_shim": true
+    },
+    {
+      "canonical_target": "yomu/commands/run_local_folder.py",
+      "main_guard": true,
+      "root_file": "run_local_folder.py",
+      "thin_shim": true
+    },
+    {
+      "canonical_target": "yomu/commands/run_webtoon.py",
+      "main_guard": true,
+      "root_file": "run_webtoon.py",
+      "thin_shim": true
+    },
+    {
+      "canonical_target": "yomu/commands/start_tradutor.py",
+      "main_guard": true,
+      "root_file": "start_tradutor.py",
+      "thin_shim": true
+    },
+    {
+      "canonical_target": "yomu/runtime/worker_service.py",
+      "main_guard": true,
+      "root_file": "worker_service.py",
+      "thin_shim": true
+    }
+  ]
+}

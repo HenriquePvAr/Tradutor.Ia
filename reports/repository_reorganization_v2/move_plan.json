@@ -1,0 +1,3597 @@
+{
+  "base_head": "bd406b97c8d9f17f7ea559d7a9380f44d9bc4351",
+  "modules": [
+    {
+      "source": "_test_bootstrap.py",
+      "target": "test_support/_test_bootstrap.py",
+      "category": "test_support",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_84f14_quality_reconciliation.py",
+        "tests/test_84f15_word_sense_disambiguation.py",
+        "tests/test_84f17_semantic_recovery.py",
+        "tests/test_84f19_semantic_detection_hardening.py",
+        "tests/test_84f39_residual_story_english_gate.py",
+        "tests/test_84f40_selective_review_retry.py",
+        "tests/test_84f41_final_five_review_regions.py",
+        "tests/test_84f42_final_three_residual_regions.py",
+        "tests/test_84f8_rc_blockers.py",
+        "tests/test_adapter_collection_strategy.py",
+        "tests/test_ambiguous_component_decomposition.py",
+        "tests/test_async_submit_contract.py",
+        "tests/test_async_ui_stages.py",
+        "tests/test_audit_trace_serialization.py",
+        "tests/test_auth_provider_lifecycle.py",
+        "tests/test_benchmark_environment.py",
+        "tests/test_beta10_update_diagnostics.py",
+        "tests/test_beta_tester_licensing.py",
+        "tests/test_better_auth_i18n_pipeline_ui.py",
+        "tests/test_browser_runtime.py",
+        "tests/test_canonical_social_identity.py",
+        "tests/test_canonical_source_identity.py",
+        "tests/test_chapter_character_registry.py",
+        "tests/test_chapter_reader.py",
+        "tests/test_chapter_sources.py",
+        "tests/test_chapter_terminology_ledger.py",
+        "tests/test_clean_donor_reconstruction.py",
+        "tests/test_cleanup_fixed_mask_reconstruction_red.py",
+        "tests/test_cleanup_forensic_capture.py",
+        "tests/test_comix_source_analysis_entrypoint.py",
+        "tests/test_community_api.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_core.py",
+        "tests/test_community_publication_metadata.py",
+        "tests/test_community_publication_metadata_wiring.py",
+        "tests/test_community_publish.py",
+        "tests/test_community_publish_attempt_isolation_http.py",
+        "tests/test_community_publish_survival.py",
+        "tests/test_community_storage_core.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_download_local_http_e2e.py",
+        "tests/test_download_parallel_contract.py",
+        "tests/test_download_transport.py",
+        "tests/test_drive_auth_environment.py",
+        "tests/test_drive_auth_reconcile.py",
+        "tests/test_drive_auth_refresh_errors.py",
+        "tests/test_driver_policy.py",
+        "tests/test_empty_retry_prefers_translation.py",
+        "tests/test_final_69_forensic_ledger.py",
+        "tests/test_font_metadata_scorer.py",
+        "tests/test_font_role_semantic_precedence.py",
+        "tests/test_glyph_art_boundary_review.py",
+        "tests/test_glyph_style_detector.py",
+        "tests/test_google_drive_storage.py",
+        "tests/test_google_drive_wiring.py",
+        "tests/test_http_source_discovery.py",
+        "tests/test_interrupted_job_resume_ui.py",
+        "tests/test_job_finalization_and_start_idempotency.py",
+        "tests/test_job_runner_sanitization.py",
+        "tests/test_job_store.py",
+        "tests/test_launcher.py",
+        "tests/test_lazy_scroll_stability.py",
+        "tests/test_lazy_slot_resolver.py",
+        "tests/test_lifecycle_community_regressions.py",
+        "tests/test_loading_view_ui.py",
+        "tests/test_local_benchmark_pipeline_e2e.py",
+        "tests/test_local_environment.py",
+        "tests/test_local_folder_cli.py",
+        "tests/test_local_folder_input.py",
+        "tests/test_local_folder_source.py",
+        "tests/test_local_pipeline_e2e.py",
+        "tests/test_local_test_auth.py",
+        "tests/test_local_test_storage.py",
+        "tests/test_local_translation_contract.py",
+        "tests/test_logical_pages.py",
+        "tests/test_main_e2e_findings_contract.py",
+        "tests/test_multiscale_patch_synthesis.py",
+        "tests/test_natural_ptbr_refinement.py",
+        "tests/test_new_translation_source_policy_state.py",
+        "tests/test_nvidia_ocr_hybrid.py",
+        "tests/test_ocr_production_pipeline_execution_mode.py",
+        "tests/test_ocr_provenance_hybrid_cancellation.py",
+        "tests/test_offline_hybrid_replay_5pages.py",
+        "tests/test_output_artifact_immutability.py",
+        "tests/test_owner_scoped_ui.py",
+        "tests/test_p068_semantic_recovery.py",
+        "tests/test_p11_semantic_substitution_red.py",
+        "tests/test_p19_ocr_lexical_fusion_red.py",
+        "tests/test_p19_unresolved_recovery_disagreement_red.py",
+        "tests/test_p27_authority_gate_red.py",
+        "tests/test_page_selection_and_terminate.py",
+        "tests/test_pipeline_multi_page_full_ab.py",
+        "tests/test_pipeline_review_global_contracts.py",
+        "tests/test_post_reconstruction_guards.py",
+        "tests/test_process_tree.py",
+        "tests/test_processing_surface_ui.py",
+        "tests/test_proper_name_routing.py",
+        "tests/test_provider_provenance_command_rebuild.py",
+        "tests/test_provider_provenance_physical_gate.py",
+        "tests/test_provider_selection.py",
+        "tests/test_provider_transport.py",
+        "tests/test_ptbr_naturalization_runtime_wiring.py",
+        "tests/test_publication_client_canonical_gate.py",
+        "tests/test_publish_authorization.py",
+        "tests/test_reader_coverage.py",
+        "tests/test_reader_slot_states.py",
+        "tests/test_reconstructed_artifact_ui_publication.py",
+        "tests/test_reference_guided_reconstruction.py",
+        "tests/test_refinement_selection_decisions.py",
+        "tests/test_refinement_structured_repair.py",
+        "tests/test_remote_update.py",
+        "tests/test_request_observability.py",
+        "tests/test_residual_analysis_identity.py",
+        "tests/test_residual_mask_layout_repair.py",
+        "tests/test_retry_review_moderation_ui.py",
+        "tests/test_review_rerun.py",
+        "tests/test_riva_translation_provider.py",
+        "tests/test_run_manifest_identity.py",
+        "tests/test_runtime_forensics_contract.py",
+        "tests/test_runtime_isolation_contract.py",
+        "tests/test_runtime_profile_guard.py",
+        "tests/test_safe_exhausted_retry_policy.py",
+        "tests/test_selective_artifact_reconstruction.py",
+        "tests/test_selective_ptbr_naturalization.py",
+        "tests/test_semantic_fidelity_gate.py",
+        "tests/test_semantic_meaning_and_ptbr_quality.py",
+        "tests/test_semantic_runtime_acceptance.py",
+        "tests/test_signed_update.py",
+        "tests/test_social_asset_retention.py",
+        "tests/test_social_community_ui.py",
+        "tests/test_social_content.py",
+        "tests/test_social_pdf_publishing.py",
+        "tests/test_social_pdf_ui.py",
+        "tests/test_source_analysis_contract.py",
+        "tests/test_source_color_application.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_source_glyph_envelope.py",
+        "tests/test_source_profile.py",
+        "tests/test_source_readiness.py",
+        "tests/test_source_support_report.py",
+        "tests/test_stale_job_reconcile.py",
+        "tests/test_story_review_to_render_closure.py",
+        "tests/test_stroke_shadow_detection.py",
+        "tests/test_supabase_auth.py",
+        "tests/test_supabase_authorization.py",
+        "tests/test_supabase_frontend.py",
+        "tests/test_supabase_publication_metadata_schema.py",
+        "tests/test_supabase_social.py",
+        "tests/test_synthetic_fixture_harness.py",
+        "tests/test_terminal_reason_and_source_echo.py",
+        "tests/test_terminal_toast_loop_regressions.py",
+        "tests/test_texture_consistency_metric.py",
+        "tests/test_translation_provider_default.py",
+        "tests/test_translation_start.py",
+        "tests/test_translation_validator_precision.py",
+        "tests/test_ui_operational_refinement.py",
+        "tests/test_ui_panel_visibility.py",
+        "tests/test_ui_persistent_queue.py",
+        "tests/test_ui_runtime_dependency.py",
+        "tests/test_ui_translation_provider_selection.py",
+        "tests/test_unittest_guard_probe.py",
+        "tests/test_universal_chapter_adapter.py",
+        "tests/test_unknown_story_adjacency_promotion.py",
+        "tests/test_url_job_pipeline_e2e.py",
+        "tests/test_vortex_reader_pipeline.py",
+        "tests/test_webtoons_preflight_regression.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "tests/test_worker_process_loss.py",
+        "tests/test_worker_runner.py",
+        "tests/test_worker_shutdown.py",
+        "tests/test_worker_source_failure_diagnostic.py",
+        "tests/test_worker_source_phase.py",
+        "tests/test_worker_supervision.py",
+        "tests/test_worker_survival.py",
+        "tests/test_workspace_source_policy.py",
+        "tests/test_world_memory_phase7c_red.py",
+        "tests/test_yk_atomicity.py",
+        "tests/test_yk_job_runner_settlement.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tests/test_yk_reservation_settlement.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "_test_processes.py",
+      "target": "test_support/_test_processes.py",
+      "category": "test_support",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_runtime_forensics_contract.py",
+        "tests/test_worker_process_loss.py",
+        "tests/test_worker_supervision.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ad_url_policy.py",
+      "target": "yomu/security/ad_url_policy.py",
+      "category": "utilities",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "desktop_app.py",
+        "tests/test_ad_url_policy.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "adaptive_scheduler.py",
+      "target": "yomu/runtime/adaptive_scheduler.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "ocr_parallel.py",
+        "tests/test_adaptive_scheduler.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "advanced_art_inpainting.py",
+      "target": "yomu/clean/inpainting/advanced_art_inpainting.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "ocr_balloon.py",
+        "tests/test_84f27_render_parity_occupancy_texture.py",
+        "tests/test_84f29_advanced_art_inpainting.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "app_ui.py",
+      "target": "yomu/ui/app.py",
+      "category": "entrypoint",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "local_media_preview_harness.py",
+        "start_tradutor.py",
+        "tests/test_auth_provider_lifecycle.py",
+        "tests/test_beta10_update_diagnostics.py",
+        "tests/test_chapter_reader.py",
+        "tests/test_comix_source_analysis_entrypoint.py",
+        "tests/test_control_plane_diagnostics.py",
+        "tests/test_desktop_app.py",
+        "tests/test_diagnostic_log_rotation.py",
+        "tests/test_download_only_wallet_contract.py",
+        "tests/test_interrupted_job_resume_ui.py",
+        "tests/test_local_media_registry.py",
+        "tests/test_owner_scoped_ui.py",
+        "tests/test_profile_media_local_absence.py",
+        "tests/test_provider_selection.py",
+        "tests/test_rate_limit_middleware.py",
+        "tests/test_runtime_forensics_contract.py",
+        "tests/test_runtime_isolation_contract.py",
+        "tests/test_source_analysis_observability.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_workspace_source_policy.py"
+      ],
+      "shim": true
+    },
+    {
+      "source": "app_version.py",
+      "target": "yomu/runtime/version.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "desktop_app.py",
+        "runtime_contract.py",
+        "source_support_report.py",
+        "start_tradutor.py",
+        "tests/test_remote_update.py",
+        "tests/test_versioning.py",
+        "tools/build_installer.py",
+        "tools/release/build_update_manifest.py",
+        "update_bootstrap.py",
+        "update_transport.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "art_text_inpainting.py",
+      "target": "yomu/clean/inpainting/art_text_inpainting.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "chapter_quality_revision.py",
+        "tests/test_clean_donor_reconstruction.py",
+        "tests/test_post_reconstruction_guards.py",
+        "tests/test_texture_consistency_metric.py",
+        "tests/test_visual_refinement_block6e3.py",
+        "tests/test_visual_refinement_safety.py",
+        "tests/test_visual_segmentation_block6e1.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "artifact_contract.py",
+      "target": "yomu/runtime/artifact_contract.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "benchmark_pipeline.py",
+        "job_runner.py",
+        "tests/test_artifact_contract.py",
+        "tests/test_artifact_persistence.py",
+        "tests/test_editable_psd_writer.py",
+        "tests/test_job_runner_sanitization.py",
+        "tests/test_local_benchmark_pipeline_e2e.py",
+        "tests/test_output_profile_selection.py",
+        "tests/test_review_manifest.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "audit_decisions.py",
+      "target": "yomu/review/audit_decisions.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "provider_execution.py",
+        "tests/test_audit_decisions.py",
+        "tests/test_audit_review_bridge.py",
+        "tests/test_provider_execution.py",
+        "tests/test_triage_bridge.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "audit_registry.py",
+      "target": "yomu/review/audit_registry.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_audit_registry.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ayet_rewarded.py",
+      "target": "yomu/core/ayet_rewarded.py",
+      "category": "utilities",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_ayet_rewarded.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "benchmark_environment.py",
+      "target": "tools/performance/benchmark_environment.py",
+      "category": "tool_or_research",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_benchmark_environment.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "benchmark_ocr_engines.py",
+      "target": "tools/performance/benchmark_ocr_engines.py",
+      "category": "tool_or_research",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [],
+      "shim": false
+    },
+    {
+      "source": "benchmark_pipeline.py",
+      "target": "yomu/pipeline/benchmark_pipeline.py",
+      "category": "pipeline",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "performance_validation_harness.py",
+        "run_webtoon.py",
+        "scripts/manual_webtoon_smoke.py",
+        "selective_artifact_reconstruction.py",
+        "tests/test_84f14_quality_reconciliation.py",
+        "tests/test_84f15_word_sense_disambiguation.py",
+        "tests/test_artifact_persistence.py",
+        "tests/test_audit_trace_serialization.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_downloader_regressions.py",
+        "tests/test_local_benchmark_pipeline_e2e.py",
+        "tests/test_ocr_quality_regressions.py",
+        "tests/test_offline_hybrid_replay_5pages.py",
+        "tests/test_output_artifact_immutability.py",
+        "tests/test_p068_semantic_recovery.py",
+        "tests/test_page_failure_quality_gate.py",
+        "tests/test_page_selection_and_terminate.py",
+        "tests/test_pdf_split_regressions.py",
+        "tests/test_pipeline_multi_page_full_ab.py",
+        "tests/test_pipeline_page_workers.py",
+        "tests/test_pre_settlement_layout_retry.py",
+        "tests/test_professional_psd_quality_e2e.py",
+        "tests/test_proper_name_routing.py",
+        "tests/test_provider_provenance_command_rebuild.py",
+        "tests/test_provider_provenance_physical_gate.py",
+        "tests/test_resume_checkpoint_auth_runtime.py",
+        "tests/test_run_manifest_identity.py",
+        "tests/test_runtime_forensics_contract.py",
+        "tests/test_safe_exhausted_retry_policy.py",
+        "tests/test_semantic_runtime_acceptance.py",
+        "tests/test_short_page_reconstruction.py",
+        "tests/test_source_completeness.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_translation_disabled_first_class.py",
+        "tests/test_translation_provider_default.py",
+        "tests/test_typography_propagation.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tests/test_yomu_backend_pipeline_wiring.py",
+        "tests/test_zero_denominator_physical_gate.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "beta_control_plane.py",
+      "target": "yomu/runtime/beta_control_plane.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "tests/test_beta_control_plane.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "beta_license.py",
+      "target": "yomu/auth/beta_license.py",
+      "category": "auth",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "job_runner.py",
+        "tests/test_beta_tester_licensing.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "browser_runtime.py",
+      "target": "yomu/download/browser_runtime.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "down.py",
+        "tests/test_browser_runtime.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "build_profile.py",
+      "target": "yomu/runtime/build_profile.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "packaging/runtime_profile_production.py",
+        "packaging/runtime_profile_validation.py",
+        "start_tradutor.py",
+        "tests/test_build_profile.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "canonical_social_identity.py",
+      "target": "yomu/community/canonical_social_identity.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "community_api.py",
+        "tests/test_canonical_social_identity.py",
+        "tests/test_community_storage_core.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "canonical_source_identity.py",
+      "target": "yomu/download/sources/canonical_source_identity.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "chapter_source.py",
+        "http_source_discovery.py",
+        "tests/test_canonical_source_identity.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "chapter_asset_repository.py",
+      "target": "yomu/community/chapter_asset_repository.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "social_asset_maintenance_cli.py",
+        "social_asset_retention.py",
+        "social_content.py",
+        "social_pdf_http.py",
+        "social_pdf_publishing.py",
+        "tests/test_social_asset_retention.py",
+        "tests/test_social_content.py",
+        "tests/test_social_pdf_publishing.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "chapter_quality_revision.py",
+      "target": "yomu/review/chapter_quality_revision.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "review_reexport.py",
+        "review_rerun.py",
+        "review_rerun_runner.py",
+        "selective_artifact_reconstruction.py",
+        "tests/test_84f39_residual_story_english_gate.py",
+        "tests/test_human_preview_drafts.py",
+        "tests/test_live_taxonomy_routing.py",
+        "tests/test_pipeline_review_global_contracts.py",
+        "tests/test_post_reconstruction_guards.py",
+        "tests/test_quality_revision_concurrency_contract.py",
+        "tests/test_visual_refinement_block6e3.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "chapter_source.py",
+      "target": "yomu/download/sources/chapter_source.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "benchmark_pipeline.py",
+        "canonical_source_identity.py",
+        "down.py",
+        "download_transport.py",
+        "dynamic_resolver_process.py",
+        "http_source_discovery.py",
+        "image_validation.py",
+        "lazy_slot_resolver.py",
+        "local_folder_input.py",
+        "local_folder_job.py",
+        "local_folder_source.py",
+        "scrapling_reader_resolver.py",
+        "source_analysis_phase.py",
+        "source_profile.py",
+        "tests/test_adapter_collection_strategy.py",
+        "tests/test_chapter_sources.py",
+        "tests/test_comix_adapter.py",
+        "tests/test_comix_download_403_fallback.py",
+        "tests/test_comix_dynamic_fallback_contract.py",
+        "tests/test_comix_source_analysis_entrypoint.py",
+        "tests/test_download_local_http_e2e.py",
+        "tests/test_download_parallel_contract.py",
+        "tests/test_download_transport.py",
+        "tests/test_downloader_regressions.py",
+        "tests/test_driver_policy.py",
+        "tests/test_http_source_discovery.py",
+        "tests/test_lazy_scroll_stability.py",
+        "tests/test_lazy_slot_resolver.py",
+        "tests/test_new_translation_source_policy_state.py",
+        "tests/test_provider_provenance_command_rebuild.py",
+        "tests/test_reader_coverage.py",
+        "tests/test_reader_slot_states.py",
+        "tests/test_source_analysis_contract.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_source_profile.py",
+        "tests/test_translation_start.py",
+        "tests/test_ui_helpers.py",
+        "tests/test_ui_operational_refinement.py",
+        "tests/test_universal_chapter_adapter.py",
+        "tests/test_vortex_reader_pipeline.py",
+        "tests/test_webtoons_preflight_regression.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "tests/test_worker_source_failure_diagnostic.py",
+        "tests/test_worker_source_phase.py",
+        "ui_bridge.py",
+        "ui_helpers.py",
+        "universal_chapter_adapter.py",
+        "webtoons_reader_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "classification_profiler.py",
+      "target": "yomu/ocr/classification_profiler.py",
+      "category": "tool_or_research",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "ocr_balloon.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "cleanup_forensic_capture.py",
+      "target": "tools/research/cleanup_forensic_capture.py",
+      "category": "tool_or_research",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "ocr_balloon.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "commercial_device.py",
+      "target": "yomu/auth/commercial_device.py",
+      "category": "auth",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_commercial_device_authority.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "commercial_foundation.py",
+      "target": "yomu/auth/commercial_foundation.py",
+      "category": "auth",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_commercial_foundation.py",
+        "tests/test_yk_ads_foundation.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_api.py",
+      "target": "yomu/community/community_api.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "community_http.py",
+        "social_asset_retention.py",
+        "social_content.py",
+        "tests/test_community_api.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_publication_metadata_wiring.py",
+        "tests/test_community_publish_attempt_isolation_http.py",
+        "tests/test_community_storage_core.py",
+        "tests/test_legacy_artifact_owner_binding.py",
+        "tests/test_lifecycle_community_regressions.py",
+        "tests/test_local_test_storage.py",
+        "tests/test_reconstructed_artifact_ui_publication.py",
+        "tests/test_retry_review_moderation_ui.py",
+        "tests/test_selective_artifact_reconstruction.py",
+        "tests/test_social_pdf_publishing.py",
+        "tests/test_supabase_authorization.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_auth.py",
+      "target": "yomu/community/community_auth.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "canonical_social_identity.py",
+        "community_api.py",
+        "community_authorization.py",
+        "community_http.py",
+        "community_service.py",
+        "local_test_auth.py",
+        "social_content.py",
+        "social_http.py",
+        "social_pdf_http.py",
+        "social_pdf_publishing.py",
+        "supabase_auth.py",
+        "tests/test_auth_provider_lifecycle.py",
+        "tests/test_beta_tester_licensing.py",
+        "tests/test_better_auth_i18n_pipeline_ui.py",
+        "tests/test_canonical_social_identity.py",
+        "tests/test_chapter_reader.py",
+        "tests/test_commercial_device_authority.py",
+        "tests/test_community_api.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_core.py",
+        "tests/test_community_publish.py",
+        "tests/test_community_publish_attempt_isolation_http.py",
+        "tests/test_community_publish_survival.py",
+        "tests/test_community_storage_core.py",
+        "tests/test_google_drive_wiring.py",
+        "tests/test_legacy_artifact_owner_binding.py",
+        "tests/test_lifecycle_community_regressions.py",
+        "tests/test_local_test_auth.py",
+        "tests/test_owner_scoped_ui.py",
+        "tests/test_provider_selection.py",
+        "tests/test_reconstructed_artifact_ui_publication.py",
+        "tests/test_retry_review_moderation_ui.py",
+        "tests/test_selective_artifact_reconstruction.py",
+        "tests/test_social_content.py",
+        "tests/test_social_pdf_publishing.py",
+        "tests/test_supabase_auth.py",
+        "tests/test_supabase_social.py",
+        "tests/test_ui_persistent_queue.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_authorization.py",
+      "target": "yomu/community/community_authorization.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "community_api.py",
+        "community_service.py",
+        "tests/test_community_authorization.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_http.py",
+      "target": "yomu/community/community_http.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_publish_attempt_isolation_http.py",
+        "tests/test_legacy_artifact_owner_binding.py",
+        "tests/test_lifecycle_community_regressions.py",
+        "tests/test_local_test_auth.py",
+        "tests/test_supabase_authorization.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_publication_metadata.py",
+      "target": "yomu/community/community_publication_metadata.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "canonical_social_identity.py",
+        "community_api.py",
+        "community_publish_runner.py",
+        "tests/test_community_publication_metadata.py",
+        "tests/test_community_publication_metadata_wiring.py",
+        "tests/test_community_storage_core.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_publish_runner.py",
+      "target": "yomu/community/community_publish_runner.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "start_tradutor.py",
+        "tests/test_community_api.py",
+        "tests/test_community_publish.py",
+        "tests/test_community_storage_core.py",
+        "tests/test_google_drive_wiring.py",
+        "tests/test_local_environment.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_service.py",
+      "target": "yomu/community/community_service.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "canonical_social_identity.py",
+        "community_api.py",
+        "community_http.py",
+        "selective_artifact_reconstruction.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_core.py",
+        "tests/test_community_publish.py",
+        "tests/test_community_publish_survival.py",
+        "tests/test_google_drive_wiring.py",
+        "tests/test_profile_media_local_absence.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_storage.py",
+      "target": "yomu/community/community_storage.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "community_api.py",
+        "community_http.py",
+        "community_publish_runner.py",
+        "community_storage_reconcile.py",
+        "drive_auth.py",
+        "google_drive_factory.py",
+        "google_drive_storage.py",
+        "google_drive_transport.py",
+        "social_pdf_http.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_core.py",
+        "tests/test_community_publish.py",
+        "tests/test_community_publish_survival.py",
+        "tests/test_community_storage_core.py",
+        "tests/test_drive_auth_reconcile.py",
+        "tests/test_drive_auth_refresh_errors.py",
+        "tests/test_google_drive_storage.py",
+        "tests/test_google_drive_wiring.py",
+        "tests/test_local_test_storage.py",
+        "tests/test_supabase_auth.py",
+        "tests/test_supabase_authorization.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_storage_reconcile.py",
+      "target": "yomu/community/community_storage_reconcile.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_drive_auth_reconcile.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "community_store.py",
+      "target": "yomu/community/community_store.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "chapter_asset_repository.py",
+        "community_api.py",
+        "community_authorization.py",
+        "community_publish_runner.py",
+        "community_service.py",
+        "community_storage_reconcile.py",
+        "social_pdf_publishing.py",
+        "tests/test_community_api.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_core.py",
+        "tests/test_community_publish.py",
+        "tests/test_community_publish_attempt_isolation_http.py",
+        "tests/test_community_publish_survival.py",
+        "tests/test_community_storage_core.py",
+        "tests/test_drive_auth_reconcile.py",
+        "tests/test_google_drive_wiring.py",
+        "tests/test_publication_tags.py",
+        "tests/test_retry_review_moderation_ui.py",
+        "tests/test_social_asset_retention.py",
+        "tests/test_social_content.py",
+        "tests/test_social_pdf_publishing.py",
+        "tests/test_supabase_authorization.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "config.py",
+      "target": "yomu/config/settings.py",
+      "category": "configuration",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "advanced_art_inpainting.py",
+        "benchmark_pipeline.py",
+        "chapter_quality_revision.py",
+        "down.py",
+        "fast_ocr_policy.py",
+        "learned_rescue.py",
+        "main.py",
+        "manga_translation_pipeline.py",
+        "nvidia_ocr_provider.py",
+        "ocr_balloon.py",
+        "ocr_engine.py",
+        "ocr_hybrid_scheduler.py",
+        "ocr_parallel.py",
+        "performance_validation_harness.py",
+        "pipeline_cache.py",
+        "run_webtoon.py",
+        "scripts/manual_webtoon_smoke.py",
+        "tests/test_84f19_semantic_detection_hardening.py",
+        "tests/test_84f25_production_recovery_and_ocr_policy.py",
+        "tests/test_84f27_render_parity_occupancy_texture.py",
+        "tests/test_84f29_advanced_art_inpainting.py",
+        "tests/test_84f32r_hierarchy_fit_regression.py",
+        "tests/test_84f42_final_three_residual_regions.py",
+        "tests/test_art_reconstruction_quality.py",
+        "tests/test_cache_translation_boundaries.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_empty_retry_prefers_translation.py",
+        "tests/test_fast_ocr_policy.py",
+        "tests/test_local_benchmark_pipeline_e2e.py",
+        "tests/test_nvidia_ocr_hybrid.py",
+        "tests/test_ocr_production_pipeline_execution_mode.py",
+        "tests/test_ocr_quality_regressions.py",
+        "tests/test_ocr_recovery_reconciliation.py",
+        "tests/test_offline_hybrid_replay_5pages.py",
+        "tests/test_p19_unresolved_recovery_disagreement_red.py",
+        "tests/test_performance_validation_harness.py",
+        "tests/test_pipeline_multi_page_full_ab.py",
+        "tests/test_pipeline_streaming.py",
+        "tests/test_professional_psd_quality_e2e.py",
+        "tests/test_proper_name_routing.py",
+        "tests/test_ptbr_naturalization_runtime_wiring.py",
+        "tests/test_rapidocr_region_recovery.py",
+        "tests/test_run_webtoon.py",
+        "tests/test_semantic_fidelity_gate.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_story_review_to_render_closure.py",
+        "tests/test_terminal_reason_and_source_echo.py",
+        "tests/test_textured_speech_inpainting.py",
+        "tests/test_translation_provider_default.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tests/test_zero_denominator_physical_gate.py",
+        "translator_deepl.py",
+        "translator_nllb.py",
+        "translator_nvidia.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "conftest.py",
+      "target": "conftest.py",
+      "category": "test_support",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [],
+      "shim": false
+    },
+    {
+      "source": "desktop_app.py",
+      "target": "yomu/desktop/app.py",
+      "category": "entrypoint",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "local_media_preview_harness.py",
+        "tests/test_ad_url_policy.py",
+        "tests/test_beta12_shutdown_contract.py",
+        "tests/test_desktop_app.py",
+        "tests/test_sources_tab.py"
+      ],
+      "shim": true
+    },
+    {
+      "source": "desktop_identity.py",
+      "target": "yomu/auth/desktop_identity.py",
+      "category": "auth",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "commercial_device.py",
+        "desktop_app.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "device_control.py",
+      "target": "yomu/auth/device_control.py",
+      "category": "auth",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_device_control.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "down.py",
+      "target": "yomu/download/down.py",
+      "category": "entrypoint",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "benchmark_pipeline.py",
+        "manga_translation_pipeline.py",
+        "run_webtoon.py",
+        "scripts/manual_webtoon_smoke.py",
+        "tests/test_async_submit_contract.py",
+        "tests/test_chapter_sources.py",
+        "tests/test_comix_download_403_fallback.py",
+        "tests/test_comix_dynamic_fallback_contract.py",
+        "tests/test_comix_source_analysis_entrypoint.py",
+        "tests/test_download_gate_ordering.py",
+        "tests/test_download_gate_partial_scope.py",
+        "tests/test_download_local_http_e2e.py",
+        "tests/test_download_parallel_contract.py",
+        "tests/test_downloader_regressions.py",
+        "tests/test_driver_policy.py",
+        "tests/test_http_source_discovery.py",
+        "tests/test_large_chapter_download_budget.py",
+        "tests/test_lazy_scroll_stability.py",
+        "tests/test_main_e2e_findings_contract.py",
+        "tests/test_mission5_download_contract.py",
+        "tests/test_reader_coverage.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_vortex_reader_pipeline.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "ui_bridge.py",
+        "worker_service.py"
+      ],
+      "shim": true
+    },
+    {
+      "source": "download_transport.py",
+      "target": "yomu/download/download_transport.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "down.py",
+        "tests/test_download_transport.py",
+        "tests/test_downloader_regressions.py",
+        "tests/test_large_chapter_download_budget.py",
+        "tests/test_ui_operational_refinement.py",
+        "tests/test_webtoons_preflight_regression.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "drive_auth.py",
+      "target": "yomu/community/storage/drive_auth.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "google_drive_factory.py",
+        "tests/test_drive_auth_environment.py",
+        "tests/test_drive_auth_reconcile.py",
+        "tests/test_drive_auth_refresh_errors.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "dynamic_resolver_process.py",
+      "target": "yomu/download/readers/dynamic_resolver_process.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "start_tradutor.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "editable_psd_writer.py",
+      "target": "yomu/export/editable_psd_writer.py",
+      "category": "psd",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_editable_psd_writer.py",
+        "tests/test_review_manifest.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "fake_pipeline.py",
+      "target": "test_support/fake_pipeline.py",
+      "category": "test_support",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [],
+      "shim": false
+    },
+    {
+      "source": "fast_ocr_policy.py",
+      "target": "yomu/ocr/fast_ocr_policy.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "ocr_balloon.py",
+        "ocr_engine.py",
+        "tests/test_fast_ocr_policy.py",
+        "tests/test_translation_provider_default.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "font_fidelity.py",
+      "target": "yomu/clean/ownership/font_fidelity.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "ocr_balloon.py",
+        "tests/test_84f32_role_aware_font_fidelity.py",
+        "tests/test_font_metadata_scorer.py",
+        "tests/test_visual_refinement_block6e1.py",
+        "tests/test_visual_refinement_block6e2.py",
+        "tests/test_visual_refinement_safety.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "generate_manual_review_report.py",
+      "target": "tools/reports/generate_manual_review_report.py",
+      "category": "tool_or_research",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [],
+      "shim": false
+    },
+    {
+      "source": "glyph_art_boundary_review.py",
+      "target": "yomu/clean/ownership/glyph_art_boundary_review.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_glyph_art_boundary_review.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "google_drive_factory.py",
+      "target": "yomu/community/storage/google_drive_factory.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "community_api.py",
+        "community_storage.py",
+        "drive_auth.py",
+        "tests/test_drive_auth_environment.py",
+        "tests/test_google_drive_wiring.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "google_drive_storage.py",
+      "target": "yomu/community/storage/google_drive_storage.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "google_drive_factory.py",
+        "google_drive_transport.py",
+        "tests/test_drive_auth_reconcile.py",
+        "tests/test_drive_auth_refresh_errors.py",
+        "tests/test_google_drive_storage.py",
+        "tests/test_google_drive_wiring.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "google_drive_transport.py",
+      "target": "yomu/community/storage/google_drive_transport.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "beta_license.py",
+        "canonical_social_identity.py",
+        "commercial_device.py",
+        "community_publication_metadata.py",
+        "drive_auth.py",
+        "google_drive_factory.py",
+        "jwks_network_diagnostics.py",
+        "supabase_auth.py",
+        "supabase_social.py",
+        "tests/test_google_drive_wiring.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "hermetic_runtime.py",
+      "target": "test_support/hermetic_runtime.py",
+      "category": "test_support",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "_test_bootstrap.py",
+        "conftest.py",
+        "sitecustomize.py",
+        "tests/test_runtime_isolation_contract.py",
+        "tests/test_worker_process_loss.py",
+        "tests/test_worker_supervision.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "http_source_discovery.py",
+      "target": "yomu/download/http_source_discovery.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "down.py",
+        "tests/test_http_source_discovery.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "human_mask_decisions.py",
+      "target": "yomu/clean/ownership/human_mask_decisions.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_visual_refinement_block6e2.py",
+        "tests/test_visual_refinement_block6e3.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "human_translation_decisions.py",
+      "target": "yomu/translation/human_translation_decisions.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_human_preview_drafts.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "human_typography_decisions.py",
+      "target": "yomu/review/human_typography_decisions.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_visual_refinement_block6e1.py",
+        "tests/test_visual_refinement_block6e2.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "image_validation.py",
+      "target": "yomu/download/image_validation.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "down.py",
+        "local_folder_input.py",
+        "local_folder_source.py",
+        "tests/test_download_transport.py",
+        "tests/test_large_tall_pipeline.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "installer_update.py",
+      "target": "yomu/runtime/installer_update.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "tests/test_beta4_hotfix_contract.py",
+        "tests/test_beta6_real_powershell_handoff.py",
+        "tests/test_beta8_multi_pid_handoff.py",
+        "tests/test_installer_updater.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "job_completion.py",
+      "target": "yomu/runtime/job_completion.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "tests/test_job_completion_summary.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "job_failure_diagnostic.py",
+      "target": "yomu/runtime/job_failure_diagnostic.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "tests/test_worker_source_failure_diagnostic.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "job_runner.py",
+      "target": "yomu/runtime/job_runner.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "start_tradutor.py",
+        "test_support/synthetic_fixture_harness.py",
+        "tests/test_beta_tester_licensing.py",
+        "tests/test_download_only_feature.py",
+        "tests/test_job_runner_sanitization.py",
+        "tests/test_output_profile_selection.py",
+        "tests/test_page_selection_and_terminate.py",
+        "tests/test_provider_provenance_command_rebuild.py",
+        "tests/test_yk_job_runner_settlement.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "job_store.py",
+      "target": "yomu/runtime/job_store.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "community_api.py",
+        "community_publish_runner.py",
+        "community_service.py",
+        "community_storage_reconcile.py",
+        "job_runner.py",
+        "linguistic_audit.py",
+        "review_reexport_runner.py",
+        "review_rerun_runner.py",
+        "selective_artifact_reconstruction.py",
+        "social_pdf_publishing.py",
+        "source_analysis_phase.py",
+        "source_readiness.py",
+        "start_tradutor.py",
+        "test_support/synthetic_fixture_harness.py",
+        "tests/test_async_submit_contract.py",
+        "tests/test_audit_review_bridge.py",
+        "tests/test_audit_ui_contract.py",
+        "tests/test_beta17_e2e_contracts.py",
+        "tests/test_beta_tester_licensing.py",
+        "tests/test_candidate23_local_artifact_contract.py",
+        "tests/test_chapter_reader.py",
+        "tests/test_community_api.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_core.py",
+        "tests/test_community_publish.py",
+        "tests/test_community_publish_attempt_isolation_http.py",
+        "tests/test_community_publish_survival.py",
+        "tests/test_community_storage_core.py",
+        "tests/test_drive_auth_reconcile.py",
+        "tests/test_google_drive_wiring.py",
+        "tests/test_interrupted_job_resume_ui.py",
+        "tests/test_job_finalization_and_start_idempotency.py",
+        "tests/test_job_runner_sanitization.py",
+        "tests/test_job_store.py",
+        "tests/test_launcher.py",
+        "tests/test_legacy_artifact_owner_binding.py",
+        "tests/test_lifecycle_community_regressions.py",
+        "tests/test_local_pipeline_e2e.py",
+        "tests/test_local_translation_contract.py",
+        "tests/test_new_translation_source_policy_state.py",
+        "tests/test_owner_scoped_ui.py",
+        "tests/test_pipeline_review_global_contracts.py",
+        "tests/test_professional_psd_review_e2e.py",
+        "tests/test_provider_provenance_command_rebuild.py",
+        "tests/test_reconstructed_artifact_ui_publication.py",
+        "tests/test_retry_review_moderation_ui.py",
+        "tests/test_review_editing_r2.py",
+        "tests/test_review_ordering_r1.py",
+        "tests/test_review_reexport_worker_e2e.py",
+        "tests/test_review_region_controls_r3.py",
+        "tests/test_review_rerun.py",
+        "tests/test_runtime_contract.py",
+        "tests/test_runtime_isolation_contract.py",
+        "tests/test_selective_artifact_reconstruction.py",
+        "tests/test_source_readiness.py",
+        "tests/test_stale_job_reconcile.py",
+        "tests/test_supabase_authorization.py",
+        "tests/test_translation_start.py",
+        "tests/test_triage_bridge.py",
+        "tests/test_ui_integration.py",
+        "tests/test_ui_operational_refinement.py",
+        "tests/test_ui_persistent_queue.py",
+        "tests/test_url_job_pipeline_e2e.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "tests/test_worker_ownership_contract.py",
+        "tests/test_worker_process_loss.py",
+        "tests/test_worker_runner.py",
+        "tests/test_worker_shutdown.py",
+        "tests/test_worker_source_failure_diagnostic.py",
+        "tests/test_worker_source_phase.py",
+        "tests/test_worker_supervision.py",
+        "tests/test_worker_survival.py",
+        "tests/test_workspace_source_policy.py",
+        "tests/test_yk_job_runner_settlement.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tools/harnesses/execution_e2e_harness.py",
+        "tools/harnesses/large_strip_app_e2e.py",
+        "ui_bridge.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "json_utils.py",
+      "target": "yomu/core/json_utils.py",
+      "category": "utilities",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "app_ui.py",
+        "benchmark_pipeline.py",
+        "generate_manual_review_report.py",
+        "ocr_balloon.py",
+        "pdf.py",
+        "pipeline_cache.py",
+        "scripts/manual_webtoon_smoke.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "jwks_network_diagnostics.py",
+      "target": "yomu/auth/jwks_network_diagnostics.py",
+      "category": "auth",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "desktop_app.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "lazy_slot_resolver.py",
+      "target": "yomu/download/lazy_slot_resolver.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "down.py",
+        "tests/test_lazy_slot_resolver.py",
+        "tests/test_vortex_reader_pipeline.py",
+        "tests/test_webtoons_reader_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "learned_rescue.py",
+      "target": "yomu/clean/reconstruction/learned_rescue.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_learned_rescue_shadow.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "legacy_publication_drive_adapter.py",
+      "target": "yomu/community/legacy/legacy_publication_drive_adapter.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "legacy_storage_upload_reservation.py",
+        "tests/test_legacy_publication_drive_adapter.py",
+        "tests/test_legacy_storage_upload_reservation_postgres.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "legacy_publication_migration_executor.py",
+      "target": "yomu/community/legacy/legacy_publication_migration_executor.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "legacy_publication_drive_adapter.py",
+        "legacy_publication_postgres_adapter.py",
+        "legacy_storage_upload_reservation.py",
+        "tests/test_legacy_publication_drive_adapter.py",
+        "tests/test_legacy_publication_migration_executor.py",
+        "tests/test_legacy_publication_postgres_adapter.py",
+        "tests/test_legacy_storage_upload_reservation.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "legacy_publication_migrator.py",
+      "target": "yomu/community/legacy/legacy_publication_migrator.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "legacy_publication_drive_adapter.py",
+        "legacy_publication_migration_executor.py",
+        "legacy_publication_postgres_adapter.py",
+        "legacy_storage_upload_reservation.py",
+        "tests/test_legacy_publication_drive_adapter.py",
+        "tests/test_legacy_publication_migration_executor.py",
+        "tests/test_legacy_publication_migrator_dry_run.py",
+        "tests/test_legacy_publication_postgres_adapter.py",
+        "tests/test_legacy_storage_upload_reservation.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "legacy_publication_postgres_adapter.py",
+      "target": "yomu/community/legacy/legacy_publication_postgres_adapter.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "legacy_storage_upload_reservation.py",
+        "tests/test_legacy_publication_postgres_adapter.py",
+        "tests/test_legacy_storage_upload_reservation_postgres.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "legacy_storage_upload_reservation.py",
+      "target": "yomu/community/legacy/legacy_storage_upload_reservation.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_legacy_storage_upload_reservation.py",
+        "tests/test_legacy_storage_upload_reservation_postgres.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "linguistic_audit.py",
+      "target": "yomu/translation/linguistic_audit.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "audit_registry.py",
+        "tests/test_audit_registry.py",
+        "tests/test_linguistic_audit.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "linguistic_triage.py",
+      "target": "yomu/translation/linguistic_triage.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "app_ui.py",
+        "audit_registry.py",
+        "linguistic_audit.py",
+        "provider_execution.py",
+        "tests/test_audit_registry.py",
+        "tests/test_human_preview_drafts.py",
+        "tests/test_linguistic_triage.py",
+        "tests/test_ocr_plausibility.py",
+        "tests/test_provider_execution.py",
+        "tests/test_translation_naturality_retry.py",
+        "tests/test_translation_quality_retry.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "local_environment.py",
+      "target": "yomu/runtime/local_environment.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "community_publish_runner.py",
+        "config.py",
+        "drive_auth.py",
+        "start_tradutor.py",
+        "tests/test_drive_auth_environment.py",
+        "tests/test_local_environment.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "local_folder_input.py",
+      "target": "yomu/download/local/local_folder_input.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "benchmark_pipeline.py",
+        "performance_validation_harness.py",
+        "run_local_folder.py",
+        "run_webtoon.py",
+        "tests/test_local_benchmark_pipeline_e2e.py",
+        "tests/test_local_folder_cli.py",
+        "tests/test_local_folder_input.py",
+        "tests/test_logical_pages.py",
+        "tests/test_offline_hybrid_replay_5pages.py",
+        "tests/test_pipeline_multi_page_full_ab.py",
+        "tests/test_professional_psd_quality_e2e.py",
+        "tests/test_worker_runner.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tools/harnesses/execution_e2e_harness.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "local_folder_job.py",
+      "target": "yomu/download/local/local_folder_job.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "tests/test_candidate23_local_artifact_contract.py",
+        "tests/test_local_folder_cli.py",
+        "tests/test_local_images_integration.py",
+        "tests/test_local_pipeline_e2e.py",
+        "tests/test_local_translation_contract.py",
+        "tests/test_typesetting_mode_propagation.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "local_folder_source.py",
+      "target": "yomu/download/local/local_folder_source.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "local_folder_input.py",
+        "local_folder_job.py",
+        "performance_validation_harness.py",
+        "run_webtoon.py",
+        "tests/test_adapter_collection_strategy.py",
+        "tests/test_large_tall_pipeline.py",
+        "tests/test_local_benchmark_pipeline_e2e.py",
+        "tests/test_local_folder_input.py",
+        "tests/test_local_folder_source.py",
+        "tests/test_local_pipeline_e2e.py",
+        "tests/test_offline_hybrid_replay_5pages.py",
+        "tests/test_pipeline_multi_page_full_ab.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "tests/test_worker_runner.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "local_images_source.py",
+      "target": "yomu/download/local/local_images_source.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "desktop_app.py",
+        "tests/test_large_tall_pipeline.py",
+        "tests/test_local_images_source.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "local_media_preview_harness.py",
+      "target": "tools/harnesses/local_media_preview_harness.py",
+      "category": "tool_or_research",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [],
+      "shim": false
+    },
+    {
+      "source": "local_media_registry.py",
+      "target": "yomu/ui/local_media_registry.py",
+      "category": "ui",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_local_media_registry.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "local_test_auth.py",
+      "target": "test_support/local_test_auth.py",
+      "category": "test_support",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "community_auth.py",
+        "community_http.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "main.py",
+      "target": "yomu/commands/legacy_gui.py",
+      "category": "entrypoint",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [],
+      "shim": true
+    },
+    {
+      "source": "manga_translation_pipeline.py",
+      "target": "yomu/pipeline/legacy_gui_pipeline.py",
+      "category": "utilities",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "main.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "multiscale_patch_synthesis.py",
+      "target": "yomu/clean/inpainting/multiscale_patch_synthesis.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "art_text_inpainting.py",
+        "tests/test_multiscale_patch_synthesis.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "natural_ptbr_refinement.py",
+      "target": "yomu/translation/natural_ptbr_refinement.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "app_ui.py",
+        "tests/test_natural_ptbr_refinement.py",
+        "tests/test_provider_transport.py",
+        "tests/test_ptbr_naturalization_runtime_wiring.py",
+        "tests/test_refinement_structured_repair.py",
+        "translator_nllb.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "nvidia_ocr_provider.py",
+      "target": "yomu/ocr/nvidia_ocr_provider.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "ocr_hybrid_scheduler.py",
+        "tests/test_nvidia_ocr_hybrid.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ocr_balloon.py",
+      "target": "yomu/ocr/ocr_balloon.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "chapter_quality_revision.py",
+        "manga_translation_pipeline.py",
+        "review_reexport.py",
+        "scripts/manual_webtoon_smoke.py",
+        "selective_artifact_reconstruction.py",
+        "session_context.py",
+        "tests/test_84f15_word_sense_disambiguation.py",
+        "tests/test_84f17_semantic_recovery.py",
+        "tests/test_84f19_semantic_detection_hardening.py",
+        "tests/test_84f22_visual_fidelity.py",
+        "tests/test_84f23_review_unusable_render_fail_closed.py",
+        "tests/test_84f25_production_recovery_and_ocr_policy.py",
+        "tests/test_84f26_art_and_lettering_parity.py",
+        "tests/test_84f27_render_parity_occupancy_texture.py",
+        "tests/test_84f32_role_aware_font_fidelity.py",
+        "tests/test_84f32r_hierarchy_fit_regression.py",
+        "tests/test_84f39_residual_story_english_gate.py",
+        "tests/test_84f40_selective_review_retry.py",
+        "tests/test_84f41_final_five_review_regions.py",
+        "tests/test_84f42_final_three_residual_regions.py",
+        "tests/test_84f43_p26_line_clearance.py",
+        "tests/test_84f45_segmentation_and_residual_false_positives.py",
+        "tests/test_84f8_rc_blockers.py",
+        "tests/test_art_reconstruction_fidelity.py",
+        "tests/test_art_reconstruction_quality.py",
+        "tests/test_audit_trace_serialization.py",
+        "tests/test_cache_translation_boundaries.py",
+        "tests/test_chapter_character_registry.py",
+        "tests/test_chapter_terminology_ledger.py",
+        "tests/test_clean_artifact_independence.py",
+        "tests/test_cleanup_fixed_mask_reconstruction_red.py",
+        "tests/test_cleanup_forensic_capture.py",
+        "tests/test_empty_retry_prefers_translation.py",
+        "tests/test_final_69_forensic_ledger.py",
+        "tests/test_font_role_semantic_precedence.py",
+        "tests/test_glyph_style_detector.py",
+        "tests/test_hough_lines_shape_compat.py",
+        "tests/test_local_background_reconstruction.py",
+        "tests/test_local_benchmark_pipeline_e2e.py",
+        "tests/test_mission2_code_fixes.py",
+        "tests/test_ocr_line_provenance.py",
+        "tests/test_ocr_provenance_hybrid_cancellation.py",
+        "tests/test_ocr_quality_regressions.py",
+        "tests/test_ocr_reading_order.py",
+        "tests/test_ocr_recovery_reconciliation.py",
+        "tests/test_offline_hybrid_replay_5pages.py",
+        "tests/test_p068_semantic_recovery.py",
+        "tests/test_p11_semantic_substitution_red.py",
+        "tests/test_p19_unresolved_recovery_disagreement_red.py",
+        "tests/test_p24_entity_pipeline_reproduction.py",
+        "tests/test_p27_authority_gate_red.py",
+        "tests/test_page_failure_quality_gate.py",
+        "tests/test_physical_source_residual_trust.py",
+        "tests/test_pipeline_multi_page_full_ab.py",
+        "tests/test_pre_settlement_layout_retry.py",
+        "tests/test_proper_name_routing.py",
+        "tests/test_ptbr_naturalization_runtime_wiring.py",
+        "tests/test_rapidocr_region_recovery.py",
+        "tests/test_runtime_forensics_contract.py",
+        "tests/test_safe_exhausted_retry_policy.py",
+        "tests/test_selective_ptbr_naturalization.py",
+        "tests/test_semantic_fidelity_gate.py",
+        "tests/test_semantic_meaning_and_ptbr_quality.py",
+        "tests/test_semantic_runtime_acceptance.py",
+        "tests/test_source_color_application.py",
+        "tests/test_source_completeness.py",
+        "tests/test_story_review_to_render_closure.py",
+        "tests/test_stroke_shadow_detection.py",
+        "tests/test_terminal_reason_and_source_echo.py",
+        "tests/test_textured_speech_inpainting.py",
+        "tests/test_translation_region_audit.py",
+        "tests/test_translation_validator_precision.py",
+        "tests/test_unknown_story_adjacency_promotion.py",
+        "tests/test_visual_refinement_safety.py",
+        "tests/test_yk_recovery_process_e2e.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ocr_contract.py",
+      "target": "yomu/ocr/ocr_contract.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "nvidia_ocr_provider.py",
+        "ocr_hybrid_scheduler.py",
+        "tests/test_nvidia_ocr_hybrid.py",
+        "tests/test_ocr_production_pipeline_execution_mode.py",
+        "tests/test_ocr_provenance_hybrid_cancellation.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ocr_engine.py",
+      "target": "yomu/ocr/ocr_engine.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_ocr_engines.py",
+        "benchmark_pipeline.py",
+        "chapter_quality_revision.py",
+        "fast_ocr_policy.py",
+        "ocr_balloon.py",
+        "ocr_contract.py",
+        "ocr_hybrid_scheduler.py",
+        "ocr_parallel.py",
+        "ocr_streaming.py",
+        "pipeline_cache.py",
+        "run_webtoon.py",
+        "selective_review_retry.py",
+        "session_context.py",
+        "start_tradutor.py",
+        "tests/test_84f22_visual_fidelity.py",
+        "tests/test_84f23_review_unusable_render_fail_closed.py",
+        "tests/test_84f25_production_recovery_and_ocr_policy.py",
+        "tests/test_84f26_art_and_lettering_parity.py",
+        "tests/test_84f27_render_parity_occupancy_texture.py",
+        "tests/test_84f32_role_aware_font_fidelity.py",
+        "tests/test_84f32r_hierarchy_fit_regression.py",
+        "tests/test_84f39_residual_story_english_gate.py",
+        "tests/test_84f40_selective_review_retry.py",
+        "tests/test_84f41_final_five_review_regions.py",
+        "tests/test_84f42_final_three_residual_regions.py",
+        "tests/test_84f43_p26_line_clearance.py",
+        "tests/test_art_reconstruction_fidelity.py",
+        "tests/test_art_reconstruction_quality.py",
+        "tests/test_cache_translation_boundaries.py",
+        "tests/test_clean_artifact_independence.py",
+        "tests/test_cleanup_fixed_mask_reconstruction_red.py",
+        "tests/test_cleanup_forensic_capture.py",
+        "tests/test_fast_ocr_policy.py",
+        "tests/test_final_69_forensic_ledger.py",
+        "tests/test_large_tall_pipeline.py",
+        "tests/test_local_background_reconstruction.py",
+        "tests/test_local_benchmark_pipeline_e2e.py",
+        "tests/test_mission2_code_fixes.py",
+        "tests/test_nvidia_ocr_hybrid.py",
+        "tests/test_ocr_line_provenance.py",
+        "tests/test_ocr_production_pipeline_execution_mode.py",
+        "tests/test_ocr_provenance_hybrid_cancellation.py",
+        "tests/test_ocr_quality_regressions.py",
+        "tests/test_ocr_reading_order.py",
+        "tests/test_ocr_recovery_reconciliation.py",
+        "tests/test_offline_hybrid_replay_5pages.py",
+        "tests/test_p19_ocr_lexical_fusion_red.py",
+        "tests/test_p19_unresolved_recovery_disagreement_red.py",
+        "tests/test_physical_source_residual_trust.py",
+        "tests/test_pipeline_multi_page_full_ab.py",
+        "tests/test_rapidocr_region_recovery.py",
+        "tests/test_run_webtoon.py",
+        "tests/test_runtime_forensics_contract.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_story_review_to_render_closure.py",
+        "tests/test_textured_speech_inpainting.py",
+        "tests/test_translation_provider_default.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tests/test_zero_denominator_physical_gate.py",
+        "tools/harnesses/large_strip_app_e2e.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ocr_hybrid_scheduler.py",
+      "target": "yomu/ocr/ocr_hybrid_scheduler.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "ocr_parallel.py",
+        "tests/test_nvidia_ocr_hybrid.py",
+        "tests/test_ocr_production_pipeline_execution_mode.py",
+        "tests/test_ocr_provenance_hybrid_cancellation.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ocr_line_provenance.py",
+      "target": "yomu/ocr/ocr_line_provenance.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "ocr_balloon.py",
+        "source_completeness.py",
+        "tests/test_84f26_art_and_lettering_parity.py",
+        "tests/test_84f27_render_parity_occupancy_texture.py",
+        "tests/test_art_reconstruction_fidelity.py",
+        "tests/test_final_69_forensic_ledger.py",
+        "tests/test_ocr_line_provenance.py",
+        "tests/test_page_processing_contracts.py",
+        "tests/test_source_completeness.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ocr_memory_policy.py",
+      "target": "yomu/ocr/ocr_memory_policy.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "ocr_parallel.py",
+        "tests/test_ocr_memory_policy.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ocr_parallel.py",
+      "target": "yomu/ocr/ocr_parallel.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "ocr_streaming.py",
+        "tests/test_fast_ocr_policy.py",
+        "tests/test_ocr_production_pipeline_execution_mode.py",
+        "tests/test_pipeline_page_workers.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ocr_streaming.py",
+      "target": "yomu/ocr/ocr_streaming.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_ocr_streaming.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "offline_test_guard.py",
+      "target": "test_support/offline_test_guard.py",
+      "category": "test_support",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "_test_bootstrap.py",
+        "conftest.py",
+        "sitecustomize.py",
+        "tests/test_84f14_quality_reconciliation.py",
+        "tests/test_84f22_visual_fidelity.py",
+        "tests/test_84f23_review_unusable_render_fail_closed.py",
+        "tests/test_84f25_production_recovery_and_ocr_policy.py",
+        "tests/test_84f26_art_and_lettering_parity.py",
+        "tests/test_84f27_region_exact_corpus_audit.py",
+        "tests/test_84f27_render_parity_occupancy_texture.py",
+        "tests/test_84f29_advanced_art_inpainting.py",
+        "tests/test_84f32_role_aware_font_fidelity.py",
+        "tests/test_84f32r_hierarchy_fit_regression.py",
+        "tests/test_84f39_residual_story_english_gate.py",
+        "tests/test_84f40_selective_review_retry.py",
+        "tests/test_84f43_p26_line_clearance.py",
+        "tests/test_84f45_segmentation_and_residual_false_positives.py",
+        "tests/test_84f47_unresolved_segmentation_semantic_fidelity.py",
+        "tests/test_84f8_rc_blockers.py",
+        "tests/test_adaptive_scheduler.py",
+        "tests/test_art_reconstruction_fidelity.py",
+        "tests/test_art_reconstruction_quality.py",
+        "tests/test_audit_decisions.py",
+        "tests/test_audit_registry.py",
+        "tests/test_audit_review_bridge.py",
+        "tests/test_audit_ui_contract.py",
+        "tests/test_auth_network_isolation.py",
+        "tests/test_auth_recovery_diagnostics.py",
+        "tests/test_cache_translation_boundaries.py",
+        "tests/test_chapter_reader.py",
+        "tests/test_cleanup_forensic_capture.py",
+        "tests/test_commercial_foundation.py",
+        "tests/test_community_authorization.py",
+        "tests/test_community_publish_attempt_isolation_http.py",
+        "tests/test_cv_text_stroke_compat.py",
+        "tests/test_desktop_app.py",
+        "tests/test_downloader_regressions.py",
+        "tests/test_fast_ocr_policy.py",
+        "tests/test_final_69_forensic_ledger.py",
+        "tests/test_hermetic_test_boundaries.py",
+        "tests/test_hough_lines_shape_compat.py",
+        "tests/test_human_preview_drafts.py",
+        "tests/test_learned_rescue_shadow.py",
+        "tests/test_legacy_artifact_owner_binding.py",
+        "tests/test_legacy_publication_drive_adapter.py",
+        "tests/test_legacy_publication_migration_executor.py",
+        "tests/test_legacy_publication_migrator_dry_run.py",
+        "tests/test_legacy_publication_postgres_adapter.py",
+        "tests/test_legacy_storage_upload_reservation.py",
+        "tests/test_legacy_storage_upload_reservation_postgres.py",
+        "tests/test_linguistic_audit.py",
+        "tests/test_linguistic_triage.py",
+        "tests/test_live_taxonomy_routing.py",
+        "tests/test_login_responsive_contract.py",
+        "tests/test_ocr_line_provenance.py",
+        "tests/test_ocr_memory_policy.py",
+        "tests/test_ocr_plausibility.py",
+        "tests/test_ocr_quality_regressions.py",
+        "tests/test_ocr_reading_order.py",
+        "tests/test_ocr_recovery_reconciliation.py",
+        "tests/test_output_artifact_immutability.py",
+        "tests/test_p068_semantic_recovery.py",
+        "tests/test_p24_entity_pipeline_reproduction.py",
+        "tests/test_p28_modality_tense.py",
+        "tests/test_page_failure_quality_gate.py",
+        "tests/test_pdf_naming.py",
+        "tests/test_pdf_split_regressions.py",
+        "tests/test_physical_source_residual_trust.py",
+        "tests/test_process_launcher.py",
+        "tests/test_professional_psd.py",
+        "tests/test_provider_execution.py",
+        "tests/test_publication_tags.py",
+        "tests/test_rapidocr_region_recovery.py",
+        "tests/test_region_taxonomy.py",
+        "tests/test_resource_monitor.py",
+        "tests/test_review_editing_r2.py",
+        "tests/test_review_ordering_r1.py",
+        "tests/test_review_region_controls_r3.py",
+        "tests/test_run_manifest_identity.py",
+        "tests/test_run_webtoon.py",
+        "tests/test_semantic_runtime_acceptance.py",
+        "tests/test_social_pdf_publishing.py",
+        "tests/test_source_completeness.py",
+        "tests/test_story_review_to_render_closure.py",
+        "tests/test_supabase_authorization.py",
+        "tests/test_supabase_social.py",
+        "tests/test_textured_speech_inpainting.py",
+        "tests/test_translation_naturality_retry.py",
+        "tests/test_translation_quality_retry.py",
+        "tests/test_triage_bridge.py",
+        "tests/test_ui_helpers.py",
+        "tests/test_ui_integration.py",
+        "tests/test_ui_operational_refinement.py",
+        "tests/test_unittest_guard_probe.py",
+        "tests/test_visual_harness_contract.py",
+        "tests/test_visual_refinement_block6e1.py",
+        "tests/test_visual_refinement_block6e2.py",
+        "tests/test_visual_refinement_block6e3.py",
+        "tests/test_visual_refinement_safety.py",
+        "tests/test_visual_segmentation_block6e1.py",
+        "tests/test_yk_ads_foundation.py",
+        "tests/test_yk_postgres_integration.py",
+        "tests/test_zero_denominator_physical_gate.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "output_manifest.py",
+      "target": "yomu/export/output_manifest.py",
+      "category": "runtime",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "job_runner.py",
+        "run_webtoon.py",
+        "session_context.py",
+        "test_support/synthetic_fixture_harness.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_ocr_line_provenance.py",
+        "tests/test_owner_scoped_ui.py",
+        "tests/test_pdf_naming.py",
+        "tests/test_provider_provenance_physical_gate.py",
+        "tests/test_stale_job_reconcile.py",
+        "tests/test_ui_helpers.py",
+        "tests/test_zero_denominator_physical_gate.py",
+        "ui_bridge.py",
+        "ui_helpers.py",
+        "ui_history.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "page_manifest.py",
+      "target": "yomu/export/page_manifest.py",
+      "category": "runtime",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "smart_split_incremental.py",
+        "tests/test_page_manifest.py",
+        "tests/test_smart_split_incremental.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "page_processing_contracts.py",
+      "target": "yomu/core/page_processing_contracts.py",
+      "category": "domain",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_page_processing_contracts.py",
+        "tests/test_pipeline_page_workers.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "pdf.py",
+      "target": "yomu/export/pdf.py",
+      "category": "psd",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "chapter_quality_revision.py",
+        "manga_translation_pipeline.py",
+        "review_reexport.py",
+        "scripts/manual_webtoon_smoke.py",
+        "selective_artifact_reconstruction.py",
+        "smart_split_incremental.py",
+        "tests/test_audit_trace_serialization.py",
+        "tests/test_large_tall_pipeline.py",
+        "tests/test_local_pipeline_e2e.py",
+        "tests/test_logical_pages.py",
+        "tests/test_pdf_split_regressions.py",
+        "tests/test_selective_artifact_reconstruction.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "pdf_naming.py",
+      "target": "yomu/export/pdf_naming.py",
+      "category": "psd",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_pdf_naming.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "pdf_reader.py",
+      "target": "yomu/export/pdf_reader.py",
+      "category": "psd",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "review_reexport_runner.py",
+        "tests/test_chapter_reader.py",
+        "tests/test_large_tall_pipeline.py",
+        "tests/test_review_reexport_worker_e2e.py",
+        "tools/harnesses/execution_e2e_harness.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "performance_validation_harness.py",
+      "target": "tools/harnesses/performance_validation_harness.py",
+      "category": "tool_or_research",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "start_tradutor.py",
+        "tests/test_performance_validation_harness.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "pipeline_cache.py",
+      "target": "yomu/pipeline/pipeline_cache.py",
+      "category": "utilities",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "benchmark_pipeline.py",
+        "down.py",
+        "natural_ptbr_refinement.py",
+        "ocr_parallel.py",
+        "review_reexport.py",
+        "run_webtoon.py",
+        "selective_artifact_reconstruction.py",
+        "session_context.py",
+        "tests/test_cache_translation_boundaries.py",
+        "translator_nvidia.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "pipeline_streaming.py",
+      "target": "yomu/pipeline/pipeline_streaming.py",
+      "category": "utilities",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "tests/test_pipeline_streaming.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "pipeline_telemetry.py",
+      "target": "yomu/pipeline/pipeline_telemetry.py",
+      "category": "utilities",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_pipeline_telemetry.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "png_output.py",
+      "target": "yomu/export/png_output.py",
+      "category": "psd",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_large_tall_pipeline.py",
+        "tests/test_png_output.py",
+        "tests/test_yk_recovery_process_e2e.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "preview_gates.py",
+      "target": "yomu/review/preview_gates.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "chapter_quality_revision.py",
+        "tests/test_human_preview_drafts.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "process_launcher.py",
+      "target": "yomu/runtime/process_launcher.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "tests/test_process_launcher.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "process_options.py",
+      "target": "yomu/runtime/process_options.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "benchmark_pipeline.py",
+        "chapter_quality_revision.py",
+        "fast_ocr_policy.py",
+        "job_runner.py",
+        "ocr_parallel.py",
+        "process_launcher.py",
+        "resource_monitor.py",
+        "start_tradutor.py",
+        "tests/test_fast_ocr_policy.py",
+        "tests/test_pipeline_review_global_contracts.py",
+        "tests/test_translation_disabled_first_class.py",
+        "tests/test_ui_operational_refinement.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "process_tree.py",
+      "target": "yomu/runtime/process_tree.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "community_service.py",
+        "job_runner.py",
+        "job_store.py",
+        "start_tradutor.py",
+        "tests/test_community_publish.py",
+        "tests/test_community_publish_survival.py",
+        "tests/test_process_tree.py",
+        "tests/test_stale_job_reconcile.py",
+        "tests/test_ui_persistent_queue.py",
+        "tests/test_worker_process_loss.py",
+        "tests/test_worker_runner.py",
+        "tests/test_worker_shutdown.py",
+        "tests/test_worker_source_phase.py",
+        "tests/test_worker_supervision.py",
+        "ui_bridge.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "professional_psd.py",
+      "target": "yomu/export/professional_psd.py",
+      "category": "psd",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "review_reexport.py",
+        "tests/test_professional_psd.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "progress.py",
+      "target": "yomu/ui/progress.py",
+      "category": "runtime",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "main.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "progression_service.py",
+      "target": "yomu/runtime/progression_service.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "tests/test_progression_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "provider_execution.py",
+      "target": "yomu/translation/providers/provider_execution.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_human_preview_drafts.py",
+        "tests/test_provider_execution.py",
+        "tests/test_translation_naturality_retry.py",
+        "tests/test_translation_quality_retry.py",
+        "tests/test_visual_refinement_safety.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "provider_transport.py",
+      "target": "yomu/translation/providers/provider_transport.py",
+      "category": "runtime",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "nvidia_ocr_provider.py",
+        "tests/test_provider_transport.py",
+        "tests/test_refinement_structured_repair.py",
+        "tests/test_riva_translation_provider.py",
+        "translator_deepl.py",
+        "translator_nvidia.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "psd_exporter.py",
+      "target": "yomu/export/psd_exporter.py",
+      "category": "psd",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_psd_output.py",
+        "tools/harnesses/large_strip_psd_memory_probe.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "publish_authorization.py",
+      "target": "yomu/community/publish_authorization.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "community_api.py",
+        "tests/test_publish_authorization.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "quality_regression_diagnostic.py",
+      "target": "tools/research/quality_regression_diagnostic.py",
+      "category": "tool_or_research",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_quality_regression_diagnostic.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "reference_guided_reconstruction.py",
+      "target": "yomu/clean/reconstruction/reference_guided_reconstruction.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_reference_guided_reconstruction.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "refinement_selection_decisions.py",
+      "target": "yomu/translation/refinement_selection_decisions.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "app_ui.py",
+        "tests/test_refinement_selection_decisions.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "region_taxonomy.py",
+      "target": "yomu/review/region_taxonomy.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "audit_registry.py",
+        "benchmark_pipeline.py",
+        "chapter_quality_revision.py",
+        "linguistic_audit.py",
+        "linguistic_triage.py",
+        "ocr_balloon.py",
+        "tests/test_84f27_region_exact_corpus_audit.py",
+        "tests/test_audit_registry.py",
+        "tests/test_human_preview_drafts.py",
+        "tests/test_linguistic_audit.py",
+        "tests/test_linguistic_triage.py",
+        "tests/test_live_taxonomy_routing.py",
+        "tests/test_ocr_plausibility.py",
+        "tests/test_provider_execution.py",
+        "tests/test_region_taxonomy.py",
+        "tests/test_translation_naturality_retry.py",
+        "tests/test_translation_quality_retry.py",
+        "tests/test_triage_bridge.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "request_observability.py",
+      "target": "yomu/runtime/request_observability.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "tests/test_request_observability.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "residual_analysis_artifacts.py",
+      "target": "yomu/clean/ownership/residual_analysis_artifacts.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "residual_mask_revisions.py",
+        "tests/test_residual_analysis_identity.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "residual_component_reviews.py",
+      "target": "yomu/clean/ownership/residual_component_reviews.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_post_reconstruction_guards.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "residual_mask_revisions.py",
+      "target": "yomu/clean/ownership/residual_mask_revisions.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_ambiguous_component_decomposition.py",
+        "tests/test_post_reconstruction_guards.py",
+        "tests/test_residual_analysis_identity.py",
+        "tests/test_residual_mask_layout_repair.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "resource_monitor.py",
+      "target": "yomu/runtime/resource_monitor.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_resource_monitor.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "review_item.py",
+      "target": "yomu/review/review_item.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "review_manifest.py",
+        "tests/test_review_item_model.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "review_manifest.py",
+      "target": "yomu/review/review_manifest.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "benchmark_pipeline.py",
+        "job_runner.py",
+        "review_reexport.py",
+        "review_reexport_runner.py",
+        "tests/test_review_manifest.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "review_reexport.py",
+      "target": "yomu/review/workflows/review_reexport.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "review_reexport_runner.py",
+        "tests/test_review_reexport_r4.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "review_reexport_runner.py",
+      "target": "yomu/review/workflows/review_reexport_runner.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "start_tradutor.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "review_rerun.py",
+      "target": "yomu/review/workflows/review_rerun.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_review_rerun.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "review_rerun_runner.py",
+      "target": "yomu/review/workflows/review_rerun_runner.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "start_tradutor.py",
+        "tests/test_review_rerun.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "run_local_folder.py",
+      "target": "yomu/commands/run_local_folder.py",
+      "category": "entrypoint",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "start_tradutor.py",
+        "tests/test_local_folder_cli.py"
+      ],
+      "shim": true
+    },
+    {
+      "source": "run_webtoon.py",
+      "target": "yomu/commands/run_webtoon.py",
+      "category": "entrypoint",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "run_local_folder.py",
+        "start_tradutor.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_download_only_feature.py",
+        "tests/test_fast_ocr_policy.py",
+        "tests/test_local_folder_cli.py",
+        "tests/test_local_images_integration.py",
+        "tests/test_run_webtoon.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_zero_denominator_physical_gate.py"
+      ],
+      "shim": true
+    },
+    {
+      "source": "runner_start_gate.py",
+      "target": "yomu/runtime/runner_start_gate.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "community_publish_runner.py",
+        "job_runner.py",
+        "review_reexport_runner.py",
+        "review_rerun_runner.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "runtime_contract.py",
+      "target": "yomu/runtime/runtime_contract.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "job_store.py",
+        "start_tradutor.py",
+        "tests/test_runtime_contract.py",
+        "ui_bridge.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "runtime_paths.py",
+      "target": "yomu/runtime/runtime_paths.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "benchmark_pipeline.py",
+        "config.py",
+        "job_runner.py",
+        "local_folder_input.py",
+        "performance_validation_harness.py",
+        "run_webtoon.py",
+        "start_tradutor.py",
+        "tests/test_runtime_isolation_contract.py",
+        "tests/test_runtime_root_resolution.py",
+        "ui_bridge.py",
+        "ui_helpers.py",
+        "worker_service.py",
+        "yomu_backend_provider.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "scrapling_reader_resolver.py",
+      "target": "yomu/download/readers/scrapling_reader_resolver.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "down.py",
+        "dynamic_resolver_process.py",
+        "tests/test_comix_download_403_fallback.py",
+        "tests/test_comix_dynamic_fallback_contract.py",
+        "tests/test_comix_materialization_retry.py",
+        "tests/test_missing_loop_budget.py",
+        "tests/test_scrapling_reader_resolver.py",
+        "tests/test_settings_overlay_lifecycle.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "secure_auth_context.py",
+      "target": "yomu/auth/secure_auth_context.py",
+      "category": "auth",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "desktop_app.py",
+        "tests/test_resume_checkpoint_auth_runtime.py",
+        "tests/test_runtime_root_resolution.py",
+        "tests/test_secure_auth_context.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tests/test_yomu_backend_pipeline_wiring.py",
+        "tests/test_yomu_backend_provider.py",
+        "ui_bridge.py",
+        "yomu_backend_provider.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "selective_artifact_reconstruction.py",
+      "target": "yomu/clean/reconstruction/selective_artifact_reconstruction.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_selective_artifact_reconstruction.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "selective_review_retry.py",
+      "target": "yomu/clean/ownership/selective_review_retry.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "ocr_balloon.py",
+        "tests/test_84f40_selective_review_retry.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "semantic_fidelity.py",
+      "target": "yomu/translation/semantic_fidelity.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "ocr_balloon.py",
+        "tests/test_84f14_quality_reconciliation.py",
+        "tests/test_84f15_word_sense_disambiguation.py",
+        "tests/test_84f17_semantic_recovery.py",
+        "tests/test_84f19_semantic_detection_hardening.py",
+        "tests/test_84f23_review_unusable_render_fail_closed.py",
+        "tests/test_84f25_production_recovery_and_ocr_policy.py",
+        "tests/test_84f45_segmentation_and_residual_false_positives.py",
+        "tests/test_84f47_unresolved_segmentation_semantic_fidelity.py",
+        "tests/test_clean_artifact_independence.py",
+        "tests/test_p11_semantic_substitution_red.py",
+        "tests/test_p28_modality_tense.py",
+        "tests/test_ptbr_naturalization_runtime_wiring.py",
+        "tests/test_safe_exhausted_retry_policy.py",
+        "tests/test_selective_ptbr_naturalization.py",
+        "tests/test_semantic_fidelity_gate.py",
+        "tests/test_semantic_meaning_and_ptbr_quality.py",
+        "tests/test_semantic_runtime_acceptance.py",
+        "translator_deepl.py",
+        "translator_nvidia.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "server_translation_authority.py",
+      "target": "yomu/translation/providers/server_translation_authority.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_http_batch_contract.py",
+        "tests/test_server_translation_authority.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "session_context.py",
+      "target": "yomu/pipeline/session_context.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_chapter_character_registry.py",
+        "tests/test_chapter_terminology_ledger.py",
+        "tests/test_p11_semantic_substitution_red.py",
+        "tests/test_p27_authority_gate_red.py",
+        "tests/test_run_webtoon.py",
+        "tests/test_safe_exhausted_retry_policy.py",
+        "tests/test_selective_ptbr_naturalization.py",
+        "tests/test_semantic_fidelity_gate.py",
+        "tests/test_world_memory_phase7c_red.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "sitecustomize.py",
+      "target": "sitecustomize.py",
+      "category": "test_support",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_hermetic_test_boundaries.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "smart_split_incremental.py",
+      "target": "yomu/ocr/splitting/smart_split_incremental.py",
+      "category": "utilities",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "tests/test_smart_split_incremental.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "social_asset_maintenance_cli.py",
+      "target": "scripts/social_asset_maintenance_cli.py",
+      "category": "script",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [],
+      "shim": false
+    },
+    {
+      "source": "social_asset_reconcile.py",
+      "target": "yomu/community/social_asset_reconcile.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "social_asset_maintenance_cli.py",
+        "tests/test_social_asset_retention.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "social_asset_retention.py",
+      "target": "yomu/community/social_asset_retention.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "social_asset_maintenance_cli.py",
+        "social_asset_reconcile.py",
+        "social_pdf_http.py",
+        "tests/test_social_asset_retention.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "social_content.py",
+      "target": "yomu/community/social_content.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "social_pdf_http.py",
+        "tests/test_social_content.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "social_http.py",
+      "target": "yomu/community/social_http.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_supabase_social.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "social_pdf_http.py",
+      "target": "yomu/community/social_pdf_http.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_social_pdf_publishing.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "social_pdf_publishing.py",
+      "target": "yomu/community/social_pdf_publishing.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_social_pdf_publishing.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "social_repository.py",
+      "target": "yomu/community/social_repository.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_supabase_social.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "source_analysis_phase.py",
+      "target": "yomu/review/source_analysis_phase.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_output_format_propagation.py",
+        "tests/test_provider_provenance_command_rebuild.py",
+        "tests/test_source_readiness.py",
+        "tests/test_translation_start.py",
+        "tests/test_typesetting_mode_propagation.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "tests/test_worker_source_phase.py",
+        "ui_bridge.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "source_analysis_progress.py",
+      "target": "yomu/review/source_analysis_progress.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_source_analysis_progress.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "source_completeness.py",
+      "target": "yomu/ocr/source_completeness.py",
+      "category": "ocr",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "ocr_balloon.py",
+        "tests/test_84f26_art_and_lettering_parity.py",
+        "tests/test_84f27_render_parity_occupancy_texture.py",
+        "tests/test_84f8_rc_blockers.py",
+        "tests/test_final_69_forensic_ledger.py",
+        "tests/test_ocr_recovery_reconciliation.py",
+        "tests/test_source_completeness.py",
+        "tests/test_story_review_to_render_closure.py",
+        "tests/test_textured_speech_inpainting.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "source_glyph_envelope.py",
+      "target": "yomu/clean/ownership/source_glyph_envelope.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_source_glyph_envelope.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "source_profile.py",
+      "target": "yomu/download/sources/source_profile.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "down.py",
+        "job_runner.py",
+        "tests/test_source_profile.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "source_readiness.py",
+      "target": "yomu/review/source_readiness.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "source_analysis_phase.py",
+        "tests/test_new_translation_source_policy_state.py",
+        "tests/test_packaging_cleanup.py",
+        "tests/test_source_readiness.py",
+        "tests/test_translation_start.py",
+        "tests/test_ui_translation_provider_selection.py",
+        "tests/test_worker_source_phase.py",
+        "tests/test_workspace_source_policy.py",
+        "tools/harnesses/execution_e2e_harness.py",
+        "ui_bridge.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "source_support_report.py",
+      "target": "yomu/review/source_support_report.py",
+      "category": "review",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_source_support_report.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "start_tradutor.py",
+      "target": "yomu/commands/start_tradutor.py",
+      "category": "entrypoint",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "desktop_app.py",
+        "tests/test_build_profile.py",
+        "tests/test_launcher.py",
+        "tests/test_local_environment.py",
+        "tests/test_local_images_integration.py",
+        "tests/test_performance_validation_harness.py",
+        "tests/test_remote_update.py",
+        "tests/test_runtime_isolation_contract.py",
+        "tests/test_scrapling_reader_resolver.py",
+        "tests/test_terminal_child_failure.py",
+        "tests/test_worker_supervision.py",
+        "ui_bridge.py"
+      ],
+      "shim": true
+    },
+    {
+      "source": "supabase_auth.py",
+      "target": "yomu/auth/supabase_auth.py",
+      "category": "auth",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "community_auth.py",
+        "tests/test_supabase_auth.py",
+        "tests/test_supabase_authorization.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "supabase_social.py",
+      "target": "yomu/community/supabase_social.py",
+      "category": "community",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "canonical_social_identity.py",
+        "community_publication_metadata.py",
+        "social_http.py",
+        "social_pdf_http.py",
+        "social_pdf_publishing.py",
+        "social_repository.py",
+        "tests/test_canonical_social_identity.py",
+        "tests/test_community_publication_metadata.py",
+        "tests/test_social_content.py",
+        "tests/test_social_pdf_publishing.py",
+        "tests/test_supabase_social.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "translation_proxy.py",
+      "target": "yomu/translation/providers/translation_proxy.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_translation_proxy.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "translation_region_audit.py",
+      "target": "yomu/translation/translation_region_audit.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_translation_region_audit.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "translator_deepl.py",
+      "target": "yomu/translation/providers/translator_deepl.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_p068_semantic_recovery.py",
+        "tests/test_semantic_meaning_and_ptbr_quality.py",
+        "tests/test_translation_provider_default.py",
+        "translator_nllb.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "translator_nllb.py",
+      "target": "yomu/translation/providers/translator_nllb.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "manga_translation_pipeline.py",
+        "scripts/manual_webtoon_smoke.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_ptbr_naturalization_runtime_wiring.py",
+        "tests/test_translation_provider_default.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "translator_nvidia.py",
+      "target": "yomu/translation/providers/translator_nvidia.py",
+      "category": "translation",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "app_ui.py",
+        "benchmark_pipeline.py",
+        "chapter_quality_revision.py",
+        "scripts/manual_nvidia_smoke.py",
+        "tests/test_84f15_word_sense_disambiguation.py",
+        "tests/test_cache_translation_boundaries.py",
+        "tests/test_chapter_character_registry.py",
+        "tests/test_chapter_terminology_ledger.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_ocr_quality_regressions.py",
+        "tests/test_proper_name_routing.py",
+        "tests/test_provider_transport.py",
+        "tests/test_ptbr_naturalization_runtime_wiring.py",
+        "tests/test_riva_translation_provider.py",
+        "tests/test_run_webtoon.py",
+        "tests/test_semantic_fidelity_gate.py",
+        "tests/test_semantic_meaning_and_ptbr_quality.py",
+        "tests/test_translation_naturality_retry.py",
+        "tests/test_translation_provider_default.py",
+        "translator_nllb.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ui_bridge.py",
+      "target": "yomu/ui/ui_bridge.py",
+      "category": "ui",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "app_ui.py",
+        "tests/test_async_submit_contract.py",
+        "tests/test_async_ui_stages.py",
+        "tests/test_audit_review_bridge.py",
+        "tests/test_beta_identity_resolution.py",
+        "tests/test_beta_tester_licensing.py",
+        "tests/test_candidate23_local_artifact_contract.py",
+        "tests/test_chapter_reader.py",
+        "tests/test_comix_source_analysis_entrypoint.py",
+        "tests/test_commercial_device_start_gate.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_download_only_history.py",
+        "tests/test_http_source_discovery.py",
+        "tests/test_human_preview_drafts.py",
+        "tests/test_interrupted_job_resume_ui.py",
+        "tests/test_job_completion_summary.py",
+        "tests/test_lifecycle_community_regressions.py",
+        "tests/test_local_images_integration.py",
+        "tests/test_local_translation_contract.py",
+        "tests/test_output_profile_selection.py",
+        "tests/test_owner_scoped_ui.py",
+        "tests/test_packaging_cleanup.py",
+        "tests/test_professional_psd_review_e2e.py",
+        "tests/test_profile_media_local_absence.py",
+        "tests/test_provider_provenance_command_rebuild.py",
+        "tests/test_reconstructed_artifact_ui_publication.py",
+        "tests/test_retry_review_moderation_ui.py",
+        "tests/test_review_editing_r2.py",
+        "tests/test_review_ordering_r1.py",
+        "tests/test_review_reexport_worker_e2e.py",
+        "tests/test_review_rerun.py",
+        "tests/test_runtime_forensics_contract.py",
+        "tests/test_runtime_isolation_contract.py",
+        "tests/test_source_analysis_contract.py",
+        "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+        "tests/test_stale_job_reconcile.py",
+        "tests/test_translation_policy_snapshot.py",
+        "tests/test_translation_provider_default.py",
+        "tests/test_translation_start.py",
+        "tests/test_triage_bridge.py",
+        "tests/test_ui_integration.py",
+        "tests/test_ui_operational_refinement.py",
+        "tests/test_ui_persistent_queue.py",
+        "tests/test_url_job_pipeline_e2e.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "tests/test_worker_process_loss.py",
+        "tests/test_workspace_source_policy.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tools/harnesses/execution_e2e_harness.py",
+        "tools/harnesses/large_strip_app_e2e.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ui_helpers.py",
+      "target": "yomu/ui/ui_helpers.py",
+      "category": "ui",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "benchmark_pipeline.py",
+        "community_api.py",
+        "job_failure_diagnostic.py",
+        "job_runner.py",
+        "review_reexport_runner.py",
+        "review_rerun_runner.py",
+        "run_local_folder.py",
+        "run_webtoon.py",
+        "source_analysis_phase.py",
+        "start_tradutor.py",
+        "tests/test_deepl_translation_provider.py",
+        "tests/test_fast_ocr_policy.py",
+        "tests/test_nvidia_ocr_hybrid.py",
+        "tests/test_ocr_production_pipeline_execution_mode.py",
+        "tests/test_output_format_propagation.py",
+        "tests/test_pdf_naming.py",
+        "tests/test_provider_provenance_command_rebuild.py",
+        "tests/test_provider_provenance_physical_gate.py",
+        "tests/test_stale_job_reconcile.py",
+        "tests/test_translation_provider_default.py",
+        "tests/test_translation_start.py",
+        "tests/test_typesetting_mode_propagation.py",
+        "tests/test_ui_helpers.py",
+        "tests/test_ui_integration.py",
+        "tests/test_ui_translation_provider_selection.py",
+        "tools/harnesses/execution_e2e_harness.py",
+        "translator_nllb.py",
+        "ui_bridge.py",
+        "ui_history.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "ui_history.py",
+      "target": "yomu/ui/ui_history.py",
+      "category": "ui",
+      "batch": "batch3_ui_community_auth_and_tools",
+      "importers": [
+        "tests/test_community_authorization.py",
+        "tests/test_download_only_history.py",
+        "tests/test_owner_scoped_ui.py",
+        "tests/test_reconstructed_artifact_ui_publication.py",
+        "tests/test_runtime_isolation_contract.py",
+        "tests/test_ui_helpers.py",
+        "tests/test_ui_integration.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "universal_chapter_adapter.py",
+      "target": "yomu/download/sources/universal_chapter_adapter.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "chapter_source.py",
+        "down.py",
+        "http_source_discovery.py",
+        "scrapling_reader_resolver.py",
+        "source_analysis_phase.py",
+        "tests/test_comix_reader_indexed_pages.py",
+        "tests/test_comix_source_analysis_entrypoint.py",
+        "tests/test_http_source_discovery.py",
+        "tests/test_source_profile.py",
+        "tests/test_universal_chapter_adapter.py",
+        "tests/test_worker_source_phase.py",
+        "worker_service.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "update_bootstrap.py",
+      "target": "yomu/runtime/update_bootstrap.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "start_tradutor.py",
+        "tests/test_remote_update.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "update_installer.py",
+      "target": "yomu/runtime/update_installer.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "installer_update.py",
+        "tests/test_remote_update.py",
+        "tests/test_signed_update.py",
+        "update_bootstrap.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "update_manifest.py",
+      "target": "yomu/runtime/update_manifest.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "installer_update.py",
+        "scripts/sign_release.py",
+        "tests/test_installer_updater.py",
+        "tests/test_remote_update.py",
+        "tests/test_signed_update.py",
+        "update_bootstrap.py",
+        "update_installer.py",
+        "update_transport.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "update_transport.py",
+      "target": "yomu/runtime/update_transport.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "app_ui.py",
+        "installer_update.py",
+        "tests/test_remote_update.py",
+        "update_bootstrap.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "visual_refinement_provider_guard.py",
+      "target": "yomu/clean/ownership/visual_refinement_provider_guard.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "provider_execution.py",
+        "tests/test_visual_refinement_block6e3.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "visual_review_decisions.py",
+      "target": "yomu/clean/ownership/visual_review_decisions.py",
+      "category": "clean",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "tests/test_visual_refinement_block6e3.py",
+        "ui_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "webtoons_reader_bridge.py",
+      "target": "yomu/download/webtoons_reader_bridge.py",
+      "category": "download",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "down.py",
+        "tests/test_webtoons_reader_bridge.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "worker_service.py",
+      "target": "yomu/runtime/worker_service.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "start_tradutor.py",
+        "tests/test_community_publish.py",
+        "tests/test_http_source_discovery.py",
+        "tests/test_local_environment.py",
+        "tests/test_review_rerun.py",
+        "tests/test_translation_start.py",
+        "tests/test_webtoons_reader_bridge.py",
+        "tests/test_worker_runner.py",
+        "tests/test_worker_source_failure_diagnostic.py",
+        "tests/test_worker_source_phase.py"
+      ],
+      "shim": true
+    },
+    {
+      "source": "worker_supervisor.py",
+      "target": "yomu/runtime/worker_supervisor.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "start_tradutor.py",
+        "tests/test_worker_supervision.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "yk_reservation.py",
+      "target": "yomu/runtime/yk_reservation.py",
+      "category": "runtime",
+      "batch": "batch2_runtime_and_sources",
+      "importers": [
+        "job_runner.py",
+        "tests/test_yk_job_runner_settlement.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tests/test_yk_reservation_settlement.py",
+        "tests/test_yomu_backend_provider.py",
+        "tools/harnesses/large_strip_app_e2e.py",
+        "yomu_backend_provider.py"
+      ],
+      "shim": false
+    },
+    {
+      "source": "yomu_backend_provider.py",
+      "target": "yomu/translation/providers/yomu_backend_provider.py",
+      "category": "runtime",
+      "batch": "batch1_semantic_and_test_support",
+      "importers": [
+        "benchmark_pipeline.py",
+        "job_runner.py",
+        "ocr_balloon.py",
+        "server_translation_authority.py",
+        "start_tradutor.py",
+        "tests/test_http_batch_contract.py",
+        "tests/test_pre_settlement_layout_retry.py",
+        "tests/test_runtime_root_resolution.py",
+        "tests/test_server_translation_authority.py",
+        "tests/test_wallet_reserve_error_mapping.py",
+        "tests/test_yk_atomicity.py",
+        "tests/test_yk_job_runner_settlement.py",
+        "tests/test_yk_recovery_process_e2e.py",
+        "tests/test_yk_reservation_settlement.py",
+        "tests/test_yomu_backend_pipeline_wiring.py",
+        "tests/test_yomu_backend_provider.py"
+      ],
+      "shim": false
+    }
+  ],
+  "canonical_import_map": {
+    "_test_bootstrap": "test_support._test_bootstrap",
+    "_test_processes": "test_support._test_processes",
+    "ad_url_policy": "yomu.security.ad_url_policy",
+    "adaptive_scheduler": "yomu.runtime.adaptive_scheduler",
+    "advanced_art_inpainting": "yomu.clean.inpainting.advanced_art_inpainting",
+    "app_ui": "yomu.ui.app",
+    "app_version": "yomu.runtime.version",
+    "art_text_inpainting": "yomu.clean.inpainting.art_text_inpainting",
+    "artifact_contract": "yomu.runtime.artifact_contract",
+    "audit_decisions": "yomu.review.audit_decisions",
+    "audit_registry": "yomu.review.audit_registry",
+    "ayet_rewarded": "yomu.core.ayet_rewarded",
+    "benchmark_environment": "tools.performance.benchmark_environment",
+    "benchmark_ocr_engines": "tools.performance.benchmark_ocr_engines",
+    "benchmark_pipeline": "yomu.pipeline.benchmark_pipeline",
+    "beta_control_plane": "yomu.runtime.beta_control_plane",
+    "beta_license": "yomu.auth.beta_license",
+    "browser_runtime": "yomu.download.browser_runtime",
+    "build_profile": "yomu.runtime.build_profile",
+    "canonical_social_identity": "yomu.community.canonical_social_identity",
+    "canonical_source_identity": "yomu.download.sources.canonical_source_identity",
+    "chapter_asset_repository": "yomu.community.chapter_asset_repository",
+    "chapter_quality_revision": "yomu.review.chapter_quality_revision",
+    "chapter_source": "yomu.download.sources.chapter_source",
+    "classification_profiler": "yomu.ocr.classification_profiler",
+    "cleanup_forensic_capture": "tools.research.cleanup_forensic_capture",
+    "commercial_device": "yomu.auth.commercial_device",
+    "commercial_foundation": "yomu.auth.commercial_foundation",
+    "community_api": "yomu.community.community_api",
+    "community_auth": "yomu.community.community_auth",
+    "community_authorization": "yomu.community.community_authorization",
+    "community_http": "yomu.community.community_http",
+    "community_publication_metadata": "yomu.community.community_publication_metadata",
+    "community_publish_runner": "yomu.community.community_publish_runner",
+    "community_service": "yomu.community.community_service",
+    "community_storage": "yomu.community.community_storage",
+    "community_storage_reconcile": "yomu.community.community_storage_reconcile",
+    "community_store": "yomu.community.community_store",
+    "config": "yomu.config.settings",
+    "desktop_app": "yomu.desktop.app",
+    "desktop_identity": "yomu.auth.desktop_identity",
+    "device_control": "yomu.auth.device_control",
+    "down": "yomu.download.down",
+    "download_transport": "yomu.download.download_transport",
+    "drive_auth": "yomu.community.storage.drive_auth",
+    "dynamic_resolver_process": "yomu.download.readers.dynamic_resolver_process",
+    "editable_psd_writer": "yomu.export.editable_psd_writer",
+    "fake_pipeline": "test_support.fake_pipeline",
+    "fast_ocr_policy": "yomu.ocr.fast_ocr_policy",
+    "font_fidelity": "yomu.clean.ownership.font_fidelity",
+    "generate_manual_review_report": "tools.reports.generate_manual_review_report",
+    "glyph_art_boundary_review": "yomu.clean.ownership.glyph_art_boundary_review",
+    "google_drive_factory": "yomu.community.storage.google_drive_factory",
+    "google_drive_storage": "yomu.community.storage.google_drive_storage",
+    "google_drive_transport": "yomu.community.storage.google_drive_transport",
+    "hermetic_runtime": "test_support.hermetic_runtime",
+    "http_source_discovery": "yomu.download.http_source_discovery",
+    "human_mask_decisions": "yomu.clean.ownership.human_mask_decisions",
+    "human_translation_decisions": "yomu.translation.human_translation_decisions",
+    "human_typography_decisions": "yomu.review.human_typography_decisions",
+    "image_validation": "yomu.download.image_validation",
+    "installer_update": "yomu.runtime.installer_update",
+    "job_completion": "yomu.runtime.job_completion",
+    "job_failure_diagnostic": "yomu.runtime.job_failure_diagnostic",
+    "job_runner": "yomu.runtime.job_runner",
+    "job_store": "yomu.runtime.job_store",
+    "json_utils": "yomu.core.json_utils",
+    "jwks_network_diagnostics": "yomu.auth.jwks_network_diagnostics",
+    "lazy_slot_resolver": "yomu.download.lazy_slot_resolver",
+    "learned_rescue": "yomu.clean.reconstruction.learned_rescue",
+    "legacy_publication_drive_adapter": "yomu.community.legacy.legacy_publication_drive_adapter",
+    "legacy_publication_migration_executor": "yomu.community.legacy.legacy_publication_migration_executor",
+    "legacy_publication_migrator": "yomu.community.legacy.legacy_publication_migrator",
+    "legacy_publication_postgres_adapter": "yomu.community.legacy.legacy_publication_postgres_adapter",
+    "legacy_storage_upload_reservation": "yomu.community.legacy.legacy_storage_upload_reservation",
+    "linguistic_audit": "yomu.translation.linguistic_audit",
+    "linguistic_triage": "yomu.translation.linguistic_triage",
+    "local_environment": "yomu.runtime.local_environment",
+    "local_folder_input": "yomu.download.local.local_folder_input",
+    "local_folder_job": "yomu.download.local.local_folder_job",
+    "local_folder_source": "yomu.download.local.local_folder_source",
+    "local_images_source": "yomu.download.local.local_images_source",
+    "local_media_preview_harness": "tools.harnesses.local_media_preview_harness",
+    "local_media_registry": "yomu.ui.local_media_registry",
+    "local_test_auth": "test_support.local_test_auth",
+    "main": "yomu.commands.legacy_gui",
+    "manga_translation_pipeline": "yomu.pipeline.legacy_gui_pipeline",
+    "multiscale_patch_synthesis": "yomu.clean.inpainting.multiscale_patch_synthesis",
+    "natural_ptbr_refinement": "yomu.translation.natural_ptbr_refinement",
+    "nvidia_ocr_provider": "yomu.ocr.nvidia_ocr_provider",
+    "ocr_balloon": "yomu.ocr.ocr_balloon",
+    "ocr_contract": "yomu.ocr.ocr_contract",
+    "ocr_engine": "yomu.ocr.ocr_engine",
+    "ocr_hybrid_scheduler": "yomu.ocr.ocr_hybrid_scheduler",
+    "ocr_line_provenance": "yomu.ocr.ocr_line_provenance",
+    "ocr_memory_policy": "yomu.ocr.ocr_memory_policy",
+    "ocr_parallel": "yomu.ocr.ocr_parallel",
+    "ocr_streaming": "yomu.ocr.ocr_streaming",
+    "offline_test_guard": "test_support.offline_test_guard",
+    "output_manifest": "yomu.export.output_manifest",
+    "page_manifest": "yomu.export.page_manifest",
+    "page_processing_contracts": "yomu.core.page_processing_contracts",
+    "pdf": "yomu.export.pdf",
+    "pdf_naming": "yomu.export.pdf_naming",
+    "pdf_reader": "yomu.export.pdf_reader",
+    "performance_validation_harness": "tools.harnesses.performance_validation_harness",
+    "pipeline_cache": "yomu.pipeline.pipeline_cache",
+    "pipeline_streaming": "yomu.pipeline.pipeline_streaming",
+    "pipeline_telemetry": "yomu.pipeline.pipeline_telemetry",
+    "png_output": "yomu.export.png_output",
+    "preview_gates": "yomu.review.preview_gates",
+    "process_launcher": "yomu.runtime.process_launcher",
+    "process_options": "yomu.runtime.process_options",
+    "process_tree": "yomu.runtime.process_tree",
+    "professional_psd": "yomu.export.professional_psd",
+    "progress": "yomu.ui.progress",
+    "progression_service": "yomu.runtime.progression_service",
+    "provider_execution": "yomu.translation.providers.provider_execution",
+    "provider_transport": "yomu.translation.providers.provider_transport",
+    "psd_exporter": "yomu.export.psd_exporter",
+    "publish_authorization": "yomu.community.publish_authorization",
+    "quality_regression_diagnostic": "tools.research.quality_regression_diagnostic",
+    "reference_guided_reconstruction": "yomu.clean.reconstruction.reference_guided_reconstruction",
+    "refinement_selection_decisions": "yomu.translation.refinement_selection_decisions",
+    "region_taxonomy": "yomu.review.region_taxonomy",
+    "request_observability": "yomu.runtime.request_observability",
+    "residual_analysis_artifacts": "yomu.clean.ownership.residual_analysis_artifacts",
+    "residual_component_reviews": "yomu.clean.ownership.residual_component_reviews",
+    "residual_mask_revisions": "yomu.clean.ownership.residual_mask_revisions",
+    "resource_monitor": "yomu.runtime.resource_monitor",
+    "review_item": "yomu.review.review_item",
+    "review_manifest": "yomu.review.review_manifest",
+    "review_reexport": "yomu.review.workflows.review_reexport",
+    "review_reexport_runner": "yomu.review.workflows.review_reexport_runner",
+    "review_rerun": "yomu.review.workflows.review_rerun",
+    "review_rerun_runner": "yomu.review.workflows.review_rerun_runner",
+    "run_local_folder": "yomu.commands.run_local_folder",
+    "run_webtoon": "yomu.commands.run_webtoon",
+    "runner_start_gate": "yomu.runtime.runner_start_gate",
+    "runtime_contract": "yomu.runtime.runtime_contract",
+    "runtime_paths": "yomu.runtime.runtime_paths",
+    "scrapling_reader_resolver": "yomu.download.readers.scrapling_reader_resolver",
+    "secure_auth_context": "yomu.auth.secure_auth_context",
+    "selective_artifact_reconstruction": "yomu.clean.reconstruction.selective_artifact_reconstruction",
+    "selective_review_retry": "yomu.clean.ownership.selective_review_retry",
+    "semantic_fidelity": "yomu.translation.semantic_fidelity",
+    "server_translation_authority": "yomu.translation.providers.server_translation_authority",
+    "session_context": "yomu.pipeline.session_context",
+    "smart_split_incremental": "yomu.ocr.splitting.smart_split_incremental",
+    "social_asset_maintenance_cli": "scripts.social_asset_maintenance_cli",
+    "social_asset_reconcile": "yomu.community.social_asset_reconcile",
+    "social_asset_retention": "yomu.community.social_asset_retention",
+    "social_content": "yomu.community.social_content",
+    "social_http": "yomu.community.social_http",
+    "social_pdf_http": "yomu.community.social_pdf_http",
+    "social_pdf_publishing": "yomu.community.social_pdf_publishing",
+    "social_repository": "yomu.community.social_repository",
+    "source_analysis_phase": "yomu.review.source_analysis_phase",
+    "source_analysis_progress": "yomu.review.source_analysis_progress",
+    "source_completeness": "yomu.ocr.source_completeness",
+    "source_glyph_envelope": "yomu.clean.ownership.source_glyph_envelope",
+    "source_profile": "yomu.download.sources.source_profile",
+    "source_readiness": "yomu.review.source_readiness",
+    "source_support_report": "yomu.review.source_support_report",
+    "start_tradutor": "yomu.commands.start_tradutor",
+    "supabase_auth": "yomu.auth.supabase_auth",
+    "supabase_social": "yomu.community.supabase_social",
+    "translation_proxy": "yomu.translation.providers.translation_proxy",
+    "translation_region_audit": "yomu.translation.translation_region_audit",
+    "translator_deepl": "yomu.translation.providers.translator_deepl",
+    "translator_nllb": "yomu.translation.providers.translator_nllb",
+    "translator_nvidia": "yomu.translation.providers.translator_nvidia",
+    "ui_bridge": "yomu.ui.ui_bridge",
+    "ui_helpers": "yomu.ui.ui_helpers",
+    "ui_history": "yomu.ui.ui_history",
+    "universal_chapter_adapter": "yomu.download.sources.universal_chapter_adapter",
+    "update_bootstrap": "yomu.runtime.update_bootstrap",
+    "update_installer": "yomu.runtime.update_installer",
+    "update_manifest": "yomu.runtime.update_manifest",
+    "update_transport": "yomu.runtime.update_transport",
+    "visual_refinement_provider_guard": "yomu.clean.ownership.visual_refinement_provider_guard",
+    "visual_review_decisions": "yomu.clean.ownership.visual_review_decisions",
+    "webtoons_reader_bridge": "yomu.download.webtoons_reader_bridge",
+    "worker_service": "yomu.runtime.worker_service",
+    "worker_supervisor": "yomu.runtime.worker_supervisor",
+    "yk_reservation": "yomu.runtime.yk_reservation",
+    "yomu_backend_provider": "yomu.translation.providers.yomu_backend_provider"
+  }
+}

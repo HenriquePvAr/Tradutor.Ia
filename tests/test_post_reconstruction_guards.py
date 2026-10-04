@@ -1,4 +1,4 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
@@ -6,10 +6,10 @@ from pathlib import Path
 
 import numpy as np
 
-import art_text_inpainting as ati
-from chapter_quality_revision import ChapterQualityRevision
-from residual_component_reviews import ResidualComponentReviewStore
-from residual_mask_revisions import MaskRevisionStore
+import yomu.clean.inpainting.art_text_inpainting as ati
+from yomu.review.chapter_quality_revision import ChapterQualityRevision
+from yomu.clean.ownership.residual_component_reviews import ResidualComponentReviewStore
+from yomu.clean.ownership.residual_mask_revisions import MaskRevisionStore
 
 
 class HumanOverrideRenderEligibilityTests(unittest.TestCase):

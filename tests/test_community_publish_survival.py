@@ -6,7 +6,7 @@ a reader we drop and reopen. Every wait has a deadline; workers are torn down by
 PID in a finally, so a failure never leaks a process or hangs.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import subprocess
@@ -16,12 +16,12 @@ import time
 import unittest
 from pathlib import Path
 
-import process_tree
-from community_auth import RequestPrincipal
-from community_service import CommunityService
-from community_storage import FilesystemStorageProvider
-from community_store import CommunityStore, FileStatus, PostStatus
-from job_store import JobStatus, JobStore
+import yomu.runtime.process_tree as process_tree
+from yomu.community.community_auth import RequestPrincipal
+from yomu.community.community_service import CommunityService
+from yomu.community.community_storage import FilesystemStorageProvider
+from yomu.community.community_store import CommunityStore, FileStatus, PostStatus
+from yomu.runtime.job_store import JobStatus, JobStore
 
 REPO = Path(__file__).resolve().parents[1]
 OWNER = RequestPrincipal("local", True, auth_source="test", session_id="test-owner")
@@ -61,7 +61,7 @@ class CommunityPublishSurvivalTests(unittest.TestCase):
 
     def tearDown(self):
         for pid, create_time, job_id in self._orphan_runners:
-            fingerprint = ["community_publish_runner.py", job_id]
+            fingerprint = ["yomu.community.community_publish_runner", job_id]
             if process_tree.is_alive(
                 pid, create_time=create_time, substrings=fingerprint
             ):
@@ -157,7 +157,7 @@ class CommunityPublishSurvivalTests(unittest.TestCase):
         worker1.kill()
         worker1.wait(timeout=8)
         self.jobs.unregister_worker(old_worker_id)
-        fingerprint = ["community_publish_runner.py", pub["job_id"]]
+        fingerprint = ["yomu.community.community_publish_runner", pub["job_id"]]
         self.assertTrue(process_tree.is_alive(
             old_pid,
             create_time=old_create_time,

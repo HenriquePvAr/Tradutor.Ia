@@ -11,7 +11,7 @@ what hung an earlier run for hours. Every external wait has a monotonic deadline
 diagnostic dump, so the test fails fast and loud instead of hanging.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import signal
@@ -22,13 +22,13 @@ import time
 import unittest
 from pathlib import Path
 
-from job_store import JobStatus, JobStore
+from yomu.runtime.job_store import JobStatus, JobStore
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def _fake_command(output_dir: Path, *, steps=4, sleep=0.2):
-    return [sys.executable, "-u", str(REPO / "fake_pipeline.py"),
+    return [sys.executable, "-u", str(REPO / "test_support/fake_pipeline.py"),
             "--output-dir", str(output_dir), "--outcome", "finished",
             "--steps", str(steps), "--sleep", str(sleep)]
 

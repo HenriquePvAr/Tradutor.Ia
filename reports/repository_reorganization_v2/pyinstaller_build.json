@@ -1,0 +1,12 @@
+{
+  "artifact": "C:\\Users\\henri\\YomuExperimental\\repository-structure-v2-pyinstaller\\dist\\YomuSekai\\YomuSekai.exe",
+  "bytes": 33190752,
+  "command": "python -m PyInstaller packaging/tradutor_ia.spec --noconfirm --clean",
+  "initial_attempt": "failed because the spec assumed .venv-beta inside worktree; corrected to active site-packages",
+  "nonfatal_optional_warnings": [
+    "browserforge undetected_playwright unavailable",
+    "optional hidden imports absent"
+  ],
+  "result": "PASS",
+  "worktree_output": false
+}

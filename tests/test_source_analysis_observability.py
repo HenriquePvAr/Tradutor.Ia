@@ -1,4 +1,4 @@
-from app_ui import _safe_source_error_detail, _source_analysis_observability
+from yomu.ui.app import _safe_source_error_detail, _source_analysis_observability
 
 
 def test_source_analysis_observability_is_bounded_and_path_free() -> None:

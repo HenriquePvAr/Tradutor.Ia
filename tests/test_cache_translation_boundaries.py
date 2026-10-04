@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -10,16 +10,16 @@ from unittest.mock import patch
 
 import numpy as np
 
-import config
-from ocr_balloon import TextGroup, apply_group_translations
-from ocr_engine import OCRLine
-from pipeline_cache import (
+import yomu.config.settings as config
+from yomu.ocr.ocr_balloon import TextGroup, apply_group_translations
+from yomu.ocr.ocr_engine import OCRLine
+from yomu.pipeline.pipeline_cache import (
     load_ocr_cache,
     ocr_cache_key,
     ocr_runtime_fingerprint,
     save_ocr_cache,
 )
-from translator_nvidia import TranslatorNvidiaBatch
+from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
 
 
 def _line(text="HELLO"):

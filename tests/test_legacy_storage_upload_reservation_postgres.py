@@ -12,7 +12,7 @@ connections, not two calls serialized on one connection or two in-process object
 
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -30,8 +30,8 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
-from legacy_publication_postgres_adapter import LocalPostgresConnectionSettings
-from legacy_storage_upload_reservation import (
+from yomu.community.legacy.legacy_publication_postgres_adapter import LocalPostgresConnectionSettings
+from yomu.community.legacy.legacy_storage_upload_reservation import (
     PostgresLegacyStorageUploadReservationBackend,
     ReservedLegacyArtifactStorage,
 )
@@ -557,8 +557,8 @@ def test_end_to_end_race_closure_with_fake_drive_and_real_concurrent_connections
     unmodified GoogleDriveLegacyArtifactStorage/FakeDriveClient, only one worker is ever
     permitted to reach the Drive create call at all: create_count == 1.
     """
-    from legacy_publication_drive_adapter import GoogleDriveLegacyArtifactStorage
-    from legacy_publication_postgres_adapter import PostgresLegacyProvenanceBackend
+    from yomu.community.legacy.legacy_publication_drive_adapter import GoogleDriveLegacyArtifactStorage
+    from yomu.community.legacy.legacy_publication_postgres_adapter import PostgresLegacyProvenanceBackend
     from tests.test_legacy_publication_drive_adapter import FOLDER_ID, TEST_CREATE_DEADLINE_SECONDS, FakeDriveClient, _draft_input_and_plan
 
     migration_input, plan = _draft_input_and_plan(tmp_path)

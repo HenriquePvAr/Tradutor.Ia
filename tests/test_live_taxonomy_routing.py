@@ -6,7 +6,7 @@ chapters with randomised ids — nothing chapter-specific in production logic.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -18,8 +18,8 @@ import unittest
 import uuid
 from pathlib import Path
 
-import region_taxonomy as tax
-from chapter_quality_revision import ChapterQualityRevision
+import yomu.review.region_taxonomy as tax
+from yomu.review.chapter_quality_revision import ChapterQualityRevision
 
 
 def _rand_word(n=7):

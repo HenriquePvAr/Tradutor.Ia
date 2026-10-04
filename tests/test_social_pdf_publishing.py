@@ -1,6 +1,6 @@
 """Explicit publishing orchestration + endpoints — offline, no Drive, no remote Supabase."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import socket
 import tempfile
@@ -10,14 +10,14 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from community_api import CommunityError
-from community_auth import AuthenticationRequired, RequestPrincipal
-from community_store import FileStatus, PostStatus
-from chapter_asset_repository import ChapterAssetRepository
-from social_pdf_publishing import SocialPdfPublishingService
-from social_pdf_http import create_social_pdf_router
-from supabase_social import SocialNotFound, SocialValidationError
-from offline_test_guard import (
+from yomu.community.community_api import CommunityError
+from yomu.community.community_auth import AuthenticationRequired, RequestPrincipal
+from yomu.community.community_store import FileStatus, PostStatus
+from yomu.community.chapter_asset_repository import ChapterAssetRepository
+from yomu.community.social_pdf_publishing import SocialPdfPublishingService
+from yomu.community.social_pdf_http import create_social_pdf_router
+from yomu.community.supabase_social import SocialNotFound, SocialValidationError
+from test_support.offline_test_guard import (
     _loopback_test_connect, _loopback_test_connect_ex, _loopback_test_create_connection,
 )
 
@@ -173,7 +173,7 @@ class PublishingServiceTests(unittest.TestCase):
         self.capi.store.verify(pid)
         self.svc.publish_status("owner-A", OWNER, "chapA")
         self.svc.unlink_asset("owner-A", OWNER, "chapA")
-        from chapter_asset_repository import AssetNotFound
+        from yomu.community.chapter_asset_repository import AssetNotFound
         with self.assertRaises(AssetNotFound):
             self.assets.get_asset_for_read("chapA")
 

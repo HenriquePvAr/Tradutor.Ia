@@ -50,7 +50,7 @@ def main() -> int:
     translated_path = Path(translated_path)
     psd_path = Path(psd_path)
     if mode == "export":
-        import psd_exporter
+        import yomu.export.psd_exporter as psd_exporter
 
         # Measure the production serialization path alone. Validation is measured in a
         # separate process below, to prevent its transient composite from inflating this.
@@ -61,7 +61,7 @@ def main() -> int:
         result.update({"stage": "production_psd_export_without_reopen_validation",
                        "file_size_bytes": psd_path.stat().st_size})
     elif mode == "validate":
-        import psd_exporter
+        import yomu.export.psd_exporter as psd_exporter
 
         original = Image.open(original_path).convert("RGBA")
         translated = Image.open(translated_path).convert("RGBA")

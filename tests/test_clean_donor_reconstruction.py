@@ -1,11 +1,11 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import cv2
 import numpy as np
 
-import art_text_inpainting as ati
+import yomu.clean.inpainting.art_text_inpainting as ati
 
 
 def _masks(size: int = 24):

@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -11,10 +11,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-import benchmark_pipeline
-from benchmark_pipeline import _resolve_download_max_images, _select_image_entries
-import pdf
-from pdf import (
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+from yomu.pipeline.benchmark_pipeline import _resolve_download_max_images, _select_image_entries
+import yomu.export.pdf as pdf
+from yomu.export.pdf import (
     MAX_LOGICAL_PAGE_HEIGHT,
     PROTECTED_REGION_PADDING,
     ProtectedRegionDetectionError,

@@ -1,18 +1,18 @@
 """Retention / restore / trash / reconcile — offline, fake clock, no Drive, no Supabase."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from chapter_asset_repository import AssetNotFound, ChapterAssetRepository
-from community_store import FileStatus, PostStatus
-from social_asset_reconcile import (
+from yomu.community.chapter_asset_repository import AssetNotFound, ChapterAssetRepository
+from yomu.community.community_store import FileStatus, PostStatus
+from yomu.community.social_asset_reconcile import (
     RECONCILE_REQUIRED, SAFE_FOR_TRASH, SocialAssetReconciliationService,
     SocialAssetRetentionSweep,
 )
-from social_asset_retention import (
+from yomu.community.social_asset_retention import (
     DAY_SECONDS, DEFAULT_RETENTION_DAYS, RetentionConflict, RetentionError,
     SocialAssetRetentionService, retention_days, sweep_enabled,
 )
@@ -284,15 +284,15 @@ class ReconcileTests(Base):
 class SafetyTests(Base):
     def test_no_permanent_delete_anywhere_in_the_retention_code(self):
         root = Path(__file__).resolve().parents[1]
-        for name in ("social_asset_retention.py", "social_asset_reconcile.py",
-                     "social_asset_maintenance_cli.py"):
+        for name in ("yomu/community/social_asset_retention.py", "yomu/community/social_asset_reconcile.py",
+                     "scripts/social_asset_maintenance_cli.py"):
             src = (root / name).read_text(encoding="utf-8")
             for bad in ("delete_file", "empty_trash", "emptyTrash", "files.delete"):
                 self.assertNotIn(bad, src, f"{name}: {bad}")
 
     def test_no_broad_drive_listing(self):
         root = Path(__file__).resolve().parents[1]
-        for name in ("social_asset_retention.py", "social_asset_reconcile.py"):
+        for name in ("yomu/community/social_asset_retention.py", "yomu/community/social_asset_reconcile.py"):
             src = (root / name).read_text(encoding="utf-8")
             for bad in ("list_files", "files.list", "q=", "'*'"):
                 self.assertNotIn(bad, src, f"{name}: {bad}")

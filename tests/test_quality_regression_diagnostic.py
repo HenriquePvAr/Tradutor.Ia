@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import unittest
 
-from quality_regression_diagnostic import (
+from tools.research.quality_regression_diagnostic import (
     classify_item, normalize_artifact, progress_page_snapshot, review_to_expectation,
 )
 

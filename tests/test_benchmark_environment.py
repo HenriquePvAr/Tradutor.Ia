@@ -1,8 +1,8 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-from benchmark_environment import SystemLoadSnapshot, clean_benchmark_preflight
+from tools.performance.benchmark_environment import SystemLoadSnapshot, clean_benchmark_preflight
 
 
 class CleanBenchmarkPreflightTests(unittest.TestCase):

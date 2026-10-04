@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from request_observability import (
+from yomu.runtime.request_observability import (
     StructuredRequestAuditMiddleware,
     configured_request_audit_destination,
 )

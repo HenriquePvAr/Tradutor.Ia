@@ -6,7 +6,7 @@ renderable.  These tests are local-only and never call a provider or network.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -16,9 +16,9 @@ from unittest import mock
 import cv2
 import numpy as np
 
-import ocr_balloon as ob
-import semantic_fidelity
-from ocr_engine import OCRLine
+import yomu.ocr.ocr_balloon as ob
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.ocr.ocr_engine import OCRLine
 
 
 P65_SOURCE = "..YOU BE COME AGATETHROUGHWHICH AMONSTERAPPEARSIN THEREALWORLD."

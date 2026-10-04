@@ -90,7 +90,7 @@ def _env(runtime: Path, *, recovery=False) -> dict[str, str]:
 
 
 def _status_wait(store, job_id: str, worker: subprocess.Popen, timeout=240):
-    from job_store import JobStatus
+    from yomu.runtime.job_store import JobStatus
 
     transitions = []
     terminal = set(JobStatus.TERMINAL) | {JobStatus.INTERRUPTED}
@@ -169,7 +169,7 @@ def _png_output(job: dict) -> tuple[Path, list[Path]]:
 
 
 def _verify_regions(path: Path, *, height: int) -> dict:
-    from ocr_engine import OCREngine
+    from yomu.ocr.ocr_engine import OCREngine
 
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None:
@@ -188,7 +188,7 @@ def _verify_regions(path: Path, *, height: int) -> dict:
 
 def _run_job(bridge, runtime: Path, env: dict[str, str], source: str,
              name: str, source_path: Path):
-    from job_store import JobStatus
+    from yomu.runtime.job_store import JobStatus
 
     result = asyncio.run(_create(bridge, source, name, source_path))
     job_id = str(result.get("job_id") or "")
@@ -223,7 +223,7 @@ def main() -> int:
     runtime = Path(tempfile.mkdtemp(prefix="yomu-large-strip-app-e2e-"))
     env = _env(runtime)
     os.environ.update(env)
-    import ui_bridge
+    import yomu.ui.ui_bridge as ui_bridge
 
     bridge = ui_bridge.UiBridge()
     bridge.ensure_worker = lambda: {"status": "manual_isolated_dispatch"}
@@ -267,7 +267,7 @@ def main() -> int:
             if wallet_state.is_file() else {}
         )
         output_dir = Path(str(first_row.get("output_dir") or ""))
-        import yk_reservation
+        import yomu.runtime.yk_reservation as yk_reservation
         translation_ready = yk_reservation.translation_ready(
             output_dir, job_id=recovery_id
         )

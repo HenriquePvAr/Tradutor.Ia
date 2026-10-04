@@ -10,7 +10,7 @@ mapping must be generic, and a test that referenced any of those would be
 proving the opposite.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import re

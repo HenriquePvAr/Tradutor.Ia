@@ -5,19 +5,19 @@ the current ledger lookup and terminology-drift path without wiring a new
 production gate or calling a provider.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from session_context import (
+from yomu.pipeline.session_context import (
     KIND_TERMINOLOGY,
     TERM_AUTHORITY_DOMAIN_TERM,
     TERM_AUTHORITY_LEXICAL_HINT,
     SessionContextStore,
 )
-from ocr_balloon import validate_and_retry_translations
+from yomu.ocr.ocr_balloon import validate_and_retry_translations
 from tests.test_chapter_terminology_ledger import _StubTranslator, _group
 
 

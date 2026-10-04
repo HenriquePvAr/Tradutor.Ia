@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -7,18 +7,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from output_manifest import (
+from yomu.export.output_manifest import (
     MANIFEST_FILENAME,
     build_run_manifest,
     load_verified_run_manifest,
 )
-from pdf_naming import (
+from yomu.export.pdf_naming import (
     build_pdf_filename,
     episode_number_from_url,
     sanitize_filename_component,
     series_slug_from_url,
 )
-from ui_helpers import find_output_artifacts
+from yomu.ui.ui_helpers import find_output_artifacts
 
 
 _HORROR_URL = (

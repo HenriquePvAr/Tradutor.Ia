@@ -3,14 +3,14 @@ across failures, retries, duplicates and process restarts. No real YK / DeepL.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
 from pathlib import Path
 
-import yk_reservation as ykr
-from yomu_backend_provider import (BackendTranslationError, BatchItem, BatchRequest,
+import yomu.runtime.yk_reservation as ykr
+from yomu.translation.providers.yomu_backend_provider import (BackendTranslationError, BatchItem, BatchRequest,
                                   BatchResponse, MockBackendClient, ResultStore)
 
 AUTH = "jwt.test"

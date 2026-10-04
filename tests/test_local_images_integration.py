@@ -1,9 +1,9 @@
 import pytest
 from unittest.mock import patch
 
-from local_folder_job import build_local_job_command
-from run_webtoon import build_parser
-from ui_bridge import UiBridge
+from yomu.download.local.local_folder_job import build_local_job_command
+from yomu.commands.run_webtoon import build_parser
+from yomu.ui.ui_bridge import UiBridge
 
 
 def test_output_format_defaults_to_pdf_and_rejects_unknown():
@@ -60,9 +60,9 @@ def test_frozen_local_runner_uses_internal_child_dispatcher_and_preserves_contra
 
 
 def test_frozen_local_runner_dispatches_to_existing_local_entrypoint():
-    import start_tradutor
+    import yomu.commands.start_tradutor as start_tradutor
 
-    with patch("run_local_folder.main", return_value=0) as runner:
+    with patch("yomu.commands.run_local_folder.main", return_value=0) as runner:
         assert start_tradutor.main([
             "--internal-child", "local-folder", "--snapshot-ref", "snap-123",
         ]) == 0

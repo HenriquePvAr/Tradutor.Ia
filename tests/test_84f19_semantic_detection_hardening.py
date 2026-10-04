@@ -32,7 +32,7 @@ Every fixture below is the exact persisted text of the real #84F18 run
 in production code.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import os
 import unittest
@@ -40,9 +40,9 @@ from unittest import mock
 
 import numpy as np
 
-import semantic_fidelity
-from config import BETA_OCR_ENGINE, effective_ocr_engine
-from ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.config.settings import BETA_OCR_ENGINE, effective_ocr_engine
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
 
 
 # --- exact persisted #84F18 regions -----------------------------------------

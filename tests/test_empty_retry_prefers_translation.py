@@ -13,16 +13,16 @@ still preserves the source.  Everything runs against a scripted translator.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest import mock
 
 import numpy as np
 
-import config
-import ocr_balloon
-from ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
+import yomu.config.settings as config
+import yomu.ocr.ocr_balloon as ocr_balloon
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
 
 
 ENGLISH = "ON THE CONTRARY, SEE HOW FAR YOU'VE REACHED ALREADY."

@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from ui_bridge import UiBridge
-from ui_history import UIHistoryStore
+from yomu.ui.ui_bridge import UiBridge
+from yomu.ui.ui_history import UIHistoryStore
 
 
 def _download_fixture(tmp_path: Path, *, include_report=True):

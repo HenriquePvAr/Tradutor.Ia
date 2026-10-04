@@ -1,8 +1,8 @@
 from pathlib import Path
 
-import artifact_contract as ac
-import job_runner
-import ui_bridge
+import yomu.runtime.artifact_contract as ac
+import yomu.runtime.job_runner as job_runner
+import yomu.ui.ui_bridge as ui_bridge
 
 
 def _normalize(monkeypatch, payload):
@@ -89,11 +89,11 @@ def test_profile_reaches_pipeline_child_and_old_jobs_fall_back_safely():
     assert env["YOMU_OUTPUT_PROFILE"] == ac.OutputProfile.PROFESSIONAL_QC
     job_runner._set_output_profile_environment(env, {})
     assert env["YOMU_OUTPUT_PROFILE"] == ac.OutputProfile.AUTOMATIC
-    assert '"output_profile"' in Path("job_runner.py").read_text(encoding="utf-8")
+    assert '"output_profile"' in Path("yomu/runtime/job_runner.py").read_text(encoding="utf-8")
 
 
 def test_internal_quality_report_remains_separate_from_automatic_requested_artifacts():
-    pipeline = Path("benchmark_pipeline.py").read_text(encoding="utf-8")
+    pipeline = Path("yomu/pipeline/benchmark_pipeline.py").read_text(encoding="utf-8")
     assert "atomic_write_json(quality_json_path, quality_report)" in pipeline
     assert ac.ArtifactType.QUALITY_REPORT not in ac.profile_artifacts(ac.OutputProfile.AUTOMATIC)
     js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")

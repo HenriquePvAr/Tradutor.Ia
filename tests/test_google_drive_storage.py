@@ -1,12 +1,12 @@
 """Google Drive provider tests via a fake HTTP transport — no network, no OAuth."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import unittest
 
-from community_storage import StorageError
-from google_drive_storage import GoogleDriveStorageProvider, HttpResponse
+from yomu.community.community_storage import StorageError
+from yomu.community.storage.google_drive_storage import GoogleDriveStorageProvider, HttpResponse
 
 
 class FakeTokens:

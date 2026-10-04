@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import hashlib
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from job_store import JobStatus, JobStore
+from yomu.runtime.job_store import JobStatus, JobStore
 
 
 def _write_png(path: Path, label: str, *, color: tuple[int, int, int] = (245, 245, 245)) -> None:
@@ -62,7 +62,7 @@ class SpyPdfBuilder:
         self.calls.append([str(path) for path in image_paths])
         if self.fail:
             raise RuntimeError("pdf boom")
-        from pdf import generate_pdf
+        from yomu.export.pdf import generate_pdf
 
         generate_pdf(image_paths, pdf_path)
 
@@ -74,14 +74,14 @@ class InvalidPdfBuilder:
 
 class OnePagePdfBuilder:
     def __call__(self, image_paths, pdf_path):
-        from pdf import generate_pdf
+        from yomu.export.pdf import generate_pdf
 
         generate_pdf([image_paths[0]], pdf_path)
 
 
 class DuplicateFirstPagePdfBuilder:
     def __call__(self, image_paths, pdf_path):
-        from pdf import generate_pdf
+        from yomu.export.pdf import generate_pdf
 
         generate_pdf([image_paths[0], *image_paths], pdf_path)
 
@@ -91,7 +91,7 @@ class MutatingPdfBuilder:
         self.path_to_mutate = path_to_mutate
 
     def __call__(self, image_paths, pdf_path):
-        from pdf import generate_pdf
+        from yomu.export.pdf import generate_pdf
 
         _write_png(self.path_to_mutate, "MUTATED", color=(248, 230, 230))
         generate_pdf(image_paths, pdf_path)
@@ -365,7 +365,7 @@ def _blank_fixture(tmp_path: Path, **overrides) -> tuple[JobStore, str, Path, st
 
 
 def _service(tmp_path: Path, store: JobStore, *, renderer=None, pdf=None, quality=None):
-    from selective_artifact_reconstruction import SelectiveArtifactReconstructor
+    from yomu.clean.reconstruction.selective_artifact_reconstruction import SelectiveArtifactReconstructor
 
     kwargs = {
         "workspace_root": tmp_path,
@@ -416,7 +416,7 @@ def _write_reconstruction_quality(result: dict, report: dict) -> None:
 
 
 def test_service_imports_after_tdd_green(tmp_path):
-    from selective_artifact_reconstruction import SelectiveArtifactReconstructor
+    from yomu.clean.reconstruction.selective_artifact_reconstruction import SelectiveArtifactReconstructor
 
     assert SelectiveArtifactReconstructor.__name__ == "SelectiveArtifactReconstructor"
 
@@ -940,8 +940,8 @@ def test_idempotent_retry_reuses_completed_artifact(tmp_path):
 
 
 def test_publication_resolution_denies_historical_but_accepts_fresh_reconstruction(tmp_path):
-    from community_api import ArtifactBindingError, CommunityApi
-    from community_auth import RequestPrincipal
+    from yomu.community.community_api import ArtifactBindingError, CommunityApi
+    from yomu.community.community_auth import RequestPrincipal
 
     store, job_id, output, candidate_hash = _fixture(tmp_path)
     result = _service(tmp_path, store).reconstruct(_request(job_id, candidate_hash))
@@ -986,8 +986,8 @@ def test_safe_recovery_is_idempotent_for_already_finished_reconstruction(tmp_pat
 
 
 def test_safe_recovery_makes_reconstruction_publication_lifecycle_eligible(tmp_path):
-    from community_api import ArtifactBindingError, CommunityApi
-    from community_auth import RequestPrincipal
+    from yomu.community.community_api import ArtifactBindingError, CommunityApi
+    from yomu.community.community_auth import RequestPrincipal
 
     store, _job_id, output, result = _completed_reconstruction_fixture(tmp_path)
     api = CommunityApi(store, community_db_path=tmp_path / "community.sqlite3", output_root=output)

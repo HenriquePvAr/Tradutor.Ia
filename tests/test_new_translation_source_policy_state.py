@@ -1,7 +1,7 @@
 """Regression contracts for source validation and workspace policy UI state."""
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import hashlib
 import json
@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from chapter_source import SUPPORTED_SPECIFIC_ADAPTER
-from job_store import JobStore
-from source_readiness import SourceReadinessStore, default_workspace_id
+from yomu.download.sources.chapter_source import SUPPORTED_SPECIFIC_ADAPTER
+from yomu.runtime.job_store import JobStore
+from yomu.review.source_readiness import SourceReadinessStore, default_workspace_id
 from tests.test_translation_start import WEBTOON_URL, _Bridge, drive
 
 

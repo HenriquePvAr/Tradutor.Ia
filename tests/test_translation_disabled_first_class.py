@@ -1,5 +1,5 @@
 def test_disabled_translation_never_enters_legacy_factory(monkeypatch, capsys):
-    import benchmark_pipeline
+    import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
 
     def fail_factory(*args, **kwargs):  # pragma: no cover - assertion guard
         raise AssertionError("translator factory must not run when disabled")
@@ -14,7 +14,7 @@ def test_disabled_translation_never_enters_legacy_factory(monkeypatch, capsys):
 
 
 def test_enabled_translation_keeps_explicit_provider_contract(monkeypatch):
-    import benchmark_pipeline
+    import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
 
     sentinel = object()
     monkeypatch.setattr(benchmark_pipeline, "_build_translation_provider", lambda *a, **k: sentinel)
@@ -26,7 +26,7 @@ def test_enabled_translation_keeps_explicit_provider_contract(monkeypatch):
 
 
 def test_enabled_translation_uses_backend_bridge_even_with_legacy_deepl_label(monkeypatch):
-    import benchmark_pipeline
+    import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
 
     sentinel = object()
     calls = []
@@ -38,7 +38,7 @@ def test_enabled_translation_uses_backend_bridge_even_with_legacy_deepl_label(mo
 
 
 def test_disabled_translation_has_first_class_provider_provenance():
-    import benchmark_pipeline
+    import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
 
     provenance = benchmark_pipeline.resolve_provider_provenance(
         None, "deepl", translation_enabled=False
@@ -52,14 +52,14 @@ def test_disabled_translation_has_first_class_provider_provenance():
 def test_pipeline_spawn_uses_hidden_console_helper():
     from pathlib import Path
 
-    source = (Path(__file__).resolve().parents[1] / "job_runner.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "yomu/runtime/job_runner.py").read_text(encoding="utf-8")
     assert "build_background_process_options" in source
     assert "PIPELINE_SPAWN_BEGIN" in source
     assert "shell=True" not in source
 
 
 def test_background_spawn_contract_is_shell_free_and_captures_streams():
-    from process_options import build_background_process_options
+    from yomu.runtime.process_options import build_background_process_options
 
     options = build_background_process_options(stdout=-1, stderr=-2)
     assert options["shell"] is False

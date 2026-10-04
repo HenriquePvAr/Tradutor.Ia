@@ -7,14 +7,14 @@ and read only; they do not start jobs, call providers, or touch remote services.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
 import re
 import unittest
 
-import region_taxonomy
+import yomu.review.region_taxonomy as region_taxonomy
 
 def _synthetic_quality_report():
     def item(

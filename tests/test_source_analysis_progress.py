@@ -1,5 +1,5 @@
 """Live source-analysis progress + cooperative-cancel registry (Webtoon 'parece parado' fix)."""
-import source_analysis_progress as sap
+import yomu.review.source_analysis_progress as sap
 
 
 def _fresh():

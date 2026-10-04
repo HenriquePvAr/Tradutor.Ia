@@ -1,6 +1,6 @@
 """Webtoons Selenium bridge to the lazy-slot resolver, without a real browser."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import subprocess
@@ -9,12 +9,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import chapter_source
-import down
-import ui_bridge
-from chapter_source import SLOT_PENDING, SourceError, UniversalChapterAdapter, select_adapter
-from lazy_slot_resolver import ResolverLimits
-from webtoons_reader_bridge import WebtoonsReaderBridge
+import yomu.download.sources.chapter_source as chapter_source
+import yomu.download.down as down
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.download.sources.chapter_source import SLOT_PENDING, SourceError, UniversalChapterAdapter, select_adapter
+from yomu.download.lazy_slot_resolver import ResolverLimits
+from yomu.download.webtoons_reader_bridge import WebtoonsReaderBridge
 
 PAGE = "https://www.webtoons.com/en/drama/serie/episode-1/viewer?title_no=1&episode_no=1"
 PAGE_HOST = "webtoon-phinf.pstatic.net"
@@ -233,7 +233,7 @@ class LazyIntegrationTests(unittest.TestCase):
         self.assertGreater(analysis.reader_diagnostics["slots_pending"], 0)
         self.assertIn("scroll_incomplete", analysis.warnings)
         self.assertNotEqual(analysis.outcome, chapter_source.REVIEW_REQUIRED_MEDIUM_CONFIDENCE)
-        from source_analysis_phase import source_analysis_is_incomplete
+        from yomu.review.source_analysis_phase import source_analysis_is_incomplete
 
         self.assertTrue(source_analysis_is_incomplete(analysis.public()))
 
@@ -278,15 +278,15 @@ class AdapterBoundaryTests(unittest.TestCase):
         vortex = select_adapter("https://vortexscans.org/series/demo-series/chapter-42")
         self.assertEqual(vortex.collection_strategy, "adapter_specific")
         self.assertEqual(vortex.coverage_strategy, "reader_container")
-        from local_folder_source import LocalFolderChapterAdapter
+        from yomu.download.local.local_folder_source import LocalFolderChapterAdapter
 
         self.assertFalse(hasattr(LocalFolderChapterAdapter(), "reader_selectors"))
 
 
 class WorkerProgressTests(unittest.TestCase):
     def test_worker_persists_lazy_resolution_progress_and_waits_for_authorization(self):
-        from job_store import JobStatus, JobStore
-        from worker_service import Worker
+        from yomu.runtime.job_store import JobStatus, JobStore
+        from yomu.runtime.worker_service import Worker
 
         class WorkerProbe(Worker):
             def __init__(self, store):
@@ -348,17 +348,17 @@ class DriverLifecycleTests(unittest.TestCase):
 
             with (
                 mock.patch.object(chapter_source.socket, "getaddrinfo", public_dns),
-                mock.patch("down._resolve_canonical_source", return_value=None),
-                mock.patch("down.inspect_source_preflight", side_effect=lambda _adapter, value, **_: value),
-                mock.patch("down._create_driver", side_effect=lambda: created.append(driver) or driver),
-                mock.patch("down._capture_driver_ownership", return_value={}),
-                mock.patch("down._refresh_driver_ownership"),
-                mock.patch("down._bounded_driver_teardown", side_effect=teardown),
-                mock.patch("down._scroll_incrementally", return_value={
+                mock.patch("yomu.download.down._resolve_canonical_source", return_value=None),
+                mock.patch("yomu.download.down.inspect_source_preflight", side_effect=lambda _adapter, value, **_: value),
+                mock.patch("yomu.download.down._create_driver", side_effect=lambda: created.append(driver) or driver),
+                mock.patch("yomu.download.down._capture_driver_ownership", return_value={}),
+                mock.patch("yomu.download.down._refresh_driver_ownership"),
+                mock.patch("yomu.download.down._bounded_driver_teardown", side_effect=teardown),
+                mock.patch("yomu.download.down._scroll_incrementally", return_value={
                     "reached_document_end": True,
                     "stabilized": True,
                 }),
-                mock.patch("down.time.sleep"),
+                mock.patch("yomu.download.down.time.sleep"),
             ):
                 try:
                     down.analyze_chapter_source(PAGE, cancel_check=cancel_check)
@@ -390,8 +390,8 @@ def drive(coro):
 
 class SyntheticWebtoonsE2ETests(unittest.TestCase):
     def test_submit_worker_lazy_selection_fake_pipeline_pdf(self):
-        from job_store import JobStatus, JobStore
-        from worker_service import Worker
+        from yomu.runtime.job_store import JobStatus, JobStore
+        from yomu.runtime.worker_service import Worker
 
         class BridgeProbe(ui_bridge.UiBridge):
             def __init__(self, db_path):
@@ -433,7 +433,7 @@ class SyntheticWebtoonsE2ETests(unittest.TestCase):
                 command = [
                     sys.executable,
                     "-u",
-                    str(REPO / "fake_pipeline.py"),
+                    str(REPO / "test_support/fake_pipeline.py"),
                     "--output-dir",
                     str(output_dir),
                     "--outcome",
@@ -468,7 +468,7 @@ class SyntheticWebtoonsE2ETests(unittest.TestCase):
             db_path = Path(folder) / "jobs.sqlite3"
             bridge = BridgeProbe(db_path)
             try:
-                from community_auth import RequestPrincipal
+                from yomu.community.community_auth import RequestPrincipal
 
                 principal = RequestPrincipal(
                     user_id="fixture-user", authenticated=True, auth_source="local")

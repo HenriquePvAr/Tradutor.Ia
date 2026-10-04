@@ -22,15 +22,15 @@ Every token here is synthetic or drawn from a fixture built in this file.
 Production code keys off no page, job, chapter or sentence.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import numpy as np
 
-import ocr_balloon
-import semantic_fidelity
-from ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
+import yomu.ocr.ocr_balloon as ocr_balloon
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
 
 
 # --- fixtures ---------------------------------------------------------------

@@ -5,7 +5,7 @@ spawns the fake pipeline subprocess - so the survival and recovery guarantees ar
 against actual processes, not mocks. No network, NVIDIA, OCR or heavy PDF is involved.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import subprocess
 import sys
@@ -16,16 +16,16 @@ import os
 from unittest import mock
 from pathlib import Path
 
-from job_store import JobStatus, JobStore
-import process_tree
-from worker_service import Worker
+from yomu.runtime.job_store import JobStatus, JobStore
+import yomu.runtime.process_tree as process_tree
+from yomu.runtime.worker_service import Worker
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def _fake_command(output_dir: Path, *, outcome="finished", steps=2, sleep=0.02,
                   hang=False, stop_after="", fail_at=""):
-    cmd = [sys.executable, "-u", str(REPO / "fake_pipeline.py"),
+    cmd = [sys.executable, "-u", str(REPO / "test_support/fake_pipeline.py"),
            "--output-dir", str(output_dir), "--outcome", outcome,
            "--steps", str(steps), "--sleep", str(sleep)]
     if hang:
@@ -213,14 +213,14 @@ class CancelAndRecoveryTests(unittest.TestCase):
         except Exception as exc:  # pragma: no cover - environment diagnostic
             self.skipTest(f"image fixture unavailable: {exc}")
 
-        import local_folder_input
+        import yomu.download.local.local_folder_input as local_folder_input
         local_folder_input.LOCAL_SNAPSHOT_ROOT = self.tmp / "runtime" / "local_sources"
-        from local_folder_input import snapshot_workspace_root
+        from yomu.download.local.local_folder_input import snapshot_workspace_root
         with mock.patch.dict(os.environ, {
             "TRADUTOR_TEST_RUNTIME_ROOT": str(self.tmp / "runtime"),
             "LOCAL_INPUT_ROOTS": str(self.tmp),
         }, clear=False):
-            from local_folder_source import LocalFolderChapterAdapter
+            from yomu.download.local.local_folder_source import LocalFolderChapterAdapter
             snapshot = LocalFolderChapterAdapter().snapshot(str(source), snapshot_workspace_root())
 
         marker_dir = self.tmp / "markers"

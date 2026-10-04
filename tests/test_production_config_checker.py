@@ -21,7 +21,7 @@ def test_release_checker_uses_public_publishable_key_contract():
 
 
 def test_jwks_diagnostic_uses_active_public_runtime_not_a_hardcoded_project():
-    source = Path("jwks_network_diagnostics.py").read_text(encoding="utf-8")
+    source = Path("yomu/auth/jwks_network_diagnostics.py").read_text(encoding="utf-8")
     assert "public-runtime.json" in source
     assert "getaddrinfo(host" in source
     assert "mimrsxnhqbqkffsekxuw" not in source

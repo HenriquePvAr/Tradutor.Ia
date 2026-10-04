@@ -6,17 +6,17 @@ Uses the wallet-accounting mock; no real YK / DeepL.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
 import json
 from pathlib import Path
 
-import job_runner
-import yk_reservation as ykr
-from yomu_backend_provider import BatchItem, BatchRequest, MockBackendClient, ResultStore
-from job_store import JobStatus, JobStore
+import yomu.runtime.job_runner as job_runner
+import yomu.runtime.yk_reservation as ykr
+from yomu.translation.providers.yomu_backend_provider import BatchItem, BatchRequest, MockBackendClient, ResultStore
+from yomu.runtime.job_store import JobStatus, JobStore
 
 AUTH = "jwt.test"
 ITEMS = [{"item_id": "translation:00000", "text": "hello"}]

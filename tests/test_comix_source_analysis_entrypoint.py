@@ -1,17 +1,17 @@
 """Hermetic integration coverage for the real UI source-analysis entrypoint."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import asyncio
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-import app_ui
-import down
-from chapter_source import SourceError
-from universal_chapter_adapter import SourceAnalysis, SUPPORTED_SPECIFIC_ADAPTER
-from ui_bridge import UiBridge
+import yomu.ui.app as app_ui
+import yomu.download.down as down
+from yomu.download.sources.chapter_source import SourceError
+from yomu.download.sources.universal_chapter_adapter import SourceAnalysis, SUPPORTED_SPECIFIC_ADAPTER
+from yomu.ui.ui_bridge import UiBridge
 
 
 URL = "https://comix.to/title/k72ge-home/1536897-chapter-1"
@@ -47,9 +47,9 @@ def test_ui_source_analysis_entrypoint_routes_recoverable_comix_failures(
         lambda _file, event, **fields: logged.append((event, fields)))
 
     try:
-        with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+        with mock.patch("yomu.download.http_source_discovery.discover_via_http", return_value=None), \
              mock.patch.object(down, "analyze_chapter_source", side_effect=preflight_error), \
-             mock.patch("scrapling_reader_resolver.resolve", return_value=analysis) as resolver:
+             mock.patch("yomu.download.readers.scrapling_reader_resolver.resolve", return_value=analysis) as resolver:
             response = asyncio.run(app_ui.api_source_analyze(
                 request, {"source_type": "url", "url": URL, "trace_id": "trace-test"}))
         resolver.assert_called_once()
@@ -83,9 +83,9 @@ def test_partial_source_analysis_passes_requested_page_scope_to_dynamic_resolver
     monkeypatch.setattr(app_ui, "_ui_principal", lambda *_args, **_kwargs: principal)
     request = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))
     try:
-        with mock.patch("http_source_discovery.discover_via_http", return_value=None), \
+        with mock.patch("yomu.download.http_source_discovery.discover_via_http", return_value=None), \
              mock.patch.object(down, "analyze_chapter_source", side_effect=preflight_error), \
-             mock.patch("scrapling_reader_resolver.resolve", return_value=analysis) as resolver:
+             mock.patch("yomu.download.readers.scrapling_reader_resolver.resolve", return_value=analysis) as resolver:
             response = asyncio.run(app_ui.api_source_analyze(request, {
                 "source_type": "url", "url": URL, "full": False,
                 "max_images": 5, "trace_id": "partial-five",

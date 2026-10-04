@@ -9,7 +9,7 @@ test_legacy_storage_upload_reservation_postgres.py.
 
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from legacy_publication_migration_executor import (
+from yomu.community.legacy.legacy_publication_migration_executor import (
     ConflictingStorageObjectError,
     FakeLegacyArtifactStorage,
     FakeLegacyProvenanceBackend,
@@ -27,8 +27,8 @@ from legacy_publication_migration_executor import (
     TerminalBackendError,
     TransientBackendError,
 )
-from legacy_publication_migrator import load_migration_input, plan_migration
-from legacy_storage_upload_reservation import (
+from yomu.community.legacy.legacy_publication_migrator import load_migration_input, plan_migration
+from yomu.community.legacy.legacy_storage_upload_reservation import (
     ReservationClaim,
     ReservationCompletion,
     ReservationFailureRecorded,

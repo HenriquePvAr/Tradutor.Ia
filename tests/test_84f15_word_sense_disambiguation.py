@@ -12,13 +12,13 @@ a candidate that commits to one sense of it, and bounded context that supports
 a different sense - or none at all.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-import benchmark_pipeline
-import semantic_fidelity
-from ocr_balloon import TextGroup, validate_and_retry_translations
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.ocr.ocr_balloon import TextGroup, validate_and_retry_translations
 
 
 # The persisted p046 evidence, verbatim from .cache/processed.
@@ -180,7 +180,7 @@ class WordSenseRetryGuidance(unittest.TestCase):
         )
 
     def test_the_provider_has_an_instruction_for_it(self):
-        import translator_nvidia
+        import yomu.translation.providers.translator_nvidia as translator_nvidia
 
         class _Named:
             source_language = "en"

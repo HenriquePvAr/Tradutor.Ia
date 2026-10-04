@@ -7,12 +7,12 @@ because recommendations and a footer follow it. The document-end rule called tha
 Hermetic: plain dictionaries, no browser, no network.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-from chapter_source import UniversalChapterAdapter, select_adapter
-from down import _scroll_coverage_warnings
+from yomu.download.sources.chapter_source import UniversalChapterAdapter, select_adapter
+from yomu.download.down import _scroll_coverage_warnings
 
 WEBTOONS = select_adapter(
     "https://www.webtoons.com/en/drama/serie/episode-1/viewer?title_no=1&episode_no=1")
@@ -89,7 +89,7 @@ class StrategyOwnershipTests(unittest.TestCase):
     def test_the_downloader_decides_by_strategy_not_by_host(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "down.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "yomu/download/down.py").read_text(encoding="utf-8")
         body = source[source.index("def _scroll_coverage_warnings"):]
         body = body[:body.index("\ndef ", 10)]
         self.assertIn("coverage_strategy", body)

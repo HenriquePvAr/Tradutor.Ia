@@ -6,7 +6,7 @@ It is selective, bounded, post-validated through the existing semantic fidelity
 gate, and always falls back to the trusted translation when unsafe.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
@@ -14,9 +14,9 @@ from pathlib import Path
 
 import numpy as np
 
-import semantic_fidelity
-from ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
-from session_context import SessionContextStore
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup, validate_and_retry_translations
+from yomu.pipeline.session_context import SessionContextStore
 
 
 def _line(text):

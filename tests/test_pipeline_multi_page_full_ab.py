@@ -1,15 +1,16 @@
 """Permanent three-page full-pipeline serial/parallel overflow coverage."""
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import hashlib, json, os, tempfile, unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 import cv2, numpy as np
-import benchmark_pipeline as bp
-import config, local_folder_input
-from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
-from ocr_balloon import TextCandidate, TextGroup
-from ocr_engine import OCRLine
+import yomu.pipeline.benchmark_pipeline as bp
+import yomu.config.settings as config
+import yomu.download.local.local_folder_input as local_folder_input
+from yomu.download.local.local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+from yomu.ocr.ocr_balloon import TextCandidate, TextGroup
+from yomu.ocr.ocr_engine import OCRLine
 
 class FixtureTranslator:
     model = "offline-fixture"

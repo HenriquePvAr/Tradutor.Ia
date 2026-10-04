@@ -1,6 +1,6 @@
 """Start-translation submit path: source selection, queue visibility, idempotency, errors."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import asyncio
 import hashlib
@@ -13,16 +13,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import ui_bridge
-from chapter_source import (
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.download.sources.chapter_source import (
     REVIEW_REQUIRED_MEDIUM_CONFIDENCE, SOURCE_NOT_READY, SUPPORTED_SPECIFIC_ADAPTER,
     UNSUPPORTED_LOW_CONFIDENCE,
     SourceError, UniversalChapterAdapter, host_of, select_adapter, supported_hosts,
 )
-from job_store import JobStatus, JobStore
-from source_readiness import SourceReadinessStore
-from ui_helpers import build_run_command
-from worker_service import Worker
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.review.source_readiness import SourceReadinessStore
+from yomu.ui.ui_helpers import build_run_command
+from yomu.runtime.worker_service import Worker
 
 WEBTOON_URL = "https://www.webtoons.com/en/fantasy/serie/ep-1/viewer?title_no=1&episode_no=1"
 
@@ -179,8 +179,8 @@ class WorkerCompatibilityTests(unittest.TestCase):
         bridge = self.bridge()
         with mock.patch.object(ui_bridge, "_worker_environment_matches_current",
                                return_value=False), \
-                mock.patch("start_tradutor.stop_worker", return_value=0) as stop, \
-                mock.patch("start_tradutor.start_worker") as start:
+                mock.patch("yomu.commands.start_tradutor.stop_worker", return_value=0) as stop, \
+                mock.patch("yomu.commands.start_tradutor.start_worker") as start:
             start.side_effect = lambda: self.store.register_worker("new", 67890)
             result = bridge.ensure_worker()
         stop.assert_called_once()
@@ -194,8 +194,8 @@ class WorkerCompatibilityTests(unittest.TestCase):
         bridge = self.bridge()
         with mock.patch.object(ui_bridge, "_worker_environment_matches_current",
                                return_value=True), \
-                mock.patch("start_tradutor.stop_worker") as stop, \
-                mock.patch("start_tradutor.start_worker") as start:
+                mock.patch("yomu.commands.start_tradutor.stop_worker") as stop, \
+                mock.patch("yomu.commands.start_tradutor.start_worker") as start:
             result = bridge.ensure_worker()
         stop.assert_not_called()
         start.assert_not_called()
@@ -246,7 +246,7 @@ class SubmitTests(unittest.TestCase):
         self.assertEqual(job["status"], JobStatus.QUEUED)
 
     def test_download_only_does_not_require_translation_auth_handoff(self):
-        with mock.patch("secure_auth_context.AuthEnvelopeStore.seal") as seal:
+        with mock.patch("yomu.auth.secure_auth_context.AuthEnvelopeStore.seal") as seal:
             result = self.start(download_only=True, translation_enabled=True)
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.QUEUED)
@@ -265,7 +265,7 @@ class SubmitTests(unittest.TestCase):
         token = "test.auth.context.token"
         envelope_path = self.tmp / "runtime" / "auth" / "job.auth"
         envelope_path.parent.mkdir(parents=True)
-        with mock.patch("secure_auth_context.AuthEnvelopeStore.seal", return_value=envelope_path) as seal:
+        with mock.patch("yomu.auth.secure_auth_context.AuthEnvelopeStore.seal", return_value=envelope_path) as seal:
             with mock.patch.object(ui_bridge, "env_status", return_value={
                 "env_exists": True, "nvidia_configured": True,
             }):
@@ -362,8 +362,8 @@ class SubmitTests(unittest.TestCase):
 
     def test_automatic_source_never_queues_the_pipeline_without_configured_environment(self):
         result = drive(self.bridge.start(self.payload()))
-        with mock.patch("source_analysis_phase.apply_source_analysis") as apply:
-            from source_analysis_phase import FAILED as PHASE_FAILED, SourceAnalysisPhaseResult
+        with mock.patch("yomu.review.source_analysis_phase.apply_source_analysis") as apply:
+            from yomu.review.source_analysis_phase import FAILED as PHASE_FAILED, SourceAnalysisPhaseResult
 
             def refuse(store, job, analysis, **_kw):
                 store.transition(job["id"], JobStatus.FAILED,
@@ -605,7 +605,7 @@ class QueueVisibilityTests(unittest.TestCase):
         self.assertTrue(state["queue_running"])       # the UI must not fall back to "pronto"
 
     def test_initial_click_persists_pipeline_intent_policy_mode_and_scope(self):
-        from source_readiness import default_workspace_id
+        from yomu.review.source_readiness import default_workspace_id
 
         readiness = SourceReadinessStore(self.bridge.store.db_path)
         try:

@@ -1,0 +1,4022 @@
+{
+  "batches": [
+    {
+      "batch": "batch1_semantic_and_test_support",
+      "moved": [
+        {
+          "source": "_test_bootstrap.py",
+          "target": "test_support/_test_bootstrap.py"
+        },
+        {
+          "source": "_test_processes.py",
+          "target": "test_support/_test_processes.py"
+        },
+        {
+          "source": "advanced_art_inpainting.py",
+          "target": "yomu/clean/inpainting/advanced_art_inpainting.py"
+        },
+        {
+          "source": "art_text_inpainting.py",
+          "target": "yomu/clean/inpainting/art_text_inpainting.py"
+        },
+        {
+          "source": "ayet_rewarded.py",
+          "target": "yomu/core/ayet_rewarded.py"
+        },
+        {
+          "source": "classification_profiler.py",
+          "target": "yomu/ocr/classification_profiler.py"
+        },
+        {
+          "source": "editable_psd_writer.py",
+          "target": "yomu/export/editable_psd_writer.py"
+        },
+        {
+          "source": "fake_pipeline.py",
+          "target": "test_support/fake_pipeline.py"
+        },
+        {
+          "source": "fast_ocr_policy.py",
+          "target": "yomu/ocr/fast_ocr_policy.py"
+        },
+        {
+          "source": "font_fidelity.py",
+          "target": "yomu/clean/ownership/font_fidelity.py"
+        },
+        {
+          "source": "glyph_art_boundary_review.py",
+          "target": "yomu/clean/ownership/glyph_art_boundary_review.py"
+        },
+        {
+          "source": "hermetic_runtime.py",
+          "target": "test_support/hermetic_runtime.py"
+        },
+        {
+          "source": "human_mask_decisions.py",
+          "target": "yomu/clean/ownership/human_mask_decisions.py"
+        },
+        {
+          "source": "human_translation_decisions.py",
+          "target": "yomu/translation/human_translation_decisions.py"
+        },
+        {
+          "source": "json_utils.py",
+          "target": "yomu/core/json_utils.py"
+        },
+        {
+          "source": "learned_rescue.py",
+          "target": "yomu/clean/reconstruction/learned_rescue.py"
+        },
+        {
+          "source": "linguistic_audit.py",
+          "target": "yomu/translation/linguistic_audit.py"
+        },
+        {
+          "source": "linguistic_triage.py",
+          "target": "yomu/translation/linguistic_triage.py"
+        },
+        {
+          "source": "local_test_auth.py",
+          "target": "test_support/local_test_auth.py"
+        },
+        {
+          "source": "multiscale_patch_synthesis.py",
+          "target": "yomu/clean/inpainting/multiscale_patch_synthesis.py"
+        },
+        {
+          "source": "natural_ptbr_refinement.py",
+          "target": "yomu/translation/natural_ptbr_refinement.py"
+        },
+        {
+          "source": "nvidia_ocr_provider.py",
+          "target": "yomu/ocr/nvidia_ocr_provider.py"
+        },
+        {
+          "source": "ocr_balloon.py",
+          "target": "yomu/ocr/ocr_balloon.py"
+        },
+        {
+          "source": "ocr_contract.py",
+          "target": "yomu/ocr/ocr_contract.py"
+        },
+        {
+          "source": "ocr_engine.py",
+          "target": "yomu/ocr/ocr_engine.py"
+        },
+        {
+          "source": "ocr_hybrid_scheduler.py",
+          "target": "yomu/ocr/ocr_hybrid_scheduler.py"
+        },
+        {
+          "source": "ocr_line_provenance.py",
+          "target": "yomu/ocr/ocr_line_provenance.py"
+        },
+        {
+          "source": "ocr_memory_policy.py",
+          "target": "yomu/ocr/ocr_memory_policy.py"
+        },
+        {
+          "source": "ocr_parallel.py",
+          "target": "yomu/ocr/ocr_parallel.py"
+        },
+        {
+          "source": "ocr_streaming.py",
+          "target": "yomu/ocr/ocr_streaming.py"
+        },
+        {
+          "source": "offline_test_guard.py",
+          "target": "test_support/offline_test_guard.py"
+        },
+        {
+          "source": "output_manifest.py",
+          "target": "yomu/export/output_manifest.py"
+        },
+        {
+          "source": "page_manifest.py",
+          "target": "yomu/export/page_manifest.py"
+        },
+        {
+          "source": "page_processing_contracts.py",
+          "target": "yomu/core/page_processing_contracts.py"
+        },
+        {
+          "source": "pdf.py",
+          "target": "yomu/export/pdf.py"
+        },
+        {
+          "source": "pdf_naming.py",
+          "target": "yomu/export/pdf_naming.py"
+        },
+        {
+          "source": "pdf_reader.py",
+          "target": "yomu/export/pdf_reader.py"
+        },
+        {
+          "source": "png_output.py",
+          "target": "yomu/export/png_output.py"
+        },
+        {
+          "source": "professional_psd.py",
+          "target": "yomu/export/professional_psd.py"
+        },
+        {
+          "source": "provider_execution.py",
+          "target": "yomu/translation/providers/provider_execution.py"
+        },
+        {
+          "source": "provider_transport.py",
+          "target": "yomu/translation/providers/provider_transport.py"
+        },
+        {
+          "source": "psd_exporter.py",
+          "target": "yomu/export/psd_exporter.py"
+        },
+        {
+          "source": "reference_guided_reconstruction.py",
+          "target": "yomu/clean/reconstruction/reference_guided_reconstruction.py"
+        },
+        {
+          "source": "refinement_selection_decisions.py",
+          "target": "yomu/translation/refinement_selection_decisions.py"
+        },
+        {
+          "source": "residual_analysis_artifacts.py",
+          "target": "yomu/clean/ownership/residual_analysis_artifacts.py"
+        },
+        {
+          "source": "residual_component_reviews.py",
+          "target": "yomu/clean/ownership/residual_component_reviews.py"
+        },
+        {
+          "source": "residual_mask_revisions.py",
+          "target": "yomu/clean/ownership/residual_mask_revisions.py"
+        },
+        {
+          "source": "selective_artifact_reconstruction.py",
+          "target": "yomu/clean/reconstruction/selective_artifact_reconstruction.py"
+        },
+        {
+          "source": "selective_review_retry.py",
+          "target": "yomu/clean/ownership/selective_review_retry.py"
+        },
+        {
+          "source": "semantic_fidelity.py",
+          "target": "yomu/translation/semantic_fidelity.py"
+        },
+        {
+          "source": "server_translation_authority.py",
+          "target": "yomu/translation/providers/server_translation_authority.py"
+        },
+        {
+          "source": "smart_split_incremental.py",
+          "target": "yomu/core/smart_split_incremental.py"
+        },
+        {
+          "source": "source_completeness.py",
+          "target": "yomu/ocr/source_completeness.py"
+        },
+        {
+          "source": "source_glyph_envelope.py",
+          "target": "yomu/clean/ownership/source_glyph_envelope.py"
+        },
+        {
+          "source": "translation_proxy.py",
+          "target": "yomu/translation/providers/translation_proxy.py"
+        },
+        {
+          "source": "translation_region_audit.py",
+          "target": "yomu/translation/translation_region_audit.py"
+        },
+        {
+          "source": "translator_deepl.py",
+          "target": "yomu/translation/providers/translator_deepl.py"
+        },
+        {
+          "source": "translator_nllb.py",
+          "target": "yomu/translation/providers/translator_nllb.py"
+        },
+        {
+          "source": "translator_nvidia.py",
+          "target": "yomu/translation/providers/translator_nvidia.py"
+        },
+        {
+          "source": "visual_refinement_provider_guard.py",
+          "target": "yomu/clean/ownership/visual_refinement_provider_guard.py"
+        },
+        {
+          "source": "visual_review_decisions.py",
+          "target": "yomu/clean/ownership/visual_review_decisions.py"
+        },
+        {
+          "source": "yomu_backend_provider.py",
+          "target": "yomu/translation/providers/yomu_backend_provider.py"
+        }
+      ],
+      "rewritten_python_files": [
+        {
+          "path": "app_ui.py",
+          "edit_count": 5
+        },
+        {
+          "path": "audit_registry.py",
+          "edit_count": 2
+        },
+        {
+          "path": "benchmark_ocr_engines.py",
+          "edit_count": 2
+        },
+        {
+          "path": "benchmark_pipeline.py",
+          "edit_count": 25
+        },
+        {
+          "path": "chapter_quality_revision.py",
+          "edit_count": 5
+        },
+        {
+          "path": "community_auth.py",
+          "edit_count": 1
+        },
+        {
+          "path": "community_http.py",
+          "edit_count": 2
+        },
+        {
+          "path": "conftest.py",
+          "edit_count": 2
+        },
+        {
+          "path": "generate_manual_review_report.py",
+          "edit_count": 1
+        },
+        {
+          "path": "job_runner.py",
+          "edit_count": 2
+        },
+        {
+          "path": "manga_translation_pipeline.py",
+          "edit_count": 3
+        },
+        {
+          "path": "pipeline_cache.py",
+          "edit_count": 2
+        },
+        {
+          "path": "review_reexport.py",
+          "edit_count": 3
+        },
+        {
+          "path": "review_reexport_runner.py",
+          "edit_count": 1
+        },
+        {
+          "path": "run_webtoon.py",
+          "edit_count": 2
+        },
+        {
+          "path": "scripts/manual_nvidia_smoke.py",
+          "edit_count": 1
+        },
+        {
+          "path": "scripts/manual_webtoon_smoke.py",
+          "edit_count": 5
+        },
+        {
+          "path": "session_context.py",
+          "edit_count": 3
+        },
+        {
+          "path": "sitecustomize.py",
+          "edit_count": 2
+        },
+        {
+          "path": "start_tradutor.py",
+          "edit_count": 2
+        },
+        {
+          "path": "test_support/_test_bootstrap.py",
+          "edit_count": 2
+        },
+        {
+          "path": "test_support/synthetic_fixture_harness.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f14_quality_reconciliation.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_84f15_word_sense_disambiguation.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_84f17_semantic_recovery.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_84f19_semantic_detection_hardening.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_84f22_visual_fidelity.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_84f23_review_unusable_render_fail_closed.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_84f25_production_recovery_and_ocr_policy.py",
+          "edit_count": 7
+        },
+        {
+          "path": "tests/test_84f26_art_and_lettering_parity.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_84f27_region_exact_corpus_audit.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f27_render_parity_occupancy_texture.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_84f29_advanced_art_inpainting.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_84f32_role_aware_font_fidelity.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_84f32r_hierarchy_fit_regression.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_84f39_residual_story_english_gate.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_84f40_selective_review_retry.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_84f41_final_five_review_regions.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_84f42_final_three_residual_regions.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_84f43_p26_line_clearance.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_84f45_segmentation_and_residual_false_positives.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_84f47_unresolved_segmentation_semantic_fidelity.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_84f8_rc_blockers.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_adapter_collection_strategy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_adaptive_scheduler.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ambiguous_component_decomposition.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_art_reconstruction_fidelity.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_art_reconstruction_quality.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_async_submit_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_async_ui_stages.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_audit_decisions.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_audit_registry.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_audit_review_bridge.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_audit_trace_serialization.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_audit_ui_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_auth_network_isolation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_auth_provider_lifecycle.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_auth_recovery_diagnostics.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ayet_rewarded.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_benchmark_environment.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta10_update_diagnostics.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta_tester_licensing.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_better_auth_i18n_pipeline_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_browser_runtime.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_cache_translation_boundaries.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_canonical_social_identity.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_canonical_source_identity.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_chapter_character_registry.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_chapter_reader.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_chapter_sources.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_chapter_terminology_ledger.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_clean_artifact_independence.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_clean_donor_reconstruction.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_cleanup_fixed_mask_reconstruction_red.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_cleanup_forensic_capture.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_comix_source_analysis_entrypoint.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_commercial_foundation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_api.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_authorization.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_community_core.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_publication_metadata.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_publication_metadata_wiring.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_publish.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_publish_attempt_isolation_http.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_community_publish_survival.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_storage_core.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_cv_text_stroke_compat.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_deepl_translation_provider.py",
+          "edit_count": 9
+        },
+        {
+          "path": "tests/test_desktop_app.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_download_local_http_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_download_parallel_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_download_transport.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_downloader_regressions.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_drive_auth_environment.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_drive_auth_reconcile.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_drive_auth_refresh_errors.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_driver_policy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_editable_psd_writer.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_empty_retry_prefers_translation.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_fast_ocr_policy.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_final_69_forensic_ledger.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_font_metadata_scorer.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_font_role_semantic_precedence.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_glyph_art_boundary_review.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_glyph_style_detector.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_google_drive_storage.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_google_drive_wiring.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_hermetic_test_boundaries.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_hough_lines_shape_compat.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_http_batch_contract.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_http_source_discovery.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_human_preview_drafts.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_interrupted_job_resume_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_job_finalization_and_start_idempotency.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_job_runner_sanitization.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_job_store.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_large_tall_pipeline.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_launcher.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_lazy_scroll_stability.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_lazy_slot_resolver.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_learned_rescue_shadow.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_legacy_artifact_owner_binding.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_legacy_publication_drive_adapter.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_legacy_publication_migration_executor.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_legacy_publication_migrator_dry_run.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_legacy_publication_postgres_adapter.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_legacy_storage_upload_reservation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_legacy_storage_upload_reservation_postgres.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_lifecycle_community_regressions.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_linguistic_audit.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_linguistic_triage.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_live_taxonomy_routing.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_loading_view_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_background_reconstruction.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_local_benchmark_pipeline_e2e.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_local_environment.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_folder_cli.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_folder_input.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_folder_source.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_pipeline_e2e.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_local_test_auth.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_test_storage.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_translation_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_logical_pages.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_login_responsive_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_main_e2e_findings_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_mission2_code_fixes.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_multiscale_patch_synthesis.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_natural_ptbr_refinement.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_new_translation_source_policy_state.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_nvidia_ocr_hybrid.py",
+          "edit_count": 28
+        },
+        {
+          "path": "tests/test_ocr_line_provenance.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_ocr_memory_policy.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ocr_plausibility.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ocr_production_pipeline_execution_mode.py",
+          "edit_count": 11
+        },
+        {
+          "path": "tests/test_ocr_provenance_hybrid_cancellation.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_ocr_quality_regressions.py",
+          "edit_count": 27
+        },
+        {
+          "path": "tests/test_ocr_reading_order.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_ocr_recovery_reconciliation.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_ocr_streaming.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_offline_hybrid_replay_5pages.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_output_artifact_immutability.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_owner_scoped_ui.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_p068_semantic_recovery.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_p11_semantic_substitution_red.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_p19_ocr_lexical_fusion_red.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_p19_unresolved_recovery_disagreement_red.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_p24_entity_pipeline_reproduction.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_p27_authority_gate_red.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_p28_modality_tense.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_page_failure_quality_gate.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_page_manifest.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_page_processing_contracts.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_page_selection_and_terminate.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_pdf_naming.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_pdf_split_regressions.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_performance_validation_harness.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_physical_source_residual_trust.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_pipeline_multi_page_full_ab.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_pipeline_page_workers.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_pipeline_review_global_contracts.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_png_output.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_post_reconstruction_guards.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_pre_settlement_layout_retry.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_process_launcher.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_process_tree.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_processing_surface_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_professional_psd.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_proper_name_routing.py",
+          "edit_count": 15
+        },
+        {
+          "path": "tests/test_provider_execution.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_provider_provenance_command_rebuild.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_provider_provenance_physical_gate.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_provider_selection.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_provider_transport.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_psd_output.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ptbr_naturalization_runtime_wiring.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_publication_client_canonical_gate.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_publication_tags.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_publish_authorization.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_rapidocr_region_recovery.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_reader_coverage.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_reader_slot_states.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_reconstructed_artifact_ui_publication.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_reference_guided_reconstruction.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_refinement_selection_decisions.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_refinement_structured_repair.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_region_taxonomy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_remote_update.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_request_observability.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_residual_analysis_identity.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_residual_mask_layout_repair.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_resource_monitor.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_retry_review_moderation_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_editing_r2.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_manifest.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_ordering_r1.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_reexport_worker_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_region_controls_r3.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_rerun.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_riva_translation_provider.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_run_manifest_identity.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_run_webtoon.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_runtime_forensics_contract.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_runtime_isolation_contract.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_runtime_profile_guard.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_runtime_root_resolution.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_safe_exhausted_retry_policy.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_selective_artifact_reconstruction.py",
+          "edit_count": 7
+        },
+        {
+          "path": "tests/test_selective_ptbr_naturalization.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_semantic_fidelity_gate.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_semantic_meaning_and_ptbr_quality.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_semantic_runtime_acceptance.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_server_translation_authority.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_signed_update.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_smart_split_incremental.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_social_asset_retention.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_social_community_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_social_content.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_social_pdf_publishing.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_social_pdf_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_source_analysis_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_source_color_application.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_source_completeness.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_source_glyph_envelope.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_source_profile.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_source_readiness.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_source_support_report.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_stale_job_reconcile.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_story_review_to_render_closure.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_stroke_shadow_detection.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_supabase_auth.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_supabase_authorization.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_supabase_frontend.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_supabase_publication_metadata_schema.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_supabase_social.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_synthetic_fixture_harness.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_terminal_reason_and_source_echo.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_terminal_toast_loop_regressions.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_texture_consistency_metric.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_textured_speech_inpainting.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_translation_naturality_retry.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_translation_provider_default.py",
+          "edit_count": 12
+        },
+        {
+          "path": "tests/test_translation_proxy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_translation_quality_retry.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_translation_region_audit.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_translation_start.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_translation_validator_precision.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_triage_bridge.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ui_helpers.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ui_integration.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ui_operational_refinement.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ui_panel_visibility.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ui_persistent_queue.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ui_runtime_dependency.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ui_translation_provider_selection.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_unittest_guard_probe.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_universal_chapter_adapter.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_unknown_story_adjacency_promotion.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_url_job_pipeline_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_visual_harness_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_visual_refinement_block6e1.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_visual_refinement_block6e2.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_visual_refinement_block6e3.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_visual_refinement_safety.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_visual_segmentation_block6e1.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_vortex_reader_pipeline.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_wallet_reserve_error_mapping.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_webtoons_preflight_regression.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_webtoons_reader_bridge.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_worker_process_loss.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_worker_runner.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_worker_shutdown.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_worker_source_failure_diagnostic.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_worker_source_phase.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_worker_supervision.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_worker_survival.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_workspace_source_policy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_world_memory_phase7c_red.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_yk_ads_foundation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_yk_atomicity.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_yk_job_runner_settlement.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_yk_postgres_integration.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_yk_recovery_process_e2e.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_yk_reservation_settlement.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_yomu_backend_pipeline_wiring.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_yomu_backend_provider.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_zero_denominator_physical_gate.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tools/harnesses/execution_e2e_harness.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tools/harnesses/large_strip_app_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tools/harnesses/large_strip_psd_memory_probe.py",
+          "edit_count": 2
+        },
+        {
+          "path": "ui_bridge.py",
+          "edit_count": 15
+        },
+        {
+          "path": "ui_helpers.py",
+          "edit_count": 1
+        },
+        {
+          "path": "ui_history.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/clean/inpainting/art_text_inpainting.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/clean/ownership/residual_mask_revisions.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/clean/ownership/selective_review_retry.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/clean/reconstruction/selective_artifact_reconstruction.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/core/smart_split_incremental.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/export/pdf.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/ocr/fast_ocr_policy.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/ocr/nvidia_ocr_provider.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/ocr/ocr_balloon.py",
+          "edit_count": 11
+        },
+        {
+          "path": "yomu/ocr/ocr_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/ocr/ocr_engine.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/ocr/ocr_hybrid_scheduler.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/ocr/ocr_parallel.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/ocr/ocr_streaming.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/ocr/source_completeness.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/linguistic_audit.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/providers/provider_execution.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/translation/providers/server_translation_authority.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/translation/providers/translator_deepl.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/translation/providers/translator_nllb.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/translation/providers/translator_nvidia.py",
+          "edit_count": 2
+        }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "batch": "batch2_runtime_and_sources",
+      "moved": [
+        {
+          "source": "ad_url_policy.py",
+          "target": "yomu/security/ad_url_policy.py"
+        },
+        {
+          "source": "adaptive_scheduler.py",
+          "target": "yomu/runtime/adaptive_scheduler.py"
+        },
+        {
+          "source": "app_version.py",
+          "target": "yomu/runtime/version.py"
+        },
+        {
+          "source": "artifact_contract.py",
+          "target": "yomu/runtime/artifact_contract.py"
+        },
+        {
+          "source": "benchmark_pipeline.py",
+          "target": "yomu/pipeline/benchmark_pipeline.py"
+        },
+        {
+          "source": "beta_control_plane.py",
+          "target": "yomu/runtime/beta_control_plane.py"
+        },
+        {
+          "source": "browser_runtime.py",
+          "target": "yomu/download/browser_runtime.py"
+        },
+        {
+          "source": "build_profile.py",
+          "target": "yomu/runtime/build_profile.py"
+        },
+        {
+          "source": "canonical_source_identity.py",
+          "target": "yomu/download/sources/canonical_source_identity.py"
+        },
+        {
+          "source": "chapter_source.py",
+          "target": "yomu/download/sources/chapter_source.py"
+        },
+        {
+          "source": "config.py",
+          "target": "yomu/config/settings.py"
+        },
+        {
+          "source": "down.py",
+          "target": "yomu/download/down.py"
+        },
+        {
+          "source": "download_transport.py",
+          "target": "yomu/download/download_transport.py"
+        },
+        {
+          "source": "dynamic_resolver_process.py",
+          "target": "yomu/download/readers/dynamic_resolver_process.py"
+        },
+        {
+          "source": "http_source_discovery.py",
+          "target": "yomu/download/http_source_discovery.py"
+        },
+        {
+          "source": "image_validation.py",
+          "target": "yomu/download/image_validation.py"
+        },
+        {
+          "source": "installer_update.py",
+          "target": "yomu/runtime/installer_update.py"
+        },
+        {
+          "source": "job_completion.py",
+          "target": "yomu/runtime/job_completion.py"
+        },
+        {
+          "source": "job_failure_diagnostic.py",
+          "target": "yomu/runtime/job_failure_diagnostic.py"
+        },
+        {
+          "source": "job_runner.py",
+          "target": "yomu/runtime/job_runner.py"
+        },
+        {
+          "source": "job_store.py",
+          "target": "yomu/runtime/job_store.py"
+        },
+        {
+          "source": "lazy_slot_resolver.py",
+          "target": "yomu/download/lazy_slot_resolver.py"
+        },
+        {
+          "source": "local_environment.py",
+          "target": "yomu/runtime/local_environment.py"
+        },
+        {
+          "source": "local_folder_input.py",
+          "target": "yomu/download/local/local_folder_input.py"
+        },
+        {
+          "source": "local_folder_job.py",
+          "target": "yomu/download/local/local_folder_job.py"
+        },
+        {
+          "source": "local_folder_source.py",
+          "target": "yomu/download/local/local_folder_source.py"
+        },
+        {
+          "source": "local_images_source.py",
+          "target": "yomu/download/local/local_images_source.py"
+        },
+        {
+          "source": "main.py",
+          "target": "yomu/commands/legacy_gui.py"
+        },
+        {
+          "source": "manga_translation_pipeline.py",
+          "target": "yomu/pipeline/legacy_gui_pipeline.py"
+        },
+        {
+          "source": "pipeline_cache.py",
+          "target": "yomu/pipeline/pipeline_cache.py"
+        },
+        {
+          "source": "pipeline_streaming.py",
+          "target": "yomu/pipeline/pipeline_streaming.py"
+        },
+        {
+          "source": "pipeline_telemetry.py",
+          "target": "yomu/pipeline/pipeline_telemetry.py"
+        },
+        {
+          "source": "process_launcher.py",
+          "target": "yomu/runtime/process_launcher.py"
+        },
+        {
+          "source": "process_options.py",
+          "target": "yomu/runtime/process_options.py"
+        },
+        {
+          "source": "process_tree.py",
+          "target": "yomu/runtime/process_tree.py"
+        },
+        {
+          "source": "progression_service.py",
+          "target": "yomu/runtime/progression_service.py"
+        },
+        {
+          "source": "request_observability.py",
+          "target": "yomu/runtime/request_observability.py"
+        },
+        {
+          "source": "resource_monitor.py",
+          "target": "yomu/runtime/resource_monitor.py"
+        },
+        {
+          "source": "run_local_folder.py",
+          "target": "yomu/commands/run_local_folder.py"
+        },
+        {
+          "source": "run_webtoon.py",
+          "target": "yomu/commands/run_webtoon.py"
+        },
+        {
+          "source": "runner_start_gate.py",
+          "target": "yomu/runtime/runner_start_gate.py"
+        },
+        {
+          "source": "runtime_contract.py",
+          "target": "yomu/runtime/runtime_contract.py"
+        },
+        {
+          "source": "runtime_paths.py",
+          "target": "yomu/runtime/runtime_paths.py"
+        },
+        {
+          "source": "scrapling_reader_resolver.py",
+          "target": "yomu/download/readers/scrapling_reader_resolver.py"
+        },
+        {
+          "source": "session_context.py",
+          "target": "yomu/pipeline/session_context.py"
+        },
+        {
+          "source": "source_profile.py",
+          "target": "yomu/download/sources/source_profile.py"
+        },
+        {
+          "source": "start_tradutor.py",
+          "target": "yomu/commands/start_tradutor.py"
+        },
+        {
+          "source": "universal_chapter_adapter.py",
+          "target": "yomu/download/sources/universal_chapter_adapter.py"
+        },
+        {
+          "source": "update_bootstrap.py",
+          "target": "yomu/runtime/update_bootstrap.py"
+        },
+        {
+          "source": "update_installer.py",
+          "target": "yomu/runtime/update_installer.py"
+        },
+        {
+          "source": "update_manifest.py",
+          "target": "yomu/runtime/update_manifest.py"
+        },
+        {
+          "source": "update_transport.py",
+          "target": "yomu/runtime/update_transport.py"
+        },
+        {
+          "source": "webtoons_reader_bridge.py",
+          "target": "yomu/download/webtoons_reader_bridge.py"
+        },
+        {
+          "source": "worker_service.py",
+          "target": "yomu/runtime/worker_service.py"
+        },
+        {
+          "source": "worker_supervisor.py",
+          "target": "yomu/runtime/worker_supervisor.py"
+        },
+        {
+          "source": "yk_reservation.py",
+          "target": "yomu/runtime/yk_reservation.py"
+        }
+      ],
+      "rewritten_python_files": [
+        {
+          "path": "app_ui.py",
+          "edit_count": 11
+        },
+        {
+          "path": "chapter_quality_revision.py",
+          "edit_count": 2
+        },
+        {
+          "path": "community_api.py",
+          "edit_count": 1
+        },
+        {
+          "path": "community_publish_runner.py",
+          "edit_count": 3
+        },
+        {
+          "path": "community_service.py",
+          "edit_count": 2
+        },
+        {
+          "path": "community_storage_reconcile.py",
+          "edit_count": 1
+        },
+        {
+          "path": "desktop_app.py",
+          "edit_count": 4
+        },
+        {
+          "path": "drive_auth.py",
+          "edit_count": 1
+        },
+        {
+          "path": "packaging/runtime_profile_production.py",
+          "edit_count": 1
+        },
+        {
+          "path": "packaging/runtime_profile_validation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "performance_validation_harness.py",
+          "edit_count": 5
+        },
+        {
+          "path": "review_reexport.py",
+          "edit_count": 1
+        },
+        {
+          "path": "review_reexport_runner.py",
+          "edit_count": 2
+        },
+        {
+          "path": "review_rerun_runner.py",
+          "edit_count": 2
+        },
+        {
+          "path": "scripts/manual_webtoon_smoke.py",
+          "edit_count": 3
+        },
+        {
+          "path": "scripts/sign_release.py",
+          "edit_count": 1
+        },
+        {
+          "path": "social_pdf_publishing.py",
+          "edit_count": 1
+        },
+        {
+          "path": "source_analysis_phase.py",
+          "edit_count": 3
+        },
+        {
+          "path": "source_readiness.py",
+          "edit_count": 1
+        },
+        {
+          "path": "source_support_report.py",
+          "edit_count": 1
+        },
+        {
+          "path": "test_support/synthetic_fixture_harness.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_84f14_quality_reconciliation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f15_word_sense_disambiguation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f19_semantic_detection_hardening.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f25_production_recovery_and_ocr_policy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f27_render_parity_occupancy_texture.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f29_advanced_art_inpainting.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f32r_hierarchy_fit_regression.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f42_final_three_residual_regions.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ad_url_policy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_adapter_collection_strategy.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_adaptive_scheduler.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_art_reconstruction_quality.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_artifact_contract.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_artifact_persistence.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_async_submit_contract.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_audit_review_bridge.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_audit_trace_serialization.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_audit_ui_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta17_e2e_contracts.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_beta4_hotfix_contract.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_beta6_real_powershell_handoff.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta8_multi_pid_handoff.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta_control_plane.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta_tester_licensing.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_browser_runtime.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_build_profile.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_cache_translation_boundaries.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_candidate23_local_artifact_contract.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_canonical_source_identity.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_chapter_character_registry.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_chapter_reader.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_chapter_sources.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_chapter_terminology_ledger.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_comix_adapter.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_comix_download_403_fallback.py",
+          "edit_count": 18
+        },
+        {
+          "path": "tests/test_comix_dynamic_fallback_contract.py",
+          "edit_count": 22
+        },
+        {
+          "path": "tests/test_comix_materialization_retry.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_comix_reader_indexed_pages.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_comix_source_analysis_entrypoint.py",
+          "edit_count": 7
+        },
+        {
+          "path": "tests/test_community_api.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_authorization.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_core.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_publish.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_community_publish_attempt_isolation_http.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_publish_survival.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_community_storage_core.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_deepl_translation_provider.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_download_gate_ordering.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_download_gate_partial_scope.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_download_local_http_e2e.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_download_only_feature.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_download_parallel_contract.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_download_transport.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_downloader_regressions.py",
+          "edit_count": 143
+        },
+        {
+          "path": "tests/test_drive_auth_environment.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_drive_auth_reconcile.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_driver_policy.py",
+          "edit_count": 14
+        },
+        {
+          "path": "tests/test_editable_psd_writer.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_empty_retry_prefers_translation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_fast_ocr_policy.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_google_drive_wiring.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_http_source_discovery.py",
+          "edit_count": 16
+        },
+        {
+          "path": "tests/test_installer_updater.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_interrupted_job_resume_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_job_completion_summary.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_job_finalization_and_start_idempotency.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_job_runner_sanitization.py",
+          "edit_count": 7
+        },
+        {
+          "path": "tests/test_job_store.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_large_chapter_download_budget.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_large_tall_pipeline.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_launcher.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_lazy_scroll_stability.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_lazy_slot_resolver.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_legacy_artifact_owner_binding.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_lifecycle_community_regressions.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_benchmark_pipeline_e2e.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_local_environment.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_local_folder_cli.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_local_folder_input.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_local_folder_source.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_local_images_integration.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_local_images_source.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_pipeline_e2e.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_local_translation_contract.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_logical_pages.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_main_e2e_findings_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_missing_loop_budget.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_mission5_download_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_new_translation_source_policy_state.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_nvidia_ocr_hybrid.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ocr_production_pipeline_execution_mode.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ocr_quality_regressions.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ocr_recovery_reconciliation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_offline_hybrid_replay_5pages.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_output_artifact_immutability.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_output_profile_selection.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_owner_scoped_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_p068_semantic_recovery.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_p11_semantic_substitution_red.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_p19_unresolved_recovery_disagreement_red.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_p27_authority_gate_red.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_page_failure_quality_gate.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_page_selection_and_terminate.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_pdf_split_regressions.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_performance_validation_harness.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_pipeline_multi_page_full_ab.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_pipeline_page_workers.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_pipeline_review_global_contracts.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_pipeline_streaming.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_pipeline_telemetry.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_pre_settlement_layout_retry.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_process_launcher.py",
+          "edit_count": 7
+        },
+        {
+          "path": "tests/test_process_tree.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_professional_psd_quality_e2e.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_professional_psd_review_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_progression_service.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_proper_name_routing.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_provider_provenance_command_rebuild.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_provider_provenance_physical_gate.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ptbr_naturalization_runtime_wiring.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_rapidocr_region_recovery.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_reader_coverage.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_reader_slot_states.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_reconstructed_artifact_ui_publication.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_remote_update.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_request_observability.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_resource_monitor.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_resume_checkpoint_auth_runtime.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_retry_review_moderation_ui.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_review_editing_r2.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_review_manifest.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_ordering_r1.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_reexport_worker_e2e.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_review_region_controls_r3.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_rerun.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_run_manifest_identity.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_run_webtoon.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_runtime_contract.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_runtime_forensics_contract.py",
+          "edit_count": 9
+        },
+        {
+          "path": "tests/test_runtime_isolation_contract.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_runtime_root_resolution.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_safe_exhausted_retry_policy.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_scrapling_reader_resolver.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_selective_artifact_reconstruction.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_selective_ptbr_naturalization.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_semantic_fidelity_gate.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_semantic_runtime_acceptance.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_settings_overlay_lifecycle.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_short_page_reconstruction.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_signed_update.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_source_analysis_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_source_completeness.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+          "edit_count": 18
+        },
+        {
+          "path": "tests/test_source_profile.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_source_readiness.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_stale_job_reconcile.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_story_review_to_render_closure.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_supabase_authorization.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_terminal_child_failure.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_terminal_reason_and_source_echo.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_textured_speech_inpainting.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_translation_disabled_first_class.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_translation_provider_default.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_translation_start.py",
+          "edit_count": 7
+        },
+        {
+          "path": "tests/test_triage_bridge.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_typesetting_mode_propagation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_typography_propagation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ui_helpers.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ui_integration.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ui_operational_refinement.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_ui_persistent_queue.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_universal_chapter_adapter.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_url_job_pipeline_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_versioning.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_vortex_reader_pipeline.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_webtoons_preflight_regression.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_webtoons_reader_bridge.py",
+          "edit_count": 18
+        },
+        {
+          "path": "tests/test_worker_ownership_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_worker_process_loss.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_worker_runner.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_worker_shutdown.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_worker_source_failure_diagnostic.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_worker_source_phase.py",
+          "edit_count": 9
+        },
+        {
+          "path": "tests/test_worker_supervision.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_worker_survival.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_workspace_source_policy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_world_memory_phase7c_red.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_yk_job_runner_settlement.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_yk_recovery_process_e2e.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_yk_reservation_settlement.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_yomu_backend_pipeline_wiring.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_yomu_backend_provider.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_zero_denominator_physical_gate.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tools/build_installer.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tools/harnesses/execution_e2e_harness.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tools/harnesses/large_strip_app_e2e.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tools/release/build_update_manifest.py",
+          "edit_count": 1
+        },
+        {
+          "path": "ui_bridge.py",
+          "edit_count": 36
+        },
+        {
+          "path": "ui_helpers.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/clean/inpainting/advanced_art_inpainting.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/clean/reconstruction/learned_rescue.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/clean/reconstruction/selective_artifact_reconstruction.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/commands/legacy_gui.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/commands/run_local_folder.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/commands/run_webtoon.py",
+          "edit_count": 11
+        },
+        {
+          "path": "yomu/commands/start_tradutor.py",
+          "edit_count": 18
+        },
+        {
+          "path": "yomu/config/settings.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/download/down.py",
+          "edit_count": 37
+        },
+        {
+          "path": "yomu/download/download_transport.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/download/http_source_discovery.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/download/image_validation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/download/lazy_slot_resolver.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/download/local/local_folder_input.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/download/local/local_folder_job.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/download/local/local_folder_source.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/download/readers/dynamic_resolver_process.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/download/readers/scrapling_reader_resolver.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/download/sources/canonical_source_identity.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/download/sources/chapter_source.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/download/sources/source_profile.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/download/sources/universal_chapter_adapter.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/download/webtoons_reader_bridge.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/ocr/fast_ocr_policy.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/ocr/nvidia_ocr_provider.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/ocr/ocr_balloon.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/ocr/ocr_engine.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/ocr/ocr_hybrid_scheduler.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/ocr/ocr_parallel.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/pipeline/benchmark_pipeline.py",
+          "edit_count": 12
+        },
+        {
+          "path": "yomu/pipeline/legacy_gui_pipeline.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/pipeline/pipeline_cache.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/pipeline/session_context.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/runtime/installer_update.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/runtime/job_runner.py",
+          "edit_count": 13
+        },
+        {
+          "path": "yomu/runtime/job_store.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/runtime/process_launcher.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/runtime/resource_monitor.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/runtime/runtime_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/runtime/update_bootstrap.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/runtime/update_installer.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/runtime/update_transport.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/runtime/worker_service.py",
+          "edit_count": 15
+        },
+        {
+          "path": "yomu/translation/linguistic_audit.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/natural_ptbr_refinement.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/providers/translator_deepl.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/providers/translator_nllb.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/providers/translator_nvidia.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/translation/providers/yomu_backend_provider.py",
+          "edit_count": 5
+        }
+      ],
+      "compatibility_shims": [
+        "down.py",
+        "main.py",
+        "run_local_folder.py",
+        "run_webtoon.py",
+        "start_tradutor.py",
+        "worker_service.py"
+      ]
+    },
+    {
+      "batch": "batch3_ui_community_auth_and_tools",
+      "moved": [
+        {
+          "source": "app_ui.py",
+          "target": "yomu/ui/app.py"
+        },
+        {
+          "source": "audit_decisions.py",
+          "target": "yomu/review/audit_decisions.py"
+        },
+        {
+          "source": "audit_registry.py",
+          "target": "yomu/review/audit_registry.py"
+        },
+        {
+          "source": "benchmark_environment.py",
+          "target": "tools/performance/benchmark_environment.py"
+        },
+        {
+          "source": "benchmark_ocr_engines.py",
+          "target": "tools/performance/benchmark_ocr_engines.py"
+        },
+        {
+          "source": "beta_license.py",
+          "target": "yomu/auth/beta_license.py"
+        },
+        {
+          "source": "canonical_social_identity.py",
+          "target": "yomu/community/canonical_social_identity.py"
+        },
+        {
+          "source": "chapter_asset_repository.py",
+          "target": "yomu/community/chapter_asset_repository.py"
+        },
+        {
+          "source": "chapter_quality_revision.py",
+          "target": "yomu/review/chapter_quality_revision.py"
+        },
+        {
+          "source": "cleanup_forensic_capture.py",
+          "target": "tools/research/cleanup_forensic_capture.py"
+        },
+        {
+          "source": "commercial_device.py",
+          "target": "yomu/auth/commercial_device.py"
+        },
+        {
+          "source": "commercial_foundation.py",
+          "target": "yomu/auth/commercial_foundation.py"
+        },
+        {
+          "source": "community_api.py",
+          "target": "yomu/community/community_api.py"
+        },
+        {
+          "source": "community_auth.py",
+          "target": "yomu/community/community_auth.py"
+        },
+        {
+          "source": "community_authorization.py",
+          "target": "yomu/community/community_authorization.py"
+        },
+        {
+          "source": "community_http.py",
+          "target": "yomu/community/community_http.py"
+        },
+        {
+          "source": "community_publication_metadata.py",
+          "target": "yomu/community/community_publication_metadata.py"
+        },
+        {
+          "source": "community_publish_runner.py",
+          "target": "yomu/community/community_publish_runner.py"
+        },
+        {
+          "source": "community_service.py",
+          "target": "yomu/community/community_service.py"
+        },
+        {
+          "source": "community_storage.py",
+          "target": "yomu/community/community_storage.py"
+        },
+        {
+          "source": "community_storage_reconcile.py",
+          "target": "yomu/community/community_storage_reconcile.py"
+        },
+        {
+          "source": "community_store.py",
+          "target": "yomu/community/community_store.py"
+        },
+        {
+          "source": "desktop_app.py",
+          "target": "yomu/desktop/app.py"
+        },
+        {
+          "source": "desktop_identity.py",
+          "target": "yomu/auth/desktop_identity.py"
+        },
+        {
+          "source": "device_control.py",
+          "target": "yomu/auth/device_control.py"
+        },
+        {
+          "source": "drive_auth.py",
+          "target": "yomu/community/storage/drive_auth.py"
+        },
+        {
+          "source": "generate_manual_review_report.py",
+          "target": "tools/reports/generate_manual_review_report.py"
+        },
+        {
+          "source": "google_drive_factory.py",
+          "target": "yomu/community/storage/google_drive_factory.py"
+        },
+        {
+          "source": "google_drive_storage.py",
+          "target": "yomu/community/storage/google_drive_storage.py"
+        },
+        {
+          "source": "google_drive_transport.py",
+          "target": "yomu/community/storage/google_drive_transport.py"
+        },
+        {
+          "source": "human_typography_decisions.py",
+          "target": "yomu/review/human_typography_decisions.py"
+        },
+        {
+          "source": "jwks_network_diagnostics.py",
+          "target": "yomu/auth/jwks_network_diagnostics.py"
+        },
+        {
+          "source": "legacy_publication_drive_adapter.py",
+          "target": "yomu/community/legacy/legacy_publication_drive_adapter.py"
+        },
+        {
+          "source": "legacy_publication_migration_executor.py",
+          "target": "yomu/community/legacy/legacy_publication_migration_executor.py"
+        },
+        {
+          "source": "legacy_publication_migrator.py",
+          "target": "yomu/community/legacy/legacy_publication_migrator.py"
+        },
+        {
+          "source": "legacy_publication_postgres_adapter.py",
+          "target": "yomu/community/legacy/legacy_publication_postgres_adapter.py"
+        },
+        {
+          "source": "legacy_storage_upload_reservation.py",
+          "target": "yomu/community/legacy/legacy_storage_upload_reservation.py"
+        },
+        {
+          "source": "local_media_preview_harness.py",
+          "target": "tools/harnesses/local_media_preview_harness.py"
+        },
+        {
+          "source": "local_media_registry.py",
+          "target": "yomu/ui/local_media_registry.py"
+        },
+        {
+          "source": "performance_validation_harness.py",
+          "target": "tools/harnesses/performance_validation_harness.py"
+        },
+        {
+          "source": "preview_gates.py",
+          "target": "yomu/review/preview_gates.py"
+        },
+        {
+          "source": "progress.py",
+          "target": "yomu/ui/progress.py"
+        },
+        {
+          "source": "publish_authorization.py",
+          "target": "yomu/community/publish_authorization.py"
+        },
+        {
+          "source": "quality_regression_diagnostic.py",
+          "target": "tools/research/quality_regression_diagnostic.py"
+        },
+        {
+          "source": "region_taxonomy.py",
+          "target": "yomu/review/region_taxonomy.py"
+        },
+        {
+          "source": "review_item.py",
+          "target": "yomu/review/review_item.py"
+        },
+        {
+          "source": "review_manifest.py",
+          "target": "yomu/review/review_manifest.py"
+        },
+        {
+          "source": "review_reexport.py",
+          "target": "yomu/review/workflows/review_reexport.py"
+        },
+        {
+          "source": "review_reexport_runner.py",
+          "target": "yomu/review/workflows/review_reexport_runner.py"
+        },
+        {
+          "source": "review_rerun.py",
+          "target": "yomu/review/workflows/review_rerun.py"
+        },
+        {
+          "source": "review_rerun_runner.py",
+          "target": "yomu/review/workflows/review_rerun_runner.py"
+        },
+        {
+          "source": "secure_auth_context.py",
+          "target": "yomu/auth/secure_auth_context.py"
+        },
+        {
+          "source": "social_asset_maintenance_cli.py",
+          "target": "scripts/social_asset_maintenance_cli.py"
+        },
+        {
+          "source": "social_asset_reconcile.py",
+          "target": "yomu/community/social_asset_reconcile.py"
+        },
+        {
+          "source": "social_asset_retention.py",
+          "target": "yomu/community/social_asset_retention.py"
+        },
+        {
+          "source": "social_content.py",
+          "target": "yomu/community/social_content.py"
+        },
+        {
+          "source": "social_http.py",
+          "target": "yomu/community/social_http.py"
+        },
+        {
+          "source": "social_pdf_http.py",
+          "target": "yomu/community/social_pdf_http.py"
+        },
+        {
+          "source": "social_pdf_publishing.py",
+          "target": "yomu/community/social_pdf_publishing.py"
+        },
+        {
+          "source": "social_repository.py",
+          "target": "yomu/community/social_repository.py"
+        },
+        {
+          "source": "source_analysis_phase.py",
+          "target": "yomu/review/source_analysis_phase.py"
+        },
+        {
+          "source": "source_analysis_progress.py",
+          "target": "yomu/review/source_analysis_progress.py"
+        },
+        {
+          "source": "source_readiness.py",
+          "target": "yomu/review/source_readiness.py"
+        },
+        {
+          "source": "source_support_report.py",
+          "target": "yomu/review/source_support_report.py"
+        },
+        {
+          "source": "supabase_auth.py",
+          "target": "yomu/auth/supabase_auth.py"
+        },
+        {
+          "source": "supabase_social.py",
+          "target": "yomu/community/supabase_social.py"
+        },
+        {
+          "source": "ui_bridge.py",
+          "target": "yomu/ui/ui_bridge.py"
+        },
+        {
+          "source": "ui_helpers.py",
+          "target": "yomu/ui/ui_helpers.py"
+        },
+        {
+          "source": "ui_history.py",
+          "target": "yomu/ui/ui_history.py"
+        }
+      ],
+      "rewritten_python_files": [
+        {
+          "path": "scripts/social_asset_maintenance_cli.py",
+          "edit_count": 3
+        },
+        {
+          "path": "test_support/local_test_auth.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f27_region_exact_corpus_audit.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_84f39_residual_story_english_gate.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ad_url_policy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_async_submit_contract.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_async_ui_stages.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_audit_decisions.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_audit_registry.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_audit_review_bridge.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_auth_provider_lifecycle.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_benchmark_environment.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta10_update_diagnostics.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta12_shutdown_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta_identity_resolution.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_beta_tester_licensing.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_better_auth_i18n_pipeline_ui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_candidate23_local_artifact_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_canonical_social_identity.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_chapter_reader.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_comix_source_analysis_entrypoint.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_commercial_device_authority.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_commercial_device_start_gate.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_commercial_foundation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_community_api.py",
+          "edit_count": 7
+        },
+        {
+          "path": "tests/test_community_authorization.py",
+          "edit_count": 9
+        },
+        {
+          "path": "tests/test_community_core.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_community_publication_metadata.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_community_publication_metadata_wiring.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_community_publish.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_community_publish_attempt_isolation_http.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_community_publish_survival.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_community_storage_core.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_control_plane_diagnostics.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_deepl_translation_provider.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_desktop_app.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_device_control.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_diagnostic_log_rotation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_download_only_history.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_download_only_wallet_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_drive_auth_environment.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_drive_auth_reconcile.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_drive_auth_refresh_errors.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_fast_ocr_policy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_google_drive_storage.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_google_drive_wiring.py",
+          "edit_count": 13
+        },
+        {
+          "path": "tests/test_http_source_discovery.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_human_preview_drafts.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_interrupted_job_resume_ui.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_job_completion_summary.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_legacy_artifact_owner_binding.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_legacy_publication_drive_adapter.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_legacy_publication_migration_executor.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_legacy_publication_migrator_dry_run.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_legacy_publication_postgres_adapter.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_legacy_storage_upload_reservation.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_legacy_storage_upload_reservation_postgres.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_lifecycle_community_regressions.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_linguistic_audit.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_linguistic_triage.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_live_taxonomy_routing.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_local_environment.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_images_integration.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_local_media_registry.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_local_test_auth.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_local_test_storage.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_local_translation_contract.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_new_translation_source_policy_state.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_nvidia_ocr_hybrid.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ocr_plausibility.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_ocr_production_pipeline_execution_mode.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_output_format_propagation.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_output_profile_selection.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_owner_scoped_ui.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_packaging_cleanup.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_pdf_naming.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_performance_validation_harness.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_pipeline_review_global_contracts.py",
+          "edit_count": 14
+        },
+        {
+          "path": "tests/test_post_reconstruction_guards.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_professional_psd_review_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_profile_media_local_absence.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_provider_execution.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_provider_provenance_command_rebuild.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_provider_provenance_physical_gate.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_provider_selection.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_publication_tags.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_publish_authorization.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_quality_regression_diagnostic.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_quality_revision_concurrency_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_rate_limit_middleware.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_reconstructed_artifact_ui_publication.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_region_taxonomy.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_resume_checkpoint_auth_runtime.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_retry_review_moderation_ui.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_review_editing_r2.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_item_model.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_review_manifest.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_ordering_r1.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_reexport_r4.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_reexport_worker_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_review_rerun.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_runtime_forensics_contract.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_runtime_isolation_contract.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_runtime_root_resolution.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_secure_auth_context.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_selective_artifact_reconstruction.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_social_asset_retention.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_social_content.py",
+          "edit_count": 6
+        },
+        {
+          "path": "tests/test_social_pdf_publishing.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_source_analysis_contract.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_source_analysis_observability.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_source_analysis_progress.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_source_dispatch_and_ocr_fallback_policy.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_source_readiness.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_source_support_report.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_sources_tab.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_stale_job_reconcile.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_supabase_auth.py",
+          "edit_count": 4
+        },
+        {
+          "path": "tests/test_supabase_authorization.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_supabase_social.py",
+          "edit_count": 5
+        },
+        {
+          "path": "tests/test_translation_naturality_retry.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_translation_policy_snapshot.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_translation_provider_default.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_translation_quality_retry.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_translation_start.py",
+          "edit_count": 8
+        },
+        {
+          "path": "tests/test_triage_bridge.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_typesetting_mode_propagation.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ui_helpers.py",
+          "edit_count": 12
+        },
+        {
+          "path": "tests/test_ui_integration.py",
+          "edit_count": 11
+        },
+        {
+          "path": "tests/test_ui_operational_refinement.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ui_persistent_queue.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_ui_translation_provider_selection.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_url_job_pipeline_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_visual_refinement_block6e1.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_visual_refinement_block6e2.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_visual_refinement_block6e3.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_webtoons_reader_bridge.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_worker_process_loss.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_worker_source_phase.py",
+          "edit_count": 9
+        },
+        {
+          "path": "tests/test_workspace_source_policy.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tests/test_yk_ads_foundation.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_yk_recovery_process_e2e.py",
+          "edit_count": 2
+        },
+        {
+          "path": "tests/test_yomu_backend_pipeline_wiring.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tests/test_yomu_backend_provider.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tools/harnesses/execution_e2e_harness.py",
+          "edit_count": 3
+        },
+        {
+          "path": "tools/harnesses/large_strip_app_e2e.py",
+          "edit_count": 1
+        },
+        {
+          "path": "tools/harnesses/local_media_preview_harness.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/auth/beta_license.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/auth/commercial_device.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/auth/jwks_network_diagnostics.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/auth/supabase_auth.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/clean/reconstruction/selective_artifact_reconstruction.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/commands/legacy_gui.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/commands/run_local_folder.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/commands/run_webtoon.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/commands/start_tradutor.py",
+          "edit_count": 7
+        },
+        {
+          "path": "yomu/community/canonical_social_identity.py",
+          "edit_count": 5
+        },
+        {
+          "path": "yomu/community/chapter_asset_repository.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/community/community_api.py",
+          "edit_count": 11
+        },
+        {
+          "path": "yomu/community/community_auth.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/community/community_authorization.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/community/community_http.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/community/community_publication_metadata.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/community/community_publish_runner.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/community/community_service.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/community/community_storage.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/community/community_storage_reconcile.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/community/legacy/legacy_publication_drive_adapter.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/community/legacy/legacy_publication_migration_executor.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/community/legacy/legacy_publication_postgres_adapter.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/community/legacy/legacy_storage_upload_reservation.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/community/social_asset_reconcile.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/community/social_asset_retention.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/community/social_content.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/community/social_http.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/community/social_pdf_http.py",
+          "edit_count": 6
+        },
+        {
+          "path": "yomu/community/social_pdf_publishing.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/community/social_repository.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/community/storage/drive_auth.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/community/storage/google_drive_factory.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/community/storage/google_drive_storage.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/community/storage/google_drive_transport.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/community/supabase_social.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/desktop/app.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/ocr/ocr_balloon.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/pipeline/benchmark_pipeline.py",
+          "edit_count": 6
+        },
+        {
+          "path": "yomu/review/audit_registry.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/review/chapter_quality_revision.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/review/review_manifest.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/review/source_analysis_phase.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/review/workflows/review_reexport.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/review/workflows/review_reexport_runner.py",
+          "edit_count": 3
+        },
+        {
+          "path": "yomu/review/workflows/review_rerun.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/review/workflows/review_rerun_runner.py",
+          "edit_count": 2
+        },
+        {
+          "path": "yomu/runtime/job_failure_diagnostic.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/runtime/job_runner.py",
+          "edit_count": 4
+        },
+        {
+          "path": "yomu/runtime/worker_service.py",
+          "edit_count": 9
+        },
+        {
+          "path": "yomu/translation/linguistic_audit.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/linguistic_triage.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/providers/provider_execution.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/providers/translator_nllb.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/translation/providers/yomu_backend_provider.py",
+          "edit_count": 1
+        },
+        {
+          "path": "yomu/ui/app.py",
+          "edit_count": 25
+        },
+        {
+          "path": "yomu/ui/ui_bridge.py",
+          "edit_count": 32
+        },
+        {
+          "path": "yomu/ui/ui_history.py",
+          "edit_count": 1
+        }
+      ],
+      "compatibility_shims": [
+        "app_ui.py",
+        "desktop_app.py"
+      ]
+    }
+  ]
+}

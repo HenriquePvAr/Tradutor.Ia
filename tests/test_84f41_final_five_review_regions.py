@@ -77,19 +77,19 @@ a synthetic word chosen only to prove the mechanism.  No page, chapter or
 sentence is special-cased in production code.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import numpy as np
 
-from ocr_balloon import (
+from yomu.ocr.ocr_balloon import (
     TextGroup,
     _repair_narrow_ptbr_verb_mood,
     _score_group_quality,
     group_needs_selective_fallback,
 )
-from ocr_engine import (
+from yomu.ocr.ocr_engine import (
     OCRLine,
     assess_ocr_repair,
     repair_ocr_text,

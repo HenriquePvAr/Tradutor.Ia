@@ -1,19 +1,19 @@
 """Publication metadata contract tests: fake + Supabase transport, no network."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import unittest
 from dataclasses import dataclass
 from uuid import uuid4
 
-from community_publication_metadata import (
+from yomu.community.community_publication_metadata import (
     FakePublicationMetadataRepository,
     PublicationMetadataError,
     SupabasePublicationMetadataRepository,
     build_publication_metadata_repository,
 )
-from supabase_social import SocialConfig
+from yomu.community.supabase_social import SocialConfig
 
 
 def _metadata(**overrides):

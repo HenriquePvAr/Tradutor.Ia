@@ -12,7 +12,7 @@ Every sentence, name and number here is synthetic. Production code keys off no
 chapter, page, job, phrase or character.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import threading
@@ -21,15 +21,15 @@ from pathlib import Path
 
 import numpy as np
 
-import semantic_fidelity
-from ocr_balloon import (
+import yomu.translation.semantic_fidelity as semantic_fidelity
+from yomu.ocr.ocr_balloon import (
     OCRLine,
     TextGroup,
     get_translatable_groups,
     validate_and_retry_translations,
 )
-from session_context import SessionContextStore
-from translator_nvidia import TranslatorNvidiaBatch
+from yomu.pipeline.session_context import SessionContextStore
+from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
 
 
 CHAPTER = "https://example.invalid/series/chapter-fidelity"
@@ -519,7 +519,7 @@ class RetryTests(unittest.TestCase):
                          "semantic_fidelity_failed_after_retries")
 
     def test_fidelity_retries_share_the_global_retry_budget(self):
-        import config
+        import yomu.config.settings as config
 
         translator = _StubTranslator(*["HA 30 INIMIGOS."] * 10)
         group = _group(QUANTITY_SOURCE, QUANTITY_CORRUPTED)

@@ -18,8 +18,8 @@ convention.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
-from offline_test_guard import install_offline_network_guard
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -27,9 +27,9 @@ import json
 import os
 import unittest
 
-import ocr_engine
-import selective_review_retry as srr
-from ocr_balloon import validate_translation_text
+import yomu.ocr.ocr_engine as ocr_engine
+import yomu.clean.ownership.selective_review_retry as srr
+from yomu.ocr.ocr_balloon import validate_translation_text
 
 
 class ClassifyReviewCauseTests(unittest.TestCase):

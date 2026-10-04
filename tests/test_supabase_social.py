@@ -5,7 +5,7 @@ from the principal, client identity fields rejected, DTO shaping, pagination/cur
 fail-closed provider selection.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import socket
@@ -15,16 +15,16 @@ from dataclasses import dataclass
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from community_auth import AuthenticationRequired, RequestPrincipal
-from supabase_social import (
+from yomu.community.community_auth import AuthenticationRequired, RequestPrincipal
+from yomu.community.supabase_social import (
     SocialAuthRequired, SocialConfig, SocialConfigError, SocialConflict, SocialNotFound,
     SocialRateLimited, SocialUnavailable, SocialValidationError,
 )
-from social_repository import (
+from yomu.community.social_repository import (
     SupabaseSocialRepository, build_social_repository, decode_cursor, encode_cursor,
 )
-from social_http import create_social_router
-from offline_test_guard import (
+from yomu.community.social_http import create_social_router
+from test_support.offline_test_guard import (
     _loopback_test_connect, _loopback_test_connect_ex, _loopback_test_create_connection,
 )
 
@@ -80,7 +80,7 @@ class HeaderAndAuthTests(unittest.TestCase):
         self.assertNotIn("proj.supabase", repr(CONFIG))
 
     def test_missing_token_is_auth_required(self):
-        from supabase_social import SupabaseDataClient
+        from yomu.community.supabase_social import SupabaseDataClient
         with self.assertRaises(SocialAuthRequired):
             SupabaseDataClient(CONFIG, "", transport=FakeTransport())
 

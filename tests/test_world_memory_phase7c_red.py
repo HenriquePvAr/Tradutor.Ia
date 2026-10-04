@@ -1,10 +1,10 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import tempfile
 import unittest
 from pathlib import Path
 
 from tests.test_chapter_terminology_ledger import _group
-from session_context import SessionContextStore
+from yomu.pipeline.session_context import SessionContextStore
 
 
 class WorldMemoryPhase7CRed(unittest.TestCase):

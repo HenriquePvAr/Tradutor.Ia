@@ -1,0 +1,12 @@
+{
+  "failed_delta": -4,
+  "focused_regression_suite": {
+    "failed": 0,
+    "passed": 715,
+    "subtests_passed": 36
+  },
+  "new_regressions": 0,
+  "passed_delta": 8,
+  "skipped_delta": 1,
+  "xfailed_delta": 0
+}

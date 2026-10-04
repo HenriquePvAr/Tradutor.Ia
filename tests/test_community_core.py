@@ -1,6 +1,6 @@
 """Community model, storage abstraction, validation and publish flow — all offline."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import hashlib
 import tempfile
@@ -8,13 +8,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from community_auth import RequestPrincipal, ResourceNotFound
-from community_storage import (
+from yomu.community.community_auth import RequestPrincipal, ResourceNotFound
+from yomu.community.community_storage import (
     FakeStorageProvider, FilesystemStorageProvider, StorageError, build_storage_provider,
 )
-from community_store import CommunityStore, FileStatus, Moderation, PostStatus, Visibility
-from community_service import CommunityService, CommunityError, safe_pdf_filename, sha256_of_file
-from job_store import JobStatus, JobStore
+from yomu.community.community_store import CommunityStore, FileStatus, Moderation, PostStatus, Visibility
+from yomu.community.community_service import CommunityService, CommunityError, safe_pdf_filename, sha256_of_file
+from yomu.runtime.job_store import JobStatus, JobStore
 
 
 OWNER = RequestPrincipal("local", True, auth_source="test", session_id="test-owner")
@@ -286,7 +286,7 @@ class CommunityServiceTests(unittest.TestCase):
         self.assertIn("post_not_found", str(ctx.exception))
 
     def test_community_read_is_authenticated_only(self):
-        from community_auth import AuthenticationRequired
+        from yomu.community.community_auth import AuthenticationRequired
         out = self._chapter()
         draft = self.svc.create_draft(principal=OWNER, output_dir=str(out),
                                       series_slug="x", episode_number="1")

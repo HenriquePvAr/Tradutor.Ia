@@ -6,7 +6,7 @@ no secret value (access token, refresh token, client secret, or the raw response
 ever appears in the exception's str()/repr() or in captured stdout/stderr.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import contextlib
 import io
@@ -15,9 +15,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import drive_auth
-from community_storage import StorageError
-from google_drive_storage import HttpResponse
+import yomu.community.storage.drive_auth as drive_auth
+from yomu.community.community_storage import StorageError
+from yomu.community.storage.google_drive_storage import HttpResponse
 
 TEST_ACCESS_TOKEN = "TEST_ACCESS_TOKEN_DO_NOT_LOG"
 TEST_REFRESH_TOKEN = "TEST_REFRESH_TOKEN_DO_NOT_LOG"

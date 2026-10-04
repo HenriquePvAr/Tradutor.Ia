@@ -5,7 +5,7 @@ network call fail loudly rather than silently costing money.
 """
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -16,10 +16,10 @@ import unittest
 import uuid
 from pathlib import Path
 
-import audit_decisions
-import linguistic_triage as lt
-import provider_execution as pe
-import region_taxonomy as tax
+import yomu.review.audit_decisions as audit_decisions
+import yomu.translation.linguistic_triage as lt
+import yomu.translation.providers.provider_execution as pe
+import yomu.review.region_taxonomy as tax
 
 
 def _rid():

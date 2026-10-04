@@ -6,7 +6,7 @@ NVIDIA, DeepL, Supabase, or network access.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import os
@@ -20,12 +20,12 @@ from unittest import mock
 import cv2
 import numpy as np
 
-import benchmark_pipeline
-import config
-import local_folder_input
-from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
-from ocr_balloon import TextCandidate, TextGroup
-from ocr_engine import OCRLine
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.config.settings as config
+import yomu.download.local.local_folder_input as local_folder_input
+from yomu.download.local.local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+from yomu.ocr.ocr_balloon import TextCandidate, TextGroup
+from yomu.ocr.ocr_engine import OCRLine
 
 
 class _ReplayTranslator:

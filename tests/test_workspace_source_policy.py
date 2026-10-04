@@ -1,6 +1,6 @@
 """Hermetic contracts for workspace-scoped source authorization."""
 from __future__ import annotations
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import json
 import sqlite3
 import tempfile
@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from job_store import JobStatus, JobStore
-from source_readiness import (
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.review.source_readiness import (
     PIPELINE_OPERATIONS, WORKSPACE_POLICY_SCOPE_INDEX, SourceReadinessStore,
     default_workspace_id, download_fixture_assets,
 )
@@ -377,8 +377,8 @@ class SourcePolicyRouteTests(unittest.TestCase):
     """The settings toggle contract, exercised over the real persistence layer."""
 
     def setUp(self):
-        import app_ui
-        from ui_bridge import UiBridge
+        import yomu.ui.app as app_ui
+        from yomu.ui.ui_bridge import UiBridge
 
         self.app_ui = app_ui
         self.tmp = tempfile.TemporaryDirectory()

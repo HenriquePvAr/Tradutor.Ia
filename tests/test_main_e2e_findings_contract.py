@@ -5,7 +5,7 @@ reader page and do not use remote credentials; they pin the local UI/backend
 contracts that the E2E run showed were too easy to regress.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from pathlib import Path
@@ -15,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(rel: str) -> str:
+    if rel == "ui_bridge.py":
+        rel = "yomu/ui/ui_bridge.py"
+    elif rel == "ui_helpers.py":
+        rel = "yomu/ui/ui_helpers.py"
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
@@ -203,7 +207,7 @@ class BetaControlSurfaceContracts(unittest.TestCase):
 
 class MainE2eDownloadFindingContracts(unittest.TestCase):
     def test_reader_count_mismatch_171_expected_101_downloaded_fails_closed(self):
-        from down import _build_download_gate
+        from yomu.download.down import _build_download_gate
 
         expected = [f"reader-slot-{index:03}" for index in range(1, 172)]
         downloaded = [

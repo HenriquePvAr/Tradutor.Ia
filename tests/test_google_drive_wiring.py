@@ -5,7 +5,7 @@ session drives the transport, a fake HTTP transport drives the provider through 
 factories, and OAuth is never invoked interactively. Credentials never appear in output.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import io
 import tempfile
@@ -15,14 +15,14 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from community_storage import StorageError, build_storage_provider
-from community_store import CommunityStore, FileStatus, PostStatus
-from community_service import CommunityService
-from google_drive_factory import GoogleDriveConfig, build_google_drive_provider
-from google_drive_storage import HttpResponse
-from job_store import JobStatus, JobStore
-import community_publish_runner
-from community_auth import RequestPrincipal
+from yomu.community.community_storage import StorageError, build_storage_provider
+from yomu.community.community_store import CommunityStore, FileStatus, PostStatus
+from yomu.community.community_service import CommunityService
+from yomu.community.storage.google_drive_factory import GoogleDriveConfig, build_google_drive_provider
+from yomu.community.storage.google_drive_storage import HttpResponse
+from yomu.runtime.job_store import JobStatus, JobStore
+import yomu.community.community_publish_runner as community_publish_runner
+from yomu.community.community_auth import RequestPrincipal
 
 
 # ---- a fake requests.Session for the concrete transport ---------------------
@@ -67,11 +67,11 @@ class _FakeSession:
 
 class RequestsTransportTests(unittest.TestCase):
     def _transport(self, responder):
-        from google_drive_transport import RequestsHttpTransport
+        from yomu.community.storage.google_drive_transport import RequestsHttpTransport
         return RequestsHttpTransport(session=_FakeSession(responder)), None
 
     def test_get_returns_status_headers_body(self):
-        from google_drive_transport import RequestsHttpTransport
+        from yomu.community.storage.google_drive_transport import RequestsHttpTransport
         session = _FakeSession(lambda *a: _FakeResp(200, {"X": "1"}, b"hello"))
         t = RequestsHttpTransport(session=session)
         resp = t.request("GET", "https://x/y")
@@ -81,7 +81,7 @@ class RequestsTransportTests(unittest.TestCase):
         self.assertEqual(session.calls[0]["timeout"], (10.0, 60.0))
 
     def test_stream_iterates_without_loading_all(self):
-        from google_drive_transport import RequestsHttpTransport
+        from yomu.community.storage.google_drive_transport import RequestsHttpTransport
         chunks = [b"a" * 10, b"b" * 10]
         session = _FakeSession(lambda *a: _FakeResp(206, {"Content-Range": "bytes 0-19/20"},
                                                     chunks=chunks))
@@ -92,7 +92,7 @@ class RequestsTransportTests(unittest.TestCase):
 
     def test_connection_error_becomes_transient_storage_error(self):
         import requests
-        from google_drive_transport import RequestsHttpTransport
+        from yomu.community.storage.google_drive_transport import RequestsHttpTransport
 
         def boom(*a):
             raise requests.exceptions.ConnectionError("reset")
@@ -104,7 +104,7 @@ class RequestsTransportTests(unittest.TestCase):
 
     def test_tls_error_is_fatal(self):
         import requests
-        from google_drive_transport import RequestsHttpTransport
+        from yomu.community.storage.google_drive_transport import RequestsHttpTransport
 
         def boom(*a):
             raise requests.exceptions.SSLError("bad cert")
@@ -264,7 +264,7 @@ class FullFlowThroughFactoriesTests(unittest.TestCase):
         env = {"COMMUNITY_DRIVE_ROOT_FOLDER_ID": "ROOT", "GOOGLE_OAUTH_TOKEN_PATH": str(self.tmp / "t.json"),
                "GOOGLE_OAUTH_CLIENT_ID": "cid", "GOOGLE_OAUTH_CLIENT_SECRET": "sec"}
         with patch.dict(os.environ, env), \
-                patch("google_drive_factory.build_google_drive_provider", patched):
+                patch("yomu.community.storage.google_drive_factory.build_google_drive_provider", patched):
             self.jobs.claim_next_job("w1", 1)
             self.jobs.transition(job_id, JobStatus.STARTING, expected_worker="w1")
             return community_publish_runner.run_job(job_id, str(self.jobs_db))

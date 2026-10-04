@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest import mock
 
-import ui_bridge
+import yomu.ui.ui_bridge as ui_bridge
 
 
 def test_default_and_isolated_runtime_roots_share_canonical_identity(tmp_path: Path):

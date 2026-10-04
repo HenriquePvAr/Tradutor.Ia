@@ -1,7 +1,7 @@
 import unittest
 
-from ocr_balloon import TextGroup
-from translation_region_audit import (
+from yomu.ocr.ocr_balloon import TextGroup
+from yomu.translation.translation_region_audit import (
     canonical_region_snapshot,
     classify_region_issue,
     classify_region_terminal,

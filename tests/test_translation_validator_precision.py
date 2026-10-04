@@ -10,13 +10,13 @@ specific word, page or chapter: every verdict below is reached from evidence the
 chapter or the recogniser produced.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import numpy as np
 
-from ocr_balloon import (
+from yomu.ocr.ocr_balloon import (
     OCR_UNINTELLIGIBLE_SOURCE_REASON,
     PROPER_NAME_ONLY_REASON,
     OCRLine,

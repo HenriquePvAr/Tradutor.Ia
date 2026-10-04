@@ -57,7 +57,7 @@ def test_host_mapping_keeps_vercel_only_for_approved_placements():
 
 
 def test_native_surface_is_lazy_and_ads_off_hides_without_bounds_request():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     js = (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
     assert "_request_native_ad_surface" in source
     assert "_NATIVE_AD_PENDING_BOUNDS" in source
@@ -66,7 +66,7 @@ def test_native_surface_is_lazy_and_ads_off_hides_without_bounds_request():
 
 
 def test_native_bounds_are_coalesced_and_have_a_circuit_breaker():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "_begininvoke_pending" in source
     assert "_bounds_coalesced" in source
     assert "AD_STORM_CIRCUIT_BREAKER" in source
@@ -76,7 +76,7 @@ def test_native_bounds_are_coalesced_and_have_a_circuit_breaker():
 
 
 def test_native_route_navigation_is_deduplicated_and_stateful_visibility_is_logged():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "_current_navigation_url" in source
     assert "PLACEMENT_NAV_START" in source
     assert "self._surface_visible" in source
@@ -84,7 +84,7 @@ def test_native_route_navigation_is_deduplicated_and_stateful_visibility_is_logg
 
 
 def test_native_route_commit_reapplies_visibility_after_hidden_transition():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     commit = source.split("def _on_navigation_completed", 1)[1].split("def _hide_surface_for_navigation_failure", 1)[0]
     assert "self._force_visibility_reapply = True" in commit
     assert "force_visibility_reapply=True" in commit
@@ -92,7 +92,7 @@ def test_native_route_commit_reapplies_visibility_after_hidden_transition():
 
 
 def test_native_bounds_dedup_does_not_skip_forced_visibility_restore():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "def set_bounds(self, x, y, width, height, visible=True, force_visibility_reapply=False)" in source
     assert "force_reapply = bool(force_visibility_reapply or self._force_visibility_reapply)" in source
     assert "if current == self._applied_bounds and not force_apply" in source
@@ -100,7 +100,7 @@ def test_native_bounds_dedup_does_not_skip_forced_visibility_restore():
 
 
 def test_native_navigation_serializes_overlapping_requests_latest_wins():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     navigate = source.split("def _navigate_requested_on_ui_thread", 1)[1].split("def set_bounds", 1)[0]
     assert 'if self._navigation_in_progress:' in navigate
     assert 'NAV_LATEST_WINS' in navigate
@@ -110,14 +110,14 @@ def test_native_navigation_serializes_overlapping_requests_latest_wins():
 
 
 def test_content_diagnostic_logging_is_independent_from_native_poc_flag():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "def _content_diagnostic_enabled" in source
     assert "_env_flag(\"YOMU_ADS_NATIVE_POC\") or _content_diagnostic_enabled()" in source
     assert "AD_CONTENT_DIAGNOSTIC_PROBE" in source
 
 
 def test_dom_snapshot_scheduler_uses_ui_timer_and_is_generation_safe():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "from System.Windows.Forms import Timer" in source
     assert "AD_SNAPSHOT_SEQUENCE_CREATED" in source
     assert "AD_SNAPSHOT_SEQUENCE_COMPLETE" in source
@@ -128,7 +128,7 @@ def test_dom_snapshot_scheduler_uses_ui_timer_and_is_generation_safe():
 
 
 def test_dom_snapshot_task_binding_is_nonblocking_and_normalizes_json():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "task.IsCompleted" in source
     assert "task.GetAwaiter().GetResult()" in source
     assert "AD_DOM_EXECUTE_SCRIPT_ERROR" in source
@@ -140,7 +140,7 @@ def test_dom_snapshot_task_binding_is_nonblocking_and_normalizes_json():
 
 
 def test_native_route_navigation_separates_requested_and_committed_state():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "self._requested_placement" in source
     assert "self._committed_placement" in source
     assert "self._active_navigation" in source
@@ -149,7 +149,7 @@ def test_native_route_navigation_separates_requested_and_committed_state():
 
 
 def test_native_route_failure_invalidates_surface_and_hides_stale_creative():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "NAV_FAILURE_HIDE" in source
     assert "_hide_surface_for_navigation_failure" in source
     assert "self._committed_placement = None" in source
@@ -157,7 +157,7 @@ def test_native_route_failure_invalidates_surface_and_hides_stale_creative():
 
 
 def test_native_route_callbacks_are_generation_and_source_guarded():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "NAV_CALLBACK_STALE_IGNORED" in source
     assert "generation != self._navigation_generation" in source
     assert "is_allowed_ad_navigation(expected, source)" in source
@@ -166,7 +166,7 @@ def test_native_route_callbacks_are_generation_and_source_guarded():
 
 def test_passive_ads_claim_requires_server_preference_and_visible_successful_surface():
     source = (ROOT / "static/passive_ad_slot.js").read_text(encoding="utf-8")
-    desktop = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    desktop = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "native_ad_session_state" in source
     assert "navigation_success" in source
     assert "surface_visible" in source
@@ -193,7 +193,7 @@ def test_daily_claim_ui_blocks_ads_off_and_exposes_cooldown_text():
 
 def test_yk_live_observability_is_opt_in_and_sanitized():
     source = (ROOT / "static/control_plane_client.js").read_text(encoding="utf-8")
-    app = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+    app = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
     assert "YK_DIAGNOSTIC_ENABLED" in source
     assert "YK_WALLET_SNAPSHOT" in source
     assert "YK_CLAIM_START" in source
@@ -207,7 +207,7 @@ def test_yk_live_observability_is_opt_in_and_sanitized():
 
 def test_yk_observability_allowlist_contains_only_sanitized_state_fields():
     source = (ROOT / "static/control_plane_client.js").read_text(encoding="utf-8")
-    app = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+    app = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
     for field in ("amount_granted", "already_claimed", "daily_target", "daily_stored", "usable_now", "header_match",
                   "next_claim_at", "backend_next_available", "cooldown_match", "claim_attempt_count", "route", "session_generation"):
         assert field in app
@@ -229,7 +229,7 @@ def test_yk_plan_snapshot_fields_are_sanitized_and_backward_compatible():
 
 
 def test_native_navigation_is_marshaled_to_winforms_ui_thread():
-    source = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+    source = (ROOT / "yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "_navigate_requested_on_ui_thread" in source
     assert "BeginInvoke" in source
     assert "CoreWebView2.Navigate(placement[1])" in source

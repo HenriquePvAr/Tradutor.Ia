@@ -9,8 +9,8 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-import benchmark_pipeline as bp
-from page_processing_contracts import PreTranslationPageResult
+import yomu.pipeline.benchmark_pipeline as bp
+from yomu.core.page_processing_contracts import PreTranslationPageResult
 
 
 class PipelinePageWorkersTests(unittest.TestCase):
@@ -170,9 +170,9 @@ class PipelinePageWorkersTests(unittest.TestCase):
     def test_sequential_ocr_honors_cooperative_cancel_before_new_work(self):
         cancel = threading.Event()
         cancel.set()
-        import ocr_parallel
+        import yomu.ocr.ocr_parallel as ocr_parallel
         with patch.object(ocr_parallel, "OCREngine") as engine:
-            from ocr_parallel import _detect_sequential
+            from yomu.ocr.ocr_parallel import _detect_sequential
             result = _detect_sequential(
                 [{"index": 0, "image_path": "never-read.png"}],
                 "eng", cancel_event=cancel,

@@ -9,9 +9,9 @@ from unittest import mock
 
 from psd_tools import PSDImage
 
-import benchmark_pipeline
-import config
-import local_folder_input
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.config.settings as config
+import yomu.download.local.local_folder_input as local_folder_input
 from tests.test_local_benchmark_pipeline_e2e import (
     LocalBenchmarkPipelineE2ETests, _OfflineTranslator, _NoopResourceMonitor)
 

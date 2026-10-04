@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import resource_monitor
-from resource_monitor import ResourceMonitor
+import yomu.runtime.resource_monitor as resource_monitor
+from yomu.runtime.resource_monitor import ResourceMonitor
 
 
 class ResourceMonitorTests(unittest.TestCase):

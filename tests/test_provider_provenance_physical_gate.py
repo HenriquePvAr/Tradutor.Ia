@@ -1,9 +1,9 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
-import benchmark_pipeline
-from output_manifest import (
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+from yomu.export.output_manifest import (
     build_run_manifest,
     load_verified_run_manifest,
     sanitize_physical_quality,
@@ -12,7 +12,7 @@ from pathlib import Path
 import tempfile
 import json
 
-from ui_helpers import build_run_command
+from yomu.ui.ui_helpers import build_run_command
 
 
 def _state(item):

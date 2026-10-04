@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from pathlib import Path
 from starlette.requests import Request
 
-import app_ui
+import yomu.ui.app as app_ui
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,7 +66,7 @@ class FrontendContractTests(unittest.TestCase):
 
 class RouteLoggingContractTests(unittest.TestCase):
     def test_route_phase_events_are_present(self):
-        source = (ROOT / "app_ui.py").read_text(encoding="utf-8")
+        source = (ROOT / "yomu/ui/app.py").read_text(encoding="utf-8")
         for event in (
             "UPDATE_DOWNLOAD_REQUEST_RECEIVED",
             "UPDATE_DOWNLOAD_MANIFEST_FETCH_START",

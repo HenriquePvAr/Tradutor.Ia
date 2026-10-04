@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "python": {
+    "app_ui.py": "Historical UI entrypoint; thin shim to yomu.ui.app.",
+    "conftest.py": "Pytest startup hook discovered at repository root.",
+    "desktop_app.py": "PyInstaller and historical desktop entrypoint; thin shim to yomu.desktop.app.",
+    "down.py": "Historical downloader import/CLI compatibility shim to yomu.download.down.",
+    "main.py": "Historical GUI command compatibility shim to yomu.commands.legacy_gui.",
+    "run_local_folder.py": "Historical local-folder CLI entrypoint; thin shim.",
+    "run_webtoon.py": "Documented public CLI entrypoint; thin shim.",
+    "sitecustomize.py": "Python startup hook required for hermetic test guards.",
+    "start_tradutor.py": "Documented launcher and updater entrypoint; thin shim.",
+    "worker_service.py": "Historical worker process entrypoint; thin shim."
+  },
+  "suspicious_patterns": [
+    "test_*.py",
+    "probe_*.py",
+    "*_report.json",
+    "*.log",
+    "*.pt",
+    "*.pth",
+    "*.ckpt",
+    "*.safetensors",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache*"
+  ],
+  "ignored_generated_directories": {
+    "__pycache__": "Local Python bytecode; ignored by Git and recreated by imports.",
+    ".pytest_cache": "Local pytest cache; ignored by Git and recreated by test runs."
+  },
+  "allow_unlisted_non_python_files": true
+}

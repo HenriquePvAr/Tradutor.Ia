@@ -1,14 +1,14 @@
 """Launcher dispatch and the single-worker guard, without spawning real processes."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import start_tradutor
-from job_store import JobStore
+import yomu.commands.start_tradutor as start_tradutor
+from yomu.runtime.job_store import JobStore
 
 
 class LauncherTests(unittest.TestCase):
@@ -84,7 +84,7 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(any(arg.endswith(".py") for arg in worker + ui))
 
     def test_local_folder_internal_child_dispatch_probe(self):
-        with patch("run_local_folder.main", return_value=0) as runner:
+        with patch("yomu.commands.run_local_folder.main", return_value=0) as runner:
             self.assertEqual(
                 start_tradutor._run_internal_child(
                     "local-folder", ["--snapshot-ref", "snap-123", "--force"]
@@ -108,16 +108,16 @@ class LauncherTests(unittest.TestCase):
                 "invalid_or_blank_pages": [2],
             },
         }
-        with patch("build_profile.is_production", return_value=False), \
-                patch("run_webtoon.main", return_value=review_report):
+        with patch("yomu.runtime.build_profile.is_production", return_value=False), \
+                patch("yomu.commands.run_webtoon.main", return_value=review_report):
             self.assertEqual(start_tradutor._run_internal_child("pipeline", []), 0)
-        with patch("build_profile.is_production", return_value=False), \
-                patch("run_webtoon.main", return_value=failed_report):
+        with patch("yomu.runtime.build_profile.is_production", return_value=False), \
+                patch("yomu.commands.run_webtoon.main", return_value=failed_report):
             self.assertEqual(start_tradutor._run_internal_child("pipeline", []), 1)
 
     def test_internal_child_dispatches_exactly_one_entrypoint(self):
         with patch.object(start_tradutor, "load_local_environment_for_entrypoint") as load, \
-                patch("worker_service.main", return_value=7) as worker:
+                patch("yomu.runtime.worker_service.main", return_value=7) as worker:
             self.assertEqual(start_tradutor.main(["--internal-child", "worker", "--once"]), 7)
         load.assert_not_called()
         worker.assert_called_once_with(["--once"])

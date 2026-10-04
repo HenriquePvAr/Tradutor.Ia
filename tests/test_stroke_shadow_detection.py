@@ -7,7 +7,7 @@ false outline on the page.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-import ocr_balloon as ob
+import yomu.ocr.ocr_balloon as ob
 
 
 def _canvas(bg=(250, 250, 250), size=(220, 460)):

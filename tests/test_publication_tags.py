@@ -1,4 +1,4 @@
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from community_store import CommunityStore, normalize_tags
+from yomu.community.community_store import CommunityStore, normalize_tags
 
 
 class PublicationTagTests(unittest.TestCase):

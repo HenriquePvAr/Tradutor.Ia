@@ -1,6 +1,6 @@
 """Stale in-flight jobs, frozen timers, stage-bound progress and cancel without a process."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import os
@@ -10,11 +10,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import ui_bridge
-from job_store import JobStatus, JobStore
-from output_manifest import MANIFEST_FILENAME, build_run_manifest
-from ui_bridge import UNAVAILABLE_DURATION, _duration, _format_seconds, _normalize_epoch
-from ui_helpers import ProgressSnapshot, parse_progress_line
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.export.output_manifest import MANIFEST_FILENAME, build_run_manifest
+from yomu.ui.ui_bridge import UNAVAILABLE_DURATION, _duration, _format_seconds, _normalize_epoch
+from yomu.ui.ui_helpers import ProgressSnapshot, parse_progress_line
 
 
 class FormatTests(unittest.TestCase):
@@ -206,7 +206,7 @@ class ReconcileTests(unittest.TestCase):
 
     def test_frozen_runner_uses_executable_fingerprint(self):
         job = self.make_running(runner_pid=4242)
-        import process_tree
+        import yomu.runtime.process_tree as process_tree
         with mock.patch.object(ui_bridge.sys, "frozen", True, create=True), \
              mock.patch.object(process_tree, "is_alive", return_value=True) as alive:
             self.assertTrue(ui_bridge._runner_still_alive(self.store.get_job(job["id"])))

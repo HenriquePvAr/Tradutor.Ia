@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from secure_auth_context import AuthContextError, AuthEnvelopeStore
+from yomu.auth.secure_auth_context import AuthContextError, AuthEnvelopeStore
 
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI required")
@@ -59,7 +59,7 @@ def test_real_process_boundary(tmp_path: Path):
     store = AuthEnvelopeStore(tmp_path, ttl_seconds=1800)
     path = store.seal("job-process", token(int(time.time()) + 3600))
     code = (
-        "from secure_auth_context import AuthEnvelopeStore; "
+        "from yomu.auth.secure_auth_context import AuthEnvelopeStore; "
         f"s=AuthEnvelopeStore(r'{tmp_path}'); c=s.acquire('job-process'); "
         "print(c.safe_metadata()['present'])"
     )

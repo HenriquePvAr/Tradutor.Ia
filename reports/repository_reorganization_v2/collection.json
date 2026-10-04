@@ -1,0 +1,7 @@
+{
+  "collected": 5844,
+  "collection_errors": 0,
+  "command": "python -m pytest --collect-only -q",
+  "duration_seconds": 7.48,
+  "exit_code": 0
+}

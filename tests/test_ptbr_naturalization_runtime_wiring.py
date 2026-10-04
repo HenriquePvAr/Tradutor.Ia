@@ -1,6 +1,6 @@
 """Runtime wiring and routing provenance for selective PT-BR naturalization."""
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import unittest
@@ -9,12 +9,12 @@ from unittest import mock
 
 import numpy as np
 
-import config
-import semantic_fidelity
-import translator_nllb
-from natural_ptbr_refinement import RuntimePtBrNaturalizer
-from ocr_balloon import OCRLine, TextGroup, apply_group_translations, validate_and_retry_translations
-from translator_nvidia import TranslationResult, TranslatorNvidiaBatch
+import yomu.config.settings as config
+import yomu.translation.semantic_fidelity as semantic_fidelity
+import yomu.translation.providers.translator_nllb as translator_nllb
+from yomu.translation.natural_ptbr_refinement import RuntimePtBrNaturalizer
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup, apply_group_translations, validate_and_retry_translations
+from yomu.translation.providers.translator_nvidia import TranslationResult, TranslatorNvidiaBatch
 
 
 def _line(text):

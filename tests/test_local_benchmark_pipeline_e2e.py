@@ -7,7 +7,7 @@ quality reporting, and PDF generation remain the production code paths.  No prov
 browser, downloader, cache, or real OCR engine is available to this test.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import contextlib
 import hashlib
@@ -22,12 +22,12 @@ from unittest import mock
 import cv2
 import numpy as np
 
-import benchmark_pipeline
-import config
-import local_folder_input
-from local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
-from ocr_balloon import TextCandidate, TextGroup
-from ocr_engine import OCRLine
+import yomu.pipeline.benchmark_pipeline as benchmark_pipeline
+import yomu.config.settings as config
+import yomu.download.local.local_folder_input as local_folder_input
+from yomu.download.local.local_folder_source import LocalFolderChapterAdapter, LocalFolderPolicy
+from yomu.ocr.ocr_balloon import TextCandidate, TextGroup
+from yomu.ocr.ocr_engine import OCRLine
 
 
 class _OfflineTranslator:
@@ -142,7 +142,7 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
         self.chapter.mkdir(parents=True)
         self.snapshots = self.root / "runtime" / "local_sources"
         self.snapshots.mkdir(parents=True)
-        runtime_output_root = Path(__import__("runtime_paths").output_root()).resolve()
+        runtime_output_root = Path(__import__("yomu.runtime.runtime_paths", fromlist=["*"]).output_root()).resolve()
         self.output = runtime_output_root / "synthetic_chapter"
         self.original = self.chapter / "private-source-page.png"
         self._write_source_page(self.original)
@@ -364,7 +364,7 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
         )
 
         # AUTOMATIC (default) persists the canonical translated artifact + a v2 manifest.
-        import artifact_contract as ac
+        import yomu.runtime.artifact_contract as ac
         canonical_translated = self.output / "images" / "translated" / "001.png"
         self.assertTrue(canonical_translated.is_file())
         # same buffer as the PDF page, not a re-render
@@ -382,7 +382,7 @@ class LocalBenchmarkPipelineE2ETests(unittest.TestCase):
     def test_professional_qc_persists_clean_and_translated_and_manifest(self):
         """A real PROFESSIONAL_QC run persists CLEAN and TRANSLATED per logical page from the
         renderer's own buffers, and the v2 manifest reports complete coverage."""
-        import artifact_contract as ac
+        import yomu.runtime.artifact_contract as ac
         translator = _OfflineTranslator()
         reference = local_folder_input.local_source_reference(
             self.snapshot.analysis.source_fingerprint,

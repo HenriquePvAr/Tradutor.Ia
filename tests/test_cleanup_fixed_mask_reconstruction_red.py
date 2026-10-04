@@ -1,14 +1,14 @@
 """Permanent RED for the frozen fixed-mask reconstruction contract."""
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import cv2
 import numpy as np
 import pytest
 
-import ocr_balloon as ob
-from ocr_engine import OCRLine
+import yomu.ocr.ocr_balloon as ob
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _pair(kind: str):

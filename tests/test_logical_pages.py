@@ -5,7 +5,7 @@ re-cuts on safe horizontal bands. Applied to a local folder — where each file 
 complete page — that would destroy the author's page boundaries. These tests pin the skip.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import tempfile
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from pdf import prepare_smart_webtoon_pages
+from yomu.export.pdf import prepare_smart_webtoon_pages
 
 
 def write_page(folder: Path, name: str, *, width: int = 800, height: int = 1200,
@@ -93,7 +93,7 @@ class LogicalPagePassthroughTests(unittest.TestCase):
 
 class ManifestContractTests(unittest.TestCase):
     def test_local_manifest_marks_logical_pages(self):
-        import local_folder_input
+        import yomu.download.local.local_folder_input as local_folder_input
 
         source = Path(local_folder_input.__file__).read_text(encoding="utf-8")
         self.assertIn('"logical_page": True', source)

@@ -1,0 +1,16 @@
+{
+  "central_repo_root": "yomu/runtime/paths.py",
+  "corrected_areas": [
+    "runtime entrypoints",
+    "worker/runner spawn cwd",
+    "local-folder source/intake",
+    "pipeline cwd",
+    "source profile defaults",
+    "job diagnostics",
+    "UI/desktop assets",
+    "JWKS public config",
+    "PyInstaller active site-packages"
+  ],
+  "resource_regressions_remaining": 0,
+  "root": "Path(__file__).resolve().parents[2]"
+}

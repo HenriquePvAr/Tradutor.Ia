@@ -5,7 +5,7 @@ render items into EditableTextRegion) with synthetic debug items. The renderer i
 truth; bbox/black/semantic defaults are fallbacks, and every property records its source."""
 import unittest
 
-import benchmark_pipeline as bp
+import yomu.pipeline.benchmark_pipeline as bp
 
 
 def _state(items):

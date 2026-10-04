@@ -6,15 +6,15 @@ pick different fonts, and different colours with the same shape keep the shape.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import cv2
 import numpy as np
 
-import ocr_balloon as ob
-from ocr_balloon import OCRLine, TextGroup
+import yomu.ocr.ocr_balloon as ob
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup
 
 
 def _line(text, box):

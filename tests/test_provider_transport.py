@@ -1,4 +1,4 @@
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 import json
 import socket
 import ssl
@@ -9,15 +9,15 @@ from unittest.mock import patch
 
 import httpx
 
-import natural_ptbr_refinement as refinement
-from provider_transport import (
+import yomu.translation.natural_ptbr_refinement as refinement
+from yomu.translation.providers.provider_transport import (
     CircuitBreakerPolicy,
     ProviderCircuitBreaker,
     ProviderTimeoutPolicy,
     ProviderTransportError,
     circuit_scope_key,
 )
-from translator_nvidia import TranslatorNvidiaBatch
+from yomu.translation.providers.translator_nvidia import TranslatorNvidiaBatch
 
 
 class Clock:

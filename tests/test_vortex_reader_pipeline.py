@@ -4,15 +4,15 @@ The fixture models the public reader's visible article section, page figures and
 it never opens a browser or performs a request.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 from unittest import mock
 
-import chapter_source
-import down
-from chapter_source import select_adapter
-from lazy_slot_resolver import ResolverLimits
+import yomu.download.sources.chapter_source as chapter_source
+import yomu.download.down as down
+from yomu.download.sources.chapter_source import select_adapter
+from yomu.download.lazy_slot_resolver import ResolverLimits
 
 
 PAGE = "https://vortexscans.org/series/demo-series/chapter-42"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import tempfile
 import threading
@@ -12,10 +12,10 @@ import json
 from pathlib import Path
 from unittest import mock
 
-import beta_license
-import job_runner
-import ui_bridge
-from beta_license import (
+import yomu.auth.beta_license as beta_license
+import yomu.runtime.job_runner as job_runner
+import yomu.ui.ui_bridge as ui_bridge
+from yomu.auth.beta_license import (
     BetaAccessDecision,
     LicenseState,
     LocalDevelopmentBetaAuthorizer,
@@ -26,8 +26,8 @@ from beta_license import (
     build_beta_license_authorizer,
     stable_install_fingerprint_hash,
 )
-from community_auth import RequestPrincipal
-from job_store import JobStatus
+from yomu.community.community_auth import RequestPrincipal
+from yomu.runtime.job_store import JobStatus
 from tests.test_translation_start import WEBTOON_URL, _Bridge
 
 
@@ -431,10 +431,10 @@ class BetaSecurityStaticScanTests(unittest.TestCase):
         needles = ("SUPABASE_SERVICE_ROLE", "service_role", "private signing key")
         allowed_files = {"test_beta_tester_licensing.py", "supabase_auth.py", "community_auth.py"}
         client_paths = [
-            root / "beta_license.py",
-            root / "ui_bridge.py",
-            root / "job_runner.py",
-            root / "app_ui.py",
+            root / "yomu/auth/beta_license.py",
+            root / "yomu/ui/ui_bridge.py",
+            root / "yomu/runtime/job_runner.py",
+            root / "yomu/ui/app.py",
         ]
         for path in client_paths:
             text = "\n".join(

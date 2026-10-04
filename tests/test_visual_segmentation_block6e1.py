@@ -1,7 +1,7 @@
 """BLOCO 6E.1 contracts for precise local text segmentation/inpainting."""
 from __future__ import annotations
 
-from offline_test_guard import install_offline_network_guard
+from test_support.offline_test_guard import install_offline_network_guard
 
 install_offline_network_guard()
 
@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-import art_text_inpainting as ati
+import yomu.clean.inpainting.art_text_inpainting as ati
 from tests.test_visual_refinement_block6e1 import _synthetic_text_region
 
 

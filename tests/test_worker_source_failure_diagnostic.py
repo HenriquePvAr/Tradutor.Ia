@@ -9,15 +9,15 @@ secret.
 Hermetic: fake analyses, no browser, no network, no child process.
 """
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from job_store import JobStatus, JobStore
-from worker_service import Worker
+from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.runtime.worker_service import Worker
 
 URL = "https://www.webtoons.com/en/drama/serie/episode-1/viewer?title_no=1&episode_no=1"
 
@@ -142,7 +142,7 @@ class WorkerSourceFailureDiagnosticTests(unittest.TestCase):
         self.assertTrue(evidence["reason_classifier_source"])
 
     def test_a_classified_exception_is_marked_as_classified(self):
-        from chapter_source import SourceError
+        from yomu.download.sources.chapter_source import SourceError
 
         row, evidence = self.fail_with(SourceError("source_not_ready", "no_driver"))
 
@@ -213,7 +213,7 @@ class WorkerSourceFailureDiagnosticTests(unittest.TestCase):
         self.assertTrue(row["finished_at"])
 
     def test_a_cancellation_is_not_recorded_as_a_failure_diagnostic(self):
-        from chapter_source import SourceError
+        from yomu.download.sources.chapter_source import SourceError
 
         job = self.queued_url_job()
         worker = _Worker(self.store, self.log_dir, SourceError("cancelled", "test_cancel"))
@@ -232,7 +232,7 @@ class WorkerSourceFailureDiagnosticTests(unittest.TestCase):
 
     # ---- legacy runs -------------------------------------------------------
     def test_a_run_without_a_diagnostic_reports_it_as_unavailable(self):
-        from job_failure_diagnostic import load_failure_diagnostic
+        from yomu.runtime.job_failure_diagnostic import load_failure_diagnostic
 
         job = self.queued_url_job()
         row = self.store.transition(
@@ -246,7 +246,7 @@ class WorkerSourceFailureDiagnosticTests(unittest.TestCase):
         self.assertIsNone(evidence["exception_class"])
 
     def test_a_recorded_diagnostic_is_readable_back_from_the_job_row(self):
-        from job_failure_diagnostic import load_failure_diagnostic
+        from yomu.runtime.job_failure_diagnostic import load_failure_diagnostic
 
         row, _ = self.fail_with(RuntimeError("synthetic failure"))
         evidence = load_failure_diagnostic(row)

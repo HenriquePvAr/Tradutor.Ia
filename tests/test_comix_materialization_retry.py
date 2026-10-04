@@ -15,8 +15,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-import scrapling_reader_resolver as resolver
-from scrapling_reader_resolver import DynamicReaderError
+import yomu.download.readers.scrapling_reader_resolver as resolver
+from yomu.download.readers.scrapling_reader_resolver import DynamicReaderError
 
 URL = "https://comix.to/title/qk31-example/11378175-chapter-70"
 
@@ -71,7 +71,7 @@ def _run_resolve_with(failure_sequence):
             mock.patch.object(resolver, "_resolution_failure_code", side_effect=list(failure_sequence)), \
             mock.patch.object(resolver, "_append_telemetry", side_effect=record), \
             mock.patch.object(resolver, "_resolve_in_child_process", side_effect=_inline_boundary(adapter)), \
-            mock.patch("universal_chapter_adapter.analyse_candidates", return_value=mock.MagicMock()):
+            mock.patch("yomu.download.sources.universal_chapter_adapter.analyse_candidates", return_value=mock.MagicMock()):
         try:
             result = resolver.resolve(URL, adapter=adapter)
             return result, fake_fetcher.fetch.call_count, telemetry

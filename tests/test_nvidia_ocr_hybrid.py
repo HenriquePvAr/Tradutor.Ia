@@ -4,7 +4,7 @@ Scope: OCR only. Nothing here calls NVIDIA for real (the hermetic guard from
 _test_bootstrap blocks real sockets) and nothing here touches translation --
 DeepL/quality_optimized/yomu_backend stay exactly as configured today.
 """
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import base64
 import io
@@ -13,9 +13,9 @@ from unittest import mock
 
 import numpy as np
 
-import config
-from ocr_contract import OCRPageResult, OCRRegion
-from ocr_engine import OCRLine
+import yomu.config.settings as config
+from yomu.ocr.ocr_contract import OCRPageResult, OCRRegion
+from yomu.ocr.ocr_engine import OCRLine
 
 
 def _fake_image(width=20, height=10):
@@ -89,7 +89,7 @@ class DefaultUnchangedTests(unittest.TestCase):
         self.assertFalse(config.NVIDIA_OCR_ENABLED)
 
     def test_rapidocr_only_mode_never_touches_nvidia(self):
-        import ocr_hybrid_scheduler as sched
+        import yomu.ocr.ocr_hybrid_scheduler as sched
 
         with mock.patch("cv2.imread", side_effect=_fake_cv2_imread), \
              mock.patch.object(sched.OCREngine, "detect_lines", return_value=[]) as detect:
@@ -106,21 +106,21 @@ class NvidiaProviderConfigTests(unittest.TestCase):
     """TEST_NVIDIA_PROVIDER_CONFIG / TEST_NO_NEMOTRON_LLM_RUNTIME"""
 
     def test_provider_refuses_to_construct_over_the_translation_model(self):
-        from nvidia_ocr_provider import NvidiaOCRConfigError, NvidiaOCRProvider
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRConfigError, NvidiaOCRProvider
 
         with mock.patch.object(config, "NVIDIA_OCR_MODEL", config.NVIDIA_TRANSLATION_MODEL):
             with self.assertRaises(NvidiaOCRConfigError):
                 NvidiaOCRProvider()
 
     def test_provider_is_not_configured_without_api_key(self):
-        from nvidia_ocr_provider import NvidiaOCRProvider
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProvider
 
         with mock.patch.object(config, "NVIDIA_API_KEY", ""):
             provider = NvidiaOCRProvider()
         self.assertFalse(provider.is_configured())
 
     def test_no_nemotron_llm_symbol_is_imported_by_the_ocr_provider(self):
-        import nvidia_ocr_provider
+        import yomu.ocr.nvidia_ocr_provider as nvidia_ocr_provider
 
         source = io.open(nvidia_ocr_provider.__file__, encoding="utf-8").read()
         self.assertNotIn("chat.completions", source)
@@ -131,7 +131,7 @@ class NvidiaSecretHandlingTests(unittest.TestCase):
     """TEST_NVIDIA_ENV_SECRET_NOT_LOGGED / TEST_NO_SECRET_IN_DIAGNOSTICS"""
 
     def _provider(self, session):
-        from nvidia_ocr_provider import NvidiaOCRProvider
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProvider
 
         with mock.patch.object(config, "NVIDIA_API_KEY", "super-secret-key"), \
              mock.patch.object(config, "NVIDIA_OCR_MODEL", "nvidia/nemotron-ocr-v2"):
@@ -159,7 +159,7 @@ class NvidiaResponseNormalizationTests(unittest.TestCase):
     """TEST_NVIDIA_RESPONSE_NORMALIZATION / TEST_NVIDIA_BBOX_NORMALIZATION"""
 
     def _provider(self, session):
-        from nvidia_ocr_provider import NvidiaOCRProvider
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProvider
 
         with mock.patch.object(config, "NVIDIA_API_KEY", "k"), \
              mock.patch.object(config, "NVIDIA_OCR_MODEL", "nvidia/nemotron-ocr-v2"):
@@ -201,7 +201,7 @@ class NvidiaMalformedResponseTests(unittest.TestCase):
     """TEST_NVIDIA_MALFORMED_RESPONSE"""
 
     def _provider(self, session):
-        from nvidia_ocr_provider import NvidiaOCRProvider
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProvider
 
         with mock.patch.object(config, "NVIDIA_API_KEY", "k"), \
              mock.patch.object(config, "NVIDIA_OCR_MODEL", "nvidia/nemotron-ocr-v2"):
@@ -244,7 +244,7 @@ class NvidiaTimeoutAndHttpErrorTests(unittest.TestCase):
     """TEST_NVIDIA_TIMEOUT / TEST_NVIDIA_HTTP_ERROR"""
 
     def _provider(self, session):
-        from nvidia_ocr_provider import NvidiaOCRProvider
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProvider
 
         with mock.patch.object(config, "NVIDIA_API_KEY", "k"), \
              mock.patch.object(config, "NVIDIA_OCR_MODEL", "nvidia/nemotron-ocr-v2"), \
@@ -254,7 +254,7 @@ class NvidiaTimeoutAndHttpErrorTests(unittest.TestCase):
 
     def test_timeout_raises_and_is_marked_non_retryable(self):
         import requests
-        from nvidia_ocr_provider import NvidiaOCRProviderError
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProviderError
 
         session = _FakeSession([requests.exceptions.Timeout("timed out")])
         provider = self._provider(session)
@@ -275,7 +275,7 @@ class NvidiaTimeoutAndHttpErrorTests(unittest.TestCase):
         )
 
     def test_5xx_is_retried_a_bounded_number_of_times_then_raises(self):
-        from nvidia_ocr_provider import NvidiaOCRProviderError
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProviderError
 
         session = _FakeSession([_FakeResponse(status_code=503), _FakeResponse(status_code=503)])
         provider = self._provider(session)
@@ -311,7 +311,7 @@ class HybridDynamicQueueTests(unittest.TestCase):
         return _Provider()
 
     def test_each_page_is_processed_exactly_once_across_both_engines(self):
-        import ocr_hybrid_scheduler as sched
+        import yomu.ocr.ocr_hybrid_scheduler as sched
 
         jobs = [{"index": i, "image_path": f"p{i}.png"} for i in range(6)]
         pages_processed = []
@@ -325,7 +325,7 @@ class HybridDynamicQueueTests(unittest.TestCase):
         self.assertEqual(telemetry["RAPIDOCR_PAGES"] + telemetry["NVIDIA_OCR_PAGES"], 6)
 
     def test_page_order_is_deterministic_regardless_of_completion_order(self):
-        import ocr_hybrid_scheduler as sched
+        import yomu.ocr.ocr_hybrid_scheduler as sched
 
         jobs = [{"index": i, "image_path": f"p{i}.png"} for i in range(10)]
         provider = self._fake_provider([])
@@ -338,7 +338,7 @@ class HybridDynamicQueueTests(unittest.TestCase):
     def test_dynamic_queue_lets_the_faster_engine_take_more_pages(self):
         import time as time_module
 
-        import ocr_hybrid_scheduler as sched
+        import yomu.ocr.ocr_hybrid_scheduler as sched
 
         # RapidOCR is made artificially slow; NVIDIA is fast -- with a dynamic
         # queue NVIDIA should end up handling more than half the pages
@@ -362,7 +362,7 @@ class HybridDynamicQueueTests(unittest.TestCase):
         """TEST_HYBRID_RAPID_AND_NVIDIA_OVERLAP_IN_TIME"""
         import time as time_module
 
-        import ocr_hybrid_scheduler as sched
+        import yomu.ocr.ocr_hybrid_scheduler as sched
 
         jobs = [{"index": i, "image_path": f"p{i}.png"} for i in range(4)]
 
@@ -391,8 +391,8 @@ class HybridFailureHandlingTests(unittest.TestCase):
     """TEST_NVIDIA_FAILURE_DOES_NOT_DEADLOCK_QUEUE"""
 
     def test_nvidia_failure_requeues_pages_to_rapidocr_instead_of_deadlocking(self):
-        import ocr_hybrid_scheduler as sched
-        from nvidia_ocr_provider import NvidiaOCRProviderError
+        import yomu.ocr.ocr_hybrid_scheduler as sched
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProviderError
 
         class _FailingProvider:
             def is_configured(self_inner):
@@ -418,8 +418,8 @@ class NvidiaExecutionModeTests(unittest.TestCase):
     """TEST_NVIDIA_PROVIDER_CONFIG (mode=nvidia fails closed when unconfigured)"""
 
     def test_nvidia_mode_fails_closed_when_unconfigured(self):
-        import ocr_hybrid_scheduler as sched
-        from nvidia_ocr_provider import NvidiaOCRProvider
+        import yomu.ocr.ocr_hybrid_scheduler as sched
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProvider
 
         with mock.patch.object(config, "NVIDIA_API_KEY", ""):
             provider = NvidiaOCRProvider()
@@ -431,13 +431,13 @@ class TranslationUntouchedTests(unittest.TestCase):
     """TEST_TRANSLATION_STILL_YOMU_BACKEND / TEST_DEEPL_STILL_QUALITY_OPTIMIZED"""
 
     def test_deepl_default_provider_and_model_are_unchanged(self):
-        import ui_helpers
+        import yomu.ui.ui_helpers as ui_helpers
 
         self.assertEqual(ui_helpers.DEFAULT_TRANSLATION_PROVIDER, "deepl")
         self.assertEqual(config.DEEPL_MODEL_TYPE, "quality_optimized")
 
     def test_ocr_config_module_never_mentions_translation_provider_selection(self):
-        source = io.open("ocr_hybrid_scheduler.py", encoding="utf-8").read()
+        source = io.open("yomu/ocr/ocr_hybrid_scheduler.py", encoding="utf-8").read()
         self.assertNotIn("yomu_backend", source)
         self.assertNotIn("DeepL", source)
 
@@ -455,7 +455,7 @@ class NvidiaOcrHostedContractTests(unittest.TestCase):
     """
 
     def _provider(self, session, **overrides):
-        from nvidia_ocr_provider import NvidiaOCRProvider
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProvider
 
         patches = {
             "NVIDIA_API_KEY": "k",
@@ -501,7 +501,7 @@ class NvidiaOcrHostedContractTests(unittest.TestCase):
 
     def test_invalid_hosted_host_fails_closed(self):
         # TEST_INVALID_HOST_FAILS_CLOSED / §7 invalid_nvidia_ocr_endpoint
-        from nvidia_ocr_provider import NvidiaOCRConfigError
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRConfigError
 
         session = _FakeSession([])
         with self.assertRaises(NvidiaOCRConfigError) as ctx:
@@ -521,7 +521,7 @@ class NvidiaOcrHostedContractTests(unittest.TestCase):
 
     def test_hosted_model_must_be_nemotron_ocr_v2(self):
         # TEST_NVIDIA_OCR_HOSTED_MODEL_IS_NEMOTRON_OCR_V2
-        from nvidia_ocr_provider import NvidiaOCRConfigError
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRConfigError
 
         session = _FakeSession([])
         with self.assertRaises(NvidiaOCRConfigError):
@@ -529,7 +529,7 @@ class NvidiaOcrHostedContractTests(unittest.TestCase):
 
     def test_hosted_never_resolves_to_chat_completions_or_translation_llm(self):
         # TEST_NVIDIA_OCR_NEVER_USES_CHAT_COMPLETIONS
-        from nvidia_ocr_provider import NvidiaOCRConfigError
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRConfigError
 
         session = _FakeSession([])
         with self.assertRaises(NvidiaOCRConfigError):
@@ -588,7 +588,7 @@ class NvidiaOfficialContractTests(unittest.TestCase):
     para o Nemotron OCR v2 oficial. Exact test names required by the brief."""
 
     def _provider(self, session, **overrides):
-        from nvidia_ocr_provider import NvidiaOCRProvider
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProvider
 
         patches = {
             "NVIDIA_API_KEY": "k",
@@ -681,7 +681,7 @@ class NvidiaOfficialContractTests(unittest.TestCase):
 
     def test_nvidia_invalid_merge_level_fails(self):
         # TEST_NVIDIA_INVALID_MERGE_LEVEL_FAILS
-        from nvidia_ocr_provider import NvidiaOCRConfigError
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRConfigError
 
         session = _FakeSession([])
         with self.assertRaises(NvidiaOCRConfigError):
@@ -744,7 +744,7 @@ class NvidiaOfficialContractTests(unittest.TestCase):
 
     def test_nvidia_422_sanitized(self):
         # TEST_NVIDIA_422_SANITIZED -- only status/reason code surface, never the body
-        from nvidia_ocr_provider import NvidiaOCRProviderError
+        from yomu.ocr.nvidia_ocr_provider import NvidiaOCRProviderError
 
         session = _FakeSession([_FakeResponse(status_code=422, payload={"detail": "invalid data URL: <secret leak>"})])
         provider = self._provider(session)

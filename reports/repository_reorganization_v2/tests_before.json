@@ -1,0 +1,10 @@
+{
+  "baseline_commit": "04858724e98f5c56a2e12d070b1c833e4821101b",
+  "command": "python -m pytest -q",
+  "duration_seconds": 554.22,
+  "failed": 4,
+  "passed": 5693,
+  "skipped": 140,
+  "subtests_passed": 730,
+  "xfailed": 2
+}

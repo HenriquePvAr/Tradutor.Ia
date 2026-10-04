@@ -13,14 +13,14 @@ is never promoted.  Nothing here touches the network.
 """
 from __future__ import annotations
 
-import _test_bootstrap  # noqa: F401
+import test_support._test_bootstrap as _test_bootstrap  # noqa: F401
 
 import unittest
 
 import numpy as np
 
-import ocr_balloon
-from ocr_balloon import OCRLine, TextGroup
+import yomu.ocr.ocr_balloon as ocr_balloon
+from yomu.ocr.ocr_balloon import OCRLine, TextGroup
 
 
 def _line(text, box, confidence):
