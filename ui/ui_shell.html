@@ -923,11 +923,15 @@
         </div>
         <span class="hist-count" id="histCount">0 capítulos</span>
         <button type="button" class="btn-ghost" id="histSelectionToggle" aria-pressed="false">Selecionar</button>
-        <div class="hist-selection-actions" id="histSelectionActions" hidden>
+        <div class="hist-selection-actions" id="histSelectionActions" hidden role="toolbar" aria-label="Ações de seleção">
+          <button type="button" class="btn-ghost" id="histSelectionAll">Selecionar visíveis</button>
           <span id="histSelectionCount">0 selecionados</span>
-          <button type="button" class="btn-ghost" id="histSelectionAll">Selecionar todos visíveis</button>
-          <button type="button" class="btn-ghost danger" id="histBulkDelete" disabled>Excluir selecionados</button>
-          <button type="button" class="btn-ghost" id="histSelectionCancel">Cancelar</button>
+          <button type="button" class="hist-selection-icon danger" id="histBulkDelete" disabled title="Excluir selecionados" aria-label="Excluir selecionados">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+          </button>
+          <button type="button" class="hist-selection-icon" id="histSelectionCancel" title="Sair da seleção" aria-label="Sair da seleção">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
         </div>
       </div>
       <div class="pending-previews-card" id="historyPendingPreviews" hidden aria-live="polite"></div>

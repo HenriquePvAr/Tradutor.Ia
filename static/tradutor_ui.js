@@ -7611,8 +7611,10 @@
       return `<div class="review-generation-row" data-generation-id="${escapeAttr(generationKey)}" data-job-id="${escapeAttr(gen.job_id || '')}"><span>${escapeHtml(String(gen.output_format || '').toUpperCase())} · ${escapeHtml(progress)} · tentativa ${Number(gen.attempt || 1)}</span><small>${escapeHtml(gen.created_at || '')}</small>${gen.status === 'finished' ? `<button type="button" class="btn-ghost" data-action="review-generation-folder" data-generation-job-id="${escapeAttr(gen.job_id)}">Abrir saída revisada</button>` : ''}${gen.output_path ? `<small class="rg-path" title="${escapeAttr(gen.output_path)}">${escapeHtml(gen.output_path)}</small>` : ''}</div>`;
     }).join('')}</div>` : '';
     const selected = appState.historySelectedIds.has(String(record.id || ''));
-    const selectionControl = appState.historySelectionMode
-      ? `<label class="history-select-control"><input type="checkbox" data-history-select="${escapeAttr(record.id || '')}" ${selected ? 'checked' : ''} aria-label="Selecionar ${escapeAttr(title)}" /></label>` : '';
+    // Always render the checkbox (hidden by CSS unless #histList.selection-active). This keeps
+    // entering/leaving selection mode a pure CSS toggle -- no re-render, no grid reflow -- so it
+    // never disturbs scroll. It is absolutely positioned, so it adds no grid column.
+    const selectionControl = `<label class="history-select-control"><input type="checkbox" data-history-select="${escapeAttr(record.id || '')}" ${selected ? 'checked' : ''} aria-label="Selecionar ${escapeAttr(title)}" /></label>`;
     const itemClasses = selected ? 'hist-item history-item-selected' : 'hist-item';
     return `<div class="${itemClasses}" data-id="${escapeAttr(record.id || '')}">
       ${selectionControl}
@@ -7975,8 +7977,10 @@
     const active = appState.historySelectionMode === true;
     const visible = visibleHistoryRecords();
     const count = appState.historySelectedIds.size;
+    // Single entry/exit: the "Selecionar" button only ENTERS the mode; exit is the ✕ icon in
+    // the actions bar. No more duplicated "Sair da seleção" + "Cancelar".
     const toggle = $('#histSelectionToggle');
-    if (toggle) { toggle.textContent = active ? 'Sair da seleção' : 'Selecionar'; toggle.setAttribute('aria-pressed', active ? 'true' : 'false'); }
+    if (toggle) { toggle.hidden = active; toggle.setAttribute('aria-pressed', active ? 'true' : 'false'); }
     const actions = $('#histSelectionActions');
     if (actions) actions.hidden = !active;
     const countNode = $('#histSelectionCount');
@@ -7984,19 +7988,39 @@
     const submit = $('#histBulkDelete');
     if (submit) submit.disabled = !count || !active;
     const all = $('#histSelectionAll');
-    if (all) all.textContent = visible.length && visible.every(record => appState.historySelectedIds.has(String(record.id || ''))) ? 'Desmarcar visíveis' : 'Selecionar todos visíveis';
+    if (all) all.textContent = visible.length && visible.every(record => appState.historySelectedIds.has(String(record.id || ''))) ? 'Desmarcar visíveis' : 'Selecionar visíveis';
+  }
+  // Reflect the selection Set onto the already-mounted cards WITHOUT rebuilding the list, so a
+  // click never re-renders the library and never moves the viewport (the scroll regression).
+  function applyHistorySelectionClasses() {
+    $$('#histList .hist-item').forEach(item => {
+      const id = String(item.dataset.id || '');
+      const sel = appState.historySelectedIds.has(id);
+      item.classList.toggle('history-item-selected', sel);
+      const checkbox = item.querySelector('[data-history-select]');
+      if (checkbox) checkbox.checked = sel;
+    });
   }
   function toggleHistorySelectionMode(enabled = !appState.historySelectionMode) {
     appState.historySelectionMode = Boolean(enabled);
     if (!appState.historySelectionMode) appState.historySelectedIds.clear();
-    renderHistory('selection_mode');
+    // Pure CSS toggle: checkboxes are always in the DOM (hidden until this class is present),
+    // so entering/leaving selection mode causes no re-render and no reflow.
+    $('#histList')?.classList.toggle('selection-active', appState.historySelectionMode);
+    applyHistorySelectionClasses();
     syncHistorySelectionUi();
   }
   function toggleHistorySelection(id, checked) {
     const key = String(id || '');
     if (!key) return;
     checked ? appState.historySelectedIds.add(key) : appState.historySelectedIds.delete(key);
-    renderHistory('selection_change');
+    const item = $(`#histList .hist-item[data-id="${(window.CSS && CSS.escape) ? CSS.escape(key) : key}"]`);
+    if (item) {
+      item.classList.toggle('history-item-selected', Boolean(checked));
+      const checkbox = item.querySelector('[data-history-select]');
+      if (checkbox) checkbox.checked = Boolean(checked);
+    }
+    syncHistorySelectionUi();
   }
   function openBulkDeleteModal() {
     const selected = appState.history.filter(record => appState.historySelectedIds.has(String(record.id || '')));
@@ -8056,7 +8080,9 @@
       const id = String(record.id || '');
       allSelected ? appState.historySelectedIds.delete(id) : appState.historySelectedIds.add(id);
     });
-    renderHistory('selection_all');
+    // Incremental: reflect onto mounted cards, no full re-render -> viewport preserved.
+    applyHistorySelectionClasses();
+    syncHistorySelectionUi();
   });
   $('#histBulkDelete')?.addEventListener('click', openBulkDeleteModal);
   $('#bulkDeleteCancel')?.addEventListener('click', closeBulkDeleteModal);
