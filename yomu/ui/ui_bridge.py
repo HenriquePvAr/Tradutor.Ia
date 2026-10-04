@@ -949,6 +949,24 @@ class UiBridge:
         record["completion_summary"] = build_job_completion_summary(
             record, getattr(self, "output_root", OUTPUT_ROOT)
         )
+        summary_artifacts = record["completion_summary"].get("artifacts")
+        if isinstance(summary_artifacts, dict):
+            record["produced_artifacts"] = [
+                str(kind) for kind, value in summary_artifacts.items()
+                if isinstance(value, dict) and value.get("available") is True
+            ]
+        if artifact_output is not None:
+            for field, relative in (
+                ("translation_manifest_path", "translation/translation.json"),
+                ("review_manifest_path", "qc/review_manifest.json"),
+            ):
+                candidate = (artifact_output / relative).resolve()
+                try:
+                    candidate.relative_to(artifact_output.resolve())
+                except (OSError, ValueError):
+                    continue
+                if candidate.is_file():
+                    record[field] = str(candidate)
         if record["operation_kind"] == "artifact_reconstruction":
             record["publication_manifest_ready"] = (
                 self._reconstruction_publication_manifest_ready(job)
@@ -4651,7 +4669,8 @@ class UiBridge:
             ):
                 continue
             record = self._job_record(job)
-            if record and not self.history_store.is_hidden(record):
+            hidden = getattr(self.history_store, "is_hidden", None)
+            if record and not (callable(hidden) and hidden(record)):
                 records.append(record)
         return records
 
@@ -7050,6 +7069,7 @@ class UiBridge:
             "report": "quality_report_path",
             "compare": "compare_sheet_path",
             "context": "session_context_path",
+            "translation": "translation_manifest_path",
         }
         action = str(artifact or "").strip()
         if action in {"psd_folder", "qc_folder"}:
@@ -7341,6 +7361,72 @@ class UiBridge:
                 delete_code if files_state == "delete_failed_preserved" else ""
             ),
             "publication_preserved": bool(record.get("publication_id")),
+        }
+
+    def bulk_delete_local_artifacts(
+        self,
+        local_artifact_ids: list[str] | tuple[str, ...],
+        *,
+        delete_files: bool = False,
+        confirm: str = "",
+    ) -> dict[str, Any]:
+        """Apply the safe single-item deletion primitive to each selected card.
+
+        A failure for one card is data in the per-item result, not a reason to abort
+        the rest of the batch.  The individual primitive remains the only code path
+        that writes tombstones or removes a confined output tree.
+        """
+        if str(confirm or "") != "EXCLUIR":
+            raise ValueError("confirmation_invalid")
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for value in local_artifact_ids or []:
+            item = str(value or "").strip()
+            if item and item not in seen:
+                ordered.append(item)
+                seen.add(item)
+        if not ordered:
+            return {"requested": 0, "completed": 0, "failed": 0, "results": []}
+        results: list[dict[str, Any]] = []
+        for item in ordered:
+            try:
+                result = self.delete_local_artifact(
+                    item, delete_files=delete_files, confirm="EXCLUIR")
+                files_state = str(result.get("files_state") or "")
+                safe_error = str(result.get("safe_error_code") or "")
+                if bool(result.get("deleted_files")):
+                    status = "deleted"
+                elif files_state in {"unsafe_path_preserved", "delete_failed_preserved"} or safe_error:
+                    status = "history_removed_files_preserved"
+                else:
+                    status = "history_removed"
+                results.append({
+                    **result,
+                    "status": status,
+                    "error_code": safe_error,
+                })
+            except ValueError as exc:
+                code = str(exc)
+                results.append({
+                    "local_artifact_id": item,
+                    "status": "failed",
+                    "error_code": code,
+                    "files_preserved": True,
+                })
+            except (OSError, TypeError, RuntimeError) as exc:
+                results.append({
+                    "local_artifact_id": item,
+                    "status": "failed",
+                    "error_code": type(exc).__name__,
+                    "files_preserved": True,
+                })
+        return {
+            "requested": len(ordered),
+            "completed": sum(1 for item in results if item.get("status") != "failed"),
+            "failed": sum(1 for item in results if item.get("status") == "failed"),
+            "history_removed": sum(1 for item in results if item.get("status") in {"deleted", "history_removed", "history_removed_files_preserved"}),
+            "files_preserved": sum(1 for item in results if item.get("status") == "history_removed_files_preserved" or item.get("files_preserved")),
+            "results": results,
         }
 
     def close(self) -> None:

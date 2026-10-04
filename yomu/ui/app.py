@@ -3249,6 +3249,33 @@ def api_history_delete(
         }) from exc
 
 
+@app.post("/api/ui/history/bulk-delete")
+def api_history_bulk_delete(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    """Delete selected local history cards with per-item safe outcomes."""
+    try:
+        _ui_principal(request, mutate=True)
+        raw_ids = payload.get("local_artifact_ids") or payload.get("record_ids") or []
+        if not isinstance(raw_ids, list):
+            raise ValueError("local_artifact_ids_invalid")
+        return BRIDGE.bulk_delete_local_artifacts(
+            [str(item) for item in raw_ids],
+            delete_files=bool(payload.get("delete_files", False)),
+            confirm=str(payload.get("confirmation") or payload.get("confirm") or ""),
+        )
+    except ValueError as exc:
+        code = str(exc)
+        messages = {
+            "local_artifact_ids_invalid": "A seleção de capítulos é inválida.",
+            "confirmation_invalid": "Digite EXCLUIR para confirmar.",
+        }
+        raise HTTPException(status_code=400, detail={
+            "code": code,
+            "message": messages.get(code, "Não foi possível excluir os capítulos selecionados."),
+        }) from exc
+
+
 @ui.page("/")
 def index() -> None:
     shell = SHELL_PATH.read_text(encoding="utf-8")

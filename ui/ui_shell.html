@@ -922,6 +922,13 @@
           <input type="text" id="histSearch" placeholder="buscar capítulo…" />
         </div>
         <span class="hist-count" id="histCount">0 capítulos</span>
+        <button type="button" class="btn-ghost" id="histSelectionToggle" aria-pressed="false">Selecionar</button>
+        <div class="hist-selection-actions" id="histSelectionActions" hidden>
+          <span id="histSelectionCount">0 selecionados</span>
+          <button type="button" class="btn-ghost" id="histSelectionAll">Selecionar todos visíveis</button>
+          <button type="button" class="btn-ghost danger" id="histBulkDelete" disabled>Excluir selecionados</button>
+          <button type="button" class="btn-ghost" id="histSelectionCancel">Cancelar</button>
+        </div>
       </div>
       <div class="pending-previews-card" id="historyPendingPreviews" hidden aria-live="polite"></div>
       <div class="hist-list" id="histList"></div>
@@ -1353,6 +1360,23 @@
       <div class="field"><label for="localDeleteConfirm">Digite EXCLUIR para confirmar</label><input id="localDeleteConfirm" maxlength="12" /></div>
       <div class="publication-error" id="localDeleteError" hidden></div>
       <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="localDeleteCancel">Cancelar</button><button type="submit" class="btn-primary danger" id="localDeleteSubmit">Excluir capítulo</button></div>
+    </form>
+  </div>
+</div>
+
+<!-- LOCAL ARTIFACT BULK DELETE -->
+<div class="modal-overlay" id="bulkDeleteModalOverlay" aria-hidden="true">
+  <div class="modal-card publication-card" role="dialog" aria-modal="true" aria-labelledby="bulkDeleteModalTitle">
+    <button type="button" class="modal-close" id="bulkDeleteModalClose" aria-label="fechar">×</button>
+    <div class="panel-label">exclusão segura em lote</div>
+    <h2 id="bulkDeleteModalTitle">Excluir capítulos selecionados</h2>
+    <div class="publication-summary" id="bulkDeleteSummary"></div>
+    <div class="publication-pending">Cada item será processado separadamente. Se um arquivo estiver protegido, o histórico poderá ser removido com os arquivos preservados.</div>
+    <form id="bulkDeleteForm" autocomplete="off">
+      <label class="publication-confirm"><input type="checkbox" id="bulkDeleteFiles" /> <span>Apagar também os arquivos quando for seguro e não houver publicação vinculada.</span></label>
+      <div class="field"><label for="bulkDeleteConfirm">Digite EXCLUIR para confirmar</label><input id="bulkDeleteConfirm" maxlength="12" /></div>
+      <div class="publication-error" id="bulkDeleteError" hidden></div>
+      <div class="sc-modal-actions"><button type="button" class="btn-ghost" id="bulkDeleteCancel">Cancelar</button><button type="submit" class="btn-primary danger" id="bulkDeleteSubmit">Excluir selecionados</button></div>
     </form>
   </div>
 </div>

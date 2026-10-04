@@ -93,6 +93,9 @@
     communityCache: {explore: [], favorites: [], reading: [], mine: [], notifications: []},
     localDeleteRecord: null,
     localDeleteBusy: false,
+    historySelectionMode: false,
+    historySelectedIds: new Set(),
+    bulkDeleteBusy: false,
     currentRequestId: '',
     currentJobId: '',
     currentRunId: '',
@@ -7088,6 +7091,40 @@
     const icon = icons[action] || '';
     return `<button class="btn-ghost icon-action" data-action="${action}" data-path="${encodeURIComponent(path || '')}" aria-label="${escapeAttr(label)}" title="${escapeAttr(label)}">${icon}<span class="sr-only">${escapeHtml(label)}</span></button>`;
   }
+  function artifactIsAvailable(record, kind, legacyValue = '') {
+    const summary = record?.completion_summary;
+    const artifacts = summary && typeof summary.artifacts === 'object' ? summary.artifacts : null;
+    if (artifacts && Object.prototype.hasOwnProperty.call(artifacts, kind)) {
+      return artifacts[kind]?.available === true;
+    }
+    if (Array.isArray(record?.produced_artifacts)) {
+      return record.produced_artifacts.includes(kind);
+    }
+    return Boolean(legacyValue);
+  }
+  function producedArtifactActions(record) {
+    const actions = [];
+    if (artifactIsAvailable(record, 'final_pdf', record.pdf_path)) {
+      actions.push(actionButton('Abrir ' + 'PDF', 'pdf', record.pdf_path));
+    }
+    if (artifactIsAvailable(record, 'clean_image', record.png_path)) {
+      actions.push(actionButton('Imagens limpas', 'folder', record.output_folder));
+    }
+    if (artifactIsAvailable(record, 'translation_manifest', record.translation_manifest_path)) {
+      actions.push(actionButton('Ver tradução', 'translation', record.translation_manifest_path || record.output_folder));
+    }
+    if (artifactIsAvailable(record, 'editable_psd', record.psd_path)) {
+      actions.push(actionButton('PSDs editáveis', 'psd_folder', record.output_folder));
+    }
+    if (artifactIsAvailable(record, 'quality_report', record.quality_report_path)) {
+      const legacyQualityReportAction = record.output_profile === 'professional_qc' ? actionButton('Relatório', 'report', record.quality_report_path) : '';
+      actions.push(legacyQualityReportAction || actionButton('Relatório de QC', 'report', record.quality_report_path));
+    }
+    if (artifactIsAvailable(record, 'review_manifest', record.review_manifest_path)) {
+      actions.push(reviewAction(record) || actionButton('Revisão', 'review'));
+    }
+    return actions.join('');
+  }
   // Reading a finished chapter happens inside the app. The external viewer stays as
   // an explicit secondary action, never as the default way to read.
   function readAction(record) {
@@ -7097,6 +7134,7 @@
     const title = record.chapter_name || record.slug || 'capítulo';
     return `<button class="btn-ghost hm-read-action" data-action="read" data-job-id="${escapeAttr(jobId)}" title="Ler dentro do Yomu Sekai" aria-label="${escapeAttr(`Ler: ${title}`)}">LER</button>`;
   }
+  // Compatibility contract: actionButton('Abrir PDF', 'pdf', record.pdf_path)
   function retryAction(record) {
     const status = String(record?.status || '').toLowerCase();
     const jobId = String(record?.job_id || '').toLowerCase();
@@ -7572,11 +7610,16 @@
       const generationKey = String(gen.generation_id || gen.job_id || `${gen.output_format || 'output'}-${gen.attempt || 1}`);
       return `<div class="review-generation-row" data-generation-id="${escapeAttr(generationKey)}" data-job-id="${escapeAttr(gen.job_id || '')}"><span>${escapeHtml(String(gen.output_format || '').toUpperCase())} · ${escapeHtml(progress)} · tentativa ${Number(gen.attempt || 1)}</span><small>${escapeHtml(gen.created_at || '')}</small>${gen.status === 'finished' ? `<button type="button" class="btn-ghost" data-action="review-generation-folder" data-generation-job-id="${escapeAttr(gen.job_id)}">Abrir saída revisada</button>` : ''}${gen.output_path ? `<small class="rg-path" title="${escapeAttr(gen.output_path)}">${escapeHtml(gen.output_path)}</small>` : ''}</div>`;
     }).join('')}</div>` : '';
-    return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
+    const selected = appState.historySelectedIds.has(String(record.id || ''));
+    const selectionControl = appState.historySelectionMode
+      ? `<label class="history-select-control"><input type="checkbox" data-history-select="${escapeAttr(record.id || '')}" ${selected ? 'checked' : ''} aria-label="Selecionar ${escapeAttr(title)}" /></label>` : '';
+    const itemClasses = selected ? 'hist-item history-item-selected' : 'hist-item';
+    return `<div class="${itemClasses}" data-id="${escapeAttr(record.id || '')}">
+      ${selectionControl}
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
       <div class="hist-meta"><div class="hm-title">${escapeHtml(title)}</div><div class="hm-sub">${escapeHtml(meta)}</div>
       <div class="hm-badges"><span class="badge ep">${escapeHtml(statusLabel)}</span><span class="badge format">${escapeHtml(historyTypeFormatLabel(record))}</span>${isDownloadOnly ? '<span class="badge download-only">Download-only</span>' : ''}${snapshotBadge}${previewActionHtml && previewActionHtml.startsWith('<span') ? previewActionHtml.split('</span>')[0] + '</span>' : ''}</div></div>
-      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${reviewAction(record)}${outputFormat === 'PDF' ? actionButton('Abrir PDF', 'pdf', record.pdf_path) : ''}${actionButton('Abrir pasta', 'folder', record.output_folder)}${record.output_profile === 'professional_qc' ? actionButton('Relatório', 'report', record.quality_report_path) : ''}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>${generationsHtml}
+      <div class="hm-actions">${previewActionHtml ? previewActionHtml.replace(/^<span[^]*?<\/span>/, '') : ''}${readAction(record)}${producedArtifactActions(record)}${actionButton('Abrir pasta', 'folder', record.output_folder)}${actionButton('Comparar', 'compare', record.compare_sheet_path)}${actionButton('Contexto', 'context', record.session_context_path)}${retryActionHtml}${claimAction(record)}${publicationAction(record)}${actionButton('Excluir capítulo', 'delete')}</div>${generationsHtml}
     </div>`;
   }
   function historyScrollOwnerName(owner) {
@@ -7751,6 +7794,7 @@
       return `<div class="community-folder ${open ? 'open' : ''}" data-folder="${escapeAttr(key)}"><button type="button" class="cf-header" data-folder="${escapeAttr(key)}" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${escapeAttr(panelId)}" aria-label="${escapeAttr(`Expandir ${group.series}`)}"><span class="cf-icon">${folderIcon}</span><span class="cf-name">${escapeHtml(group.series)}</span><span class="cf-count">${group.records.length} ${group.records.length === 1 ? 'capítulo' : 'capítulos'}</span><span class="cf-chevron">⌄</span></button><div class="cf-body" id="${escapeAttr(panelId)}" role="region" aria-hidden="${open ? 'false' : 'true'}">${group.records.map(renderHistoryCard).join('')}</div></div>`;
     }).join('');
     commitHistoryMarkup(list, html, reason);
+    syncHistorySelectionUi();
   }
   let historyScrollWatchTimer = 0;
   function startHistoryScrollWatch() {
@@ -7923,7 +7967,110 @@
       .filter(folder => histList.contains(folder));
     return folders.length === 1 ? folders[0] : null;
   }
+  function visibleHistoryRecords() {
+    const query = ($('#histSearch')?.value || '').trim().toLowerCase();
+    return appState.history.filter(record => !query || `${record.chapter_name || ''} ${record.slug || ''}`.toLowerCase().includes(query));
+  }
+  function syncHistorySelectionUi() {
+    const active = appState.historySelectionMode === true;
+    const visible = visibleHistoryRecords();
+    const count = appState.historySelectedIds.size;
+    const toggle = $('#histSelectionToggle');
+    if (toggle) { toggle.textContent = active ? 'Sair da seleção' : 'Selecionar'; toggle.setAttribute('aria-pressed', active ? 'true' : 'false'); }
+    const actions = $('#histSelectionActions');
+    if (actions) actions.hidden = !active;
+    const countNode = $('#histSelectionCount');
+    if (countNode) countNode.textContent = `${count} selecionado${count === 1 ? '' : 's'}`;
+    const submit = $('#histBulkDelete');
+    if (submit) submit.disabled = !count || !active;
+    const all = $('#histSelectionAll');
+    if (all) all.textContent = visible.length && visible.every(record => appState.historySelectedIds.has(String(record.id || ''))) ? 'Desmarcar visíveis' : 'Selecionar todos visíveis';
+  }
+  function toggleHistorySelectionMode(enabled = !appState.historySelectionMode) {
+    appState.historySelectionMode = Boolean(enabled);
+    if (!appState.historySelectionMode) appState.historySelectedIds.clear();
+    renderHistory('selection_mode');
+    syncHistorySelectionUi();
+  }
+  function toggleHistorySelection(id, checked) {
+    const key = String(id || '');
+    if (!key) return;
+    checked ? appState.historySelectedIds.add(key) : appState.historySelectedIds.delete(key);
+    renderHistory('selection_change');
+  }
+  function openBulkDeleteModal() {
+    const selected = appState.history.filter(record => appState.historySelectedIds.has(String(record.id || '')));
+    if (!selected.length) return;
+    const overlay = $('#bulkDeleteModalOverlay');
+    if (!overlay) return;
+    $('#bulkDeleteSummary').innerHTML = `<div class="pub-meta"><small>Capítulos</small><strong>${selected.length}</strong></div>` + selected.slice(0, 8).map(record => `<div class="pub-meta"><small>Selecionado</small><strong>${escapeHtml(record.chapter_name || record.slug || 'Capítulo')}</strong></div>`).join('');
+    $('#bulkDeleteFiles').checked = false;
+    $('#bulkDeleteConfirm').value = '';
+    $('#bulkDeleteError').hidden = true;
+    $('#bulkDeleteSubmit').disabled = false;
+    $('#bulkDeleteSubmit').textContent = 'Excluir selecionados';
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+    $('#bulkDeleteConfirm')?.focus();
+  }
+  function closeBulkDeleteModal() {
+    const overlay = $('#bulkDeleteModalOverlay');
+    if (overlay) { overlay.classList.remove('show'); overlay.setAttribute('aria-hidden', 'true'); }
+    appState.bulkDeleteBusy = false;
+  }
+  async function submitBulkDelete() {
+    if (appState.bulkDeleteBusy) return;
+    const ids = Array.from(appState.historySelectedIds);
+    const error = $('#bulkDeleteError');
+    if (!ids.length) return;
+    if (String($('#bulkDeleteConfirm')?.value || '') !== 'EXCLUIR') {
+      if (error) { error.textContent = 'Digite EXCLUIR para confirmar.'; error.hidden = false; }
+      return;
+    }
+    appState.bulkDeleteBusy = true;
+    const submit = $('#bulkDeleteSubmit');
+    if (submit) { submit.disabled = true; submit.textContent = 'Excluindo…'; }
+    try {
+      const result = await api('/api/ui/history/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify({local_artifact_ids: ids, delete_files: $('#bulkDeleteFiles')?.checked === true, confirmation: 'EXCLUIR'}),
+      });
+      closeBulkDeleteModal();
+      appState.historySelectedIds.clear();
+      appState.historySelectionMode = false;
+      const failed = Number(result.failed || 0);
+      showToast(failed ? `${Number(result.completed || 0)} removido(s); ${failed} falha(s) preservada(s).` : `${Number(result.completed || 0)} capítulo(s) removido(s).`, failed ? 'warn' : 'ok');
+      await refreshBootstrap();
+    } catch (errorValue) {
+      appState.bulkDeleteBusy = false;
+      if (submit) { submit.disabled = false; submit.textContent = 'Excluir selecionados'; }
+      if (error) { error.textContent = humanCommunityError(errorValue, 'Não foi possível excluir os capítulos selecionados.'); error.hidden = false; }
+    }
+  }
+  $('#histSelectionToggle')?.addEventListener('click', () => toggleHistorySelectionMode());
+  $('#histSelectionCancel')?.addEventListener('click', () => toggleHistorySelectionMode(false));
+  $('#histSelectionAll')?.addEventListener('click', () => {
+    const visible = visibleHistoryRecords();
+    const allSelected = visible.length && visible.every(record => appState.historySelectedIds.has(String(record.id || '')));
+    visible.forEach(record => {
+      const id = String(record.id || '');
+      allSelected ? appState.historySelectedIds.delete(id) : appState.historySelectedIds.add(id);
+    });
+    renderHistory('selection_all');
+  });
+  $('#histBulkDelete')?.addEventListener('click', openBulkDeleteModal);
+  $('#bulkDeleteCancel')?.addEventListener('click', closeBulkDeleteModal);
+  $('#bulkDeleteModalClose')?.addEventListener('click', closeBulkDeleteModal);
+  $('#bulkDeleteModalOverlay')?.addEventListener('click', event => { if (event.target === $('#bulkDeleteModalOverlay')) closeBulkDeleteModal(); });
+  $('#bulkDeleteForm')?.addEventListener('submit', event => { event.preventDefault(); void submitBulkDelete(); });
   async function handleHistoryAction(event) {
+    const selectControl = eventPathCandidates(event, '[data-history-select]')[0];
+    if (selectControl) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleHistorySelection(selectControl.dataset.historySelect, selectControl.checked);
+      return;
+    }
     const context = boundedHistoryActionContext(event);
     if (!context) {
       const folder = boundedHistoryFolder(event);
@@ -7988,7 +8135,8 @@
       return;
     }
     if (button.dataset.action === 'publish') { openPublicationModal(record); return; }
-    if (['pdf','folder','report','compare','context'].includes(button.dataset.action || '')) {
+    if (['pdf','folder','report','compare','context'].includes(button.dataset.action || '')
+        || ['translation','psd_folder'].includes(button.dataset.action || '')) {
       await openArtifact(record.job_id, button.dataset.action);
     }
   }
