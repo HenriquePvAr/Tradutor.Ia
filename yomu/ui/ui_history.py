@@ -188,6 +188,11 @@ class UIHistoryStore:
                 hidden["folders"].append(folder)
         self._write_hidden(hidden)
 
+    def is_hidden(self, record: dict[str, Any]) -> bool:
+        """Return whether a record is hidden by the local-history tombstone."""
+
+        return self._is_hidden(record, self._hidden_records())
+
     def _hidden_records(self) -> dict[str, list[str]]:
         try:
             value = json.loads(self.hidden_path.read_text(encoding="utf-8"))

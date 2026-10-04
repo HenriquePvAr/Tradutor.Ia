@@ -3240,6 +3240,7 @@ def api_history_delete(
             "local_artifact_published": "Este capítulo possui publicação na Comunidade; os arquivos locais foram preservados.",
             "local_artifact_path_invalid": "A pasta deste capítulo não é segura para exclusão automática.",
             "local_artifact_delete_failed": "Não foi possível apagar os arquivos locais.",
+            "history_write_failed": "Não foi possível atualizar o histórico local; os arquivos foram preservados.",
             "confirmation_invalid": "Digite EXCLUIR para confirmar.",
         }
         raise HTTPException(status_code=400, detail={

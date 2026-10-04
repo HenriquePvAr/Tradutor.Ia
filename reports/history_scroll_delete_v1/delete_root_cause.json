@@ -1,0 +1,9 @@
+{
+  "delete_root_cause": "The UI card may be authoritative SQL/job-store history while ui_history.json and filesystem discovery have no matching visible record. The delete resolver previously searched only _history_payload() and history_store.load(), so a canonical job id could return local_artifact_not_found.",
+  "aggregated_record_id_mismatch": true,
+  "filesystem_root_cause": "not proven from the prior live attempt; the previous generic message did not preserve the exception",
+  "lock_root_cause": "not proven; no handle utility available",
+  "permission_root_cause": "not proven",
+  "real_yamada_audit": {"readonly_files": 0, "max_path_length": 245},
+  "fix": "Fallback resolution through terminal JobStore records, tombstone filtering for owner history, confined tree deletion with read-only repair, bounded WinError-32 retry, and specific safe_error_code classification."
+}

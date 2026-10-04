@@ -153,3 +153,12 @@ class HistoryScrollRealDomTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_review_generation_rows_have_stable_identity_keys():
+    # Review children are inserted/updated independently during polling. Their DOM
+    # identity must follow generation_id/job_id, never their current array position.
+    source = UI_JS.read_text(encoding="utf-8")
+    assert 'data-generation-id="${escapeAttr(generationKey)}"' in source
+    key_section = source[source.index("function historyRenderKey"):source.index("function historyNodesCompatible")]
+    assert "node.dataset?.generationId" in key_section

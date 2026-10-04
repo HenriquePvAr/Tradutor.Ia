@@ -1,0 +1,7 @@
+{
+  "second_scroll_root_cause": "Review-generation child rows lacked stable DOM keys. syncHistoryChildren therefore matched unkeyed rows positionally; insertion, removal, or status/path expansion in a large review-generation list could reuse the wrong row and alter layout during polling. The existing lastUserHistoryScrollAt guard was preserved.",
+  "causal": true,
+  "fix": "Render data-generation-id from generation_id/job_id and reconcile it in historyRenderKey.",
+  "hardcoded_to_yamada": false,
+  "polling": "preserved"
+}

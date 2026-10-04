@@ -4,6 +4,8 @@ install_offline_network_guard()
 
 import unittest
 import json
+import os
+import stat
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -366,6 +368,111 @@ class UiIntegrationTests(unittest.TestCase):
             self.assertIn("history-id", hidden["ids"])
             self.assertIn(str(fixture.resolve()), hidden["folders"])
             bridge.store.close()
+
+    def test_local_artifact_delete_resolves_aggregated_sql_job_when_history_is_empty(self):
+        # Authenticated history cards are built from jobs.sqlite3. The card must remain
+        # deletable even when ui_history.json has no matching legacy/discovered record.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            fixture = output_root / "yamada_like" / "run-1"
+            fixture.mkdir(parents=True)
+            (fixture / "artifact.txt").write_text("fixture", encoding="utf-8")
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
+            history._write([])
+
+            class StoreStub:
+                def get_job(self, job_id):
+                    return {
+                        "id": "sql-job-1", "run_id": "sql-run-1", "output_dir": str(fixture),
+                        "configuration": {"chapter_slug": "yamada_like"},
+                        "series_title": "Yamada-like fixture", "status": "finished",
+                    } if job_id == "sql-job-1" else None
+
+                def list_jobs(self, **_kwargs):
+                    return []
+
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.output_root = output_root
+            bridge.store = StoreStub()
+            bridge.history = []
+            bridge.history_revision = 1
+            with patch.object(bridge, "_history_payload", return_value=[]), patch.object(
+                bridge, "_job_record", return_value={
+                    "id": "sql-job-1", "job_id": "sql-job-1", "run_id": "sql-run-1",
+                    "slug": "yamada_like", "chapter_name": "Yamada-like fixture",
+                    "output_folder": str(fixture), "publication_status": "",
+                }
+            ):
+                result = bridge.delete_local_artifact("sql-job-1", delete_files=True, confirm="EXCLUIR")
+            self.assertTrue(result["deleted_files"])
+            self.assertFalse(fixture.exists())
+            self.assertIn(str(fixture.resolve()), json.loads(history.hidden_path.read_text(encoding="utf-8"))["folders"])
+
+    def test_hidden_aggregated_sql_job_does_not_reappear_for_owner(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output_root = root / "output"
+            fixture = output_root / "chapter" / "run-1"
+            fixture.mkdir(parents=True)
+            history = UIHistoryStore(root / "ui_history.json", output_root=output_root)
+            history.hide_record({"id": "sql-job-1", "output_folder": str(fixture)})
+            bridge = UiBridge.__new__(UiBridge)
+            bridge.history_store = history
+            bridge.store = type("Store", (), {
+                "list_jobs_for_owner": lambda _self, *_args, **_kwargs: [{
+                    "id": "sql-job-1", "run_id": "run-1", "output_dir": str(fixture),
+                    "configuration": {"job_type": "translation"}, "series_title": "Hidden",
+                    "status": "finished",
+                }]
+            })()
+            with patch.object(bridge, "_job_record", return_value={
+                "id": "sql-job-1", "job_id": "sql-job-1", "output_folder": str(fixture),
+            }):
+                self.assertEqual(bridge._history_payload_for_owner("owner"), [])
+
+    def test_delete_error_codes_are_specific(self):
+        self.assertEqual(UiBridge._delete_error_code(PermissionError(13, "denied")), "PERMISSION_DENIED")
+        locked = OSError(16, "busy")
+        locked.winerror = 32
+        self.assertEqual(UiBridge._delete_error_code(locked), "FILES_IN_USE")
+        self.assertEqual(UiBridge._delete_error_code(OSError(5, "readonly"), read_only_cleared=True), "READ_ONLY_FILES")
+
+    def test_nested_read_only_tree_is_removed_by_fixture(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "chapter"
+            nested = root / "review_generations" / "generation-6" / "final"
+            nested.mkdir(parents=True)
+            target = nested / "page.psd"
+            target.write_bytes(b"fixture")
+            target.chmod(stat.S_IREAD)
+            removed, code = UiBridge._remove_confined_tree(root)
+            self.assertTrue(removed)
+            self.assertEqual(code, "removed")
+            self.assertFalse(root.exists())
+
+    def test_transient_locked_tree_retries_three_times_at_most(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "chapter"
+            root.mkdir()
+            (root / "page.png").write_bytes(b"fixture")
+            original = __import__("yomu.ui.ui_bridge", fromlist=["shutil"]).shutil.rmtree
+            attempts = {"count": 0}
+            locked = OSError(32, "sharing violation")
+            locked.winerror = 32
+
+            def flaky(path, **kwargs):
+                attempts["count"] += 1
+                if attempts["count"] < 3:
+                    raise locked
+                return original(path, **kwargs)
+
+            with patch("yomu.ui.ui_bridge.shutil.rmtree", side_effect=flaky):
+                removed, code = UiBridge._remove_confined_tree(root)
+            self.assertTrue(removed)
+            self.assertEqual(code, "removed")
+            self.assertEqual(attempts["count"], 3)
 
     def test_local_artifact_delete_resolves_legacy_relative_output_namespace(self):
         with tempfile.TemporaryDirectory() as folder:

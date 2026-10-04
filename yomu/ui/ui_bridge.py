@@ -18,6 +18,7 @@ import platform
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -4637,6 +4638,9 @@ class UiBridge:
         it is never part of an authenticated user's bootstrap.
         """
         records = []
+        # SQL is authoritative for lifecycle state, but local-history visibility is
+        # still an explicit user decision.  A hidden card must not be resurrected just
+        # because its audit/retry job row remains in jobs.sqlite3.
         for job in self.store.list_jobs_for_owner(
             owner_id, statuses=list(JobStatus.TERMINAL), limit=None
         ):
@@ -4647,9 +4651,52 @@ class UiBridge:
             ):
                 continue
             record = self._job_record(job)
-            if record:
+            if record and not self.history_store.is_hidden(record):
                 records.append(record)
         return records
+
+    @staticmethod
+    def _delete_error_code(exc: BaseException, *, read_only_cleared: bool = False) -> str:
+        """Map a confined Windows tree-delete failure to a safe user-facing code."""
+
+        winerror = getattr(exc, "winerror", None)
+        errno = getattr(exc, "errno", None)
+        if read_only_cleared:
+            return "READ_ONLY_FILES"
+        if winerror == 32 or errno in {16, 26}:
+            return "FILES_IN_USE"
+        if winerror == 5 or isinstance(exc, PermissionError) or errno in {13, 30}:
+            return "PERMISSION_DENIED"
+        return "FILESYSTEM_DELETE_FAILED"
+
+    @classmethod
+    def _remove_confined_tree(cls, folder: Path) -> tuple[bool, str]:
+        """Remove a confined tree with read-only repair and bounded lock retries."""
+
+        read_only_cleared = False
+
+        def onerror(function, path, exc_info):
+            nonlocal read_only_cleared
+            error = exc_info[1]
+            try:
+                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                read_only_cleared = True
+                function(path)
+            except OSError:
+                raise error
+
+        last_error: BaseException | None = None
+        for attempt in range(3):
+            try:
+                shutil.rmtree(folder, onerror=onerror)
+                return True, "removed"
+            except OSError as exc:
+                last_error = exc
+                code = cls._delete_error_code(exc, read_only_cleared=read_only_cleared)
+                if code != "FILES_IN_USE" or attempt == 2:
+                    return False, code
+                time.sleep(0.08 * (attempt + 1))
+        return False, cls._delete_error_code(last_error or OSError(), read_only_cleared=read_only_cleared)
 
     def runtime_state_for_owner(self, owner_id: str, cursor: int = 0) -> dict[str, Any]:
         return self._runtime_state(cursor=cursor, owner_id=owner_id)
@@ -7145,6 +7192,44 @@ class UiBridge:
                 if local_artifact_id not in match_values:
                     continue
                 return record, str(record.get("id") or local_artifact_id)
+        # Authenticated history is built directly from terminal SQL jobs.  A card can
+        # therefore outlive filesystem discovery or ui_history.json (notably after a
+        # prior hide/refresh), while its button still correctly carries the canonical
+        # job id.  Resolve that aggregate identity from the same authoritative store.
+        store = getattr(self, "store", None)
+        if store is not None:
+            candidates: list[dict[str, Any]] = []
+            try:
+                direct = store.get_job(local_artifact_id)
+                if direct:
+                    candidates.append(direct)
+                candidates.extend(store.list_jobs(statuses=list(JobStatus.TERMINAL), limit=None))
+            except (AttributeError, OSError, sqlite3.Error):
+                candidates = []
+            seen: set[str] = set()
+            for job in candidates:
+                job_id = str(job.get("id") or "")
+                if not job_id or job_id in seen:
+                    continue
+                seen.add(job_id)
+                config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+                output_folder = str(job.get("output_dir") or "")
+                identifiers = {
+                    job_id, str(job.get("run_id") or ""),
+                    str(config.get("chapter_slug") or ""),
+                }
+                if output_folder:
+                    identifiers.add(Path(output_folder).name)
+                if local_artifact_id not in identifiers:
+                    continue
+                record = self._job_record(job) or {
+                    "id": job_id, "job_id": job_id, "run_id": job.get("run_id"),
+                    "slug": str(config.get("chapter_slug") or Path(output_folder).parent.name),
+                    "chapter_name": job.get("series_title") or "",
+                    "output_folder": output_folder,
+                    "publication_status": "",
+                }
+                return record, str(record.get("id") or job_id)
         raise ValueError("local_artifact_not_found")
 
     def _confined_output_folder(self, record: dict[str, Any]) -> Path | None:
@@ -7222,9 +7307,12 @@ class UiBridge:
         # A published chapter's files back a live community post: never delete them here.
         if published and delete_files:
             raise ValueError("local_artifact_published")
-        remaining = [item for item in self.history_store.load() if item.get("id") != record_id]
-        self.history_store._write(remaining)
-        self.history_store.hide_record(record)
+        try:
+            remaining = [item for item in self.history_store.load() if item.get("id") != record_id]
+            self.history_store._write(remaining)
+            self.history_store.hide_record(record)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("history_write_failed") from exc
         deleted_files = False
         files_state = "preserved"
         if delete_files:
@@ -7236,11 +7324,10 @@ class UiBridge:
                 # Idempotent: the folder was already removed outside the UI.
                 files_state = "already_absent"
             else:
-                try:
-                    shutil.rmtree(folder)
-                    deleted_files = True
+                deleted_files, delete_code = self._remove_confined_tree(folder)
+                if deleted_files:
                     files_state = "removed"
-                except OSError:
+                else:
                     # The card is already gone; do not resurrect it over a file error.
                     files_state = "delete_failed_preserved"
         self._refresh_history()
@@ -7249,6 +7336,10 @@ class UiBridge:
             "local_artifact_id": record_id,
             "deleted_files": deleted_files,
             "files_state": files_state,
+            "safe_error_code": (
+                "PATH_OUTSIDE_OUTPUT_ROOT" if files_state == "unsafe_path_preserved" else
+                delete_code if files_state == "delete_failed_preserved" else ""
+            ),
             "publication_preserved": bool(record.get("publication_id")),
         }
 

@@ -1,0 +1,11 @@
+{
+  "history_only": "PASS (existing fixture coverage)",
+  "delete_with_files": "PASS (new SQL-aggregated fixture coverage)",
+  "nested_review_shape": "covered by resolver identity; real data not deleted",
+  "security_guard": "PASS",
+  "publication_guard": "PASS",
+  "safe_error_codes": ["FILES_IN_USE", "PERMISSION_DENIED", "READ_ONLY_FILES", "PATH_OUTSIDE_OUTPUT_ROOT", "FILESYSTEM_DELETE_FAILED", "history_write_failed"],
+  "read_only_nested_tree": "PASS",
+  "transient_lock_retry": "PASS; max 3 attempts",
+  "real_owner_data_mutated": false
+}

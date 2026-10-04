@@ -1,0 +1,7 @@
+{
+  "result": "PASS",
+  "layout": "existing full-width flex rows with ellipsized secondary paths",
+  "identity": "stable generation_id/job_id data attribute",
+  "six_generation_shape": "supported without Yamada-specific condition",
+  "nested_scroll_added": false
+}

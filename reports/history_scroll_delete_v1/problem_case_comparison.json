@@ -1,0 +1,8 @@
+{
+  "yamada": {"review_generation_count": 6, "review_generation_final_files": 302, "pages": 35, "status": "review_required"},
+  "normal_comparison": {"review_generation_count": 0, "files": 699, "status": "review_required"},
+  "card_identity": "parent job id is canonical; review children use generation_id/job_id",
+  "previous_issue": "review rows had no stable DOM identity and were reconciled by position",
+  "delete_identity": "aggregated SQL job cards can now resolve through JobStore when legacy discovery/history is empty",
+  "owner_history_visibility": "local hidden tombstones now filter SQL-backed owner history"
+}

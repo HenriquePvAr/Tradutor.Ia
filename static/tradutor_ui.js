@@ -7569,7 +7569,8 @@
     const generationsHtml = generations.length ? `<div class="review-generation-history"><strong>Saídas revisadas</strong>${generations.map(gen => {
       const status = runStatusLabels[gen.status] || gen.status || 'desconhecido';
       const progress = gen.status === 'finished' ? 'concluída' : status;
-      return `<div class="review-generation-row"><span>${escapeHtml(String(gen.output_format || '').toUpperCase())} · ${escapeHtml(progress)} · tentativa ${Number(gen.attempt || 1)}</span><small>${escapeHtml(gen.created_at || '')}</small>${gen.status === 'finished' ? `<button type="button" class="btn-ghost" data-action="review-generation-folder" data-generation-job-id="${escapeAttr(gen.job_id)}">Abrir saída revisada</button>` : ''}${gen.output_path ? `<small class="rg-path" title="${escapeAttr(gen.output_path)}">${escapeHtml(gen.output_path)}</small>` : ''}</div>`;
+      const generationKey = String(gen.generation_id || gen.job_id || `${gen.output_format || 'output'}-${gen.attempt || 1}`);
+      return `<div class="review-generation-row" data-generation-id="${escapeAttr(generationKey)}" data-job-id="${escapeAttr(gen.job_id || '')}"><span>${escapeHtml(String(gen.output_format || '').toUpperCase())} · ${escapeHtml(progress)} · tentativa ${Number(gen.attempt || 1)}</span><small>${escapeHtml(gen.created_at || '')}</small>${gen.status === 'finished' ? `<button type="button" class="btn-ghost" data-action="review-generation-folder" data-generation-job-id="${escapeAttr(gen.job_id)}">Abrir saída revisada</button>` : ''}${gen.output_path ? `<small class="rg-path" title="${escapeAttr(gen.output_path)}">${escapeHtml(gen.output_path)}</small>` : ''}</div>`;
     }).join('')}</div>` : '';
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
@@ -7619,6 +7620,7 @@
     if (!node || node.nodeType !== 1) return '';
     if (node.dataset?.folder) return `folder:${node.dataset.folder}`;
     if (node.dataset?.id) return `chapter:${node.dataset.id}`;
+    if (node.dataset?.generationId) return `generation:${node.dataset.generationId}`;
     if (node.dataset?.action) {
       const identity = node.dataset.jobId || node.dataset.reviewJob || node.dataset.publicationId
         || node.dataset.path || node.dataset.runId || '';
@@ -8057,7 +8059,22 @@
       });
       uiTrace('local_delete_completed', {code: result.code});
       closeLocalDeleteModal();
-      showToast(result.deleted_files ? 'Capítulo e arquivos apagados.' : 'Capítulo removido do histórico.', 'ok');
+      const fileState = String(result.files_state || '');
+      const safeError = String(result.safe_error_code || '');
+      const warning = safeError === 'PATH_OUTSIDE_OUTPUT_ROOT'
+        ? 'Histórico removido; arquivos preservados porque a pasta não é segura para exclusão.'
+        : safeError === 'FILES_IN_USE'
+          ? 'Histórico removido, mas alguns arquivos estão em uso. Feche os arquivos/programas relacionados e tente apagar a pasta novamente.'
+          : safeError === 'PERMISSION_DENIED'
+            ? 'Histórico removido, mas o Windows negou permissão para apagar a pasta.'
+            : safeError === 'READ_ONLY_FILES'
+              ? 'Histórico removido, mas há arquivos somente leitura que não puderam ser apagados.'
+        : safeError === 'FILESYSTEM_DELETE_FAILED'
+          ? 'Histórico removido; arquivos preservados porque a pasta está em uso ou sem permissão.'
+          : fileState === 'already_absent'
+            ? 'Capítulo removido do histórico; os arquivos já não estavam presentes.'
+            : '';
+      showToast(result.deleted_files ? 'Capítulo e arquivos apagados.' : warning || 'Capítulo removido do histórico.', warning ? 'warn' : 'ok');
       await refreshBootstrap();
     } catch (errorValue) {
       appState.localDeleteBusy = false;

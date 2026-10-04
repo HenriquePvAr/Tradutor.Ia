@@ -1,0 +1,11 @@
+{
+  "mission": "YOMU_HISTORY_SCROLL_DELETE_HANDOFF_FROM_CLAUDE_TO_CODEX_V1",
+  "worktree_path": "C:\\Projetos\\Tradutor.Ia-worktrees\\history-yamada-scroll-delete-v1",
+  "branch": "fix/history-yamada-scroll-delete-v1",
+  "head": "996bae47549eb65d28863adcffeca68e6d4621ee",
+  "status_before_edit": "clean",
+  "uncommitted_changes_found": false,
+  "untracked_files_found": false,
+  "claude_changes_preserved": true,
+  "takeover_base_head": "996bae47549eb65d28863adcffeca68e6d4621ee"
+}
