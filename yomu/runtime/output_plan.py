@@ -131,8 +131,10 @@ PRESETS: dict[str, tuple[frozenset, str, str]] = {
     "profissional": (
         frozenset({Operation.TRANSLATE, Operation.CLEAN, Operation.TYPESET,
                    Operation.PDF, Operation.PSD, Operation.QC}),
-        "Profissional",
-        "Pipeline completo + PSD editável + relatório de qualidade e revisão.",
+        # Product label is "Completo"; the preset identifier stays "profissional" and the
+        # backend profile stays "professional_qc" (semantics unchanged).
+        "Completo",
+        "Gera todos os arquivos: PDF, imagens limpas, PSD editável e revisão.",
     ),
     "download": (
         frozenset(),

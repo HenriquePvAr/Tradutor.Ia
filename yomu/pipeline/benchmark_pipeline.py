@@ -2991,6 +2991,18 @@ def run_benchmark(args):
         output_folder, completed_states, len(image_paths), output_profile,
         typeset=_pipeline_flags["want_typeset"],
     )
+    # Translate+clean (translation ran, text not typeset): also persist the readable
+    # translation so the "Ver tradução" viewer works, same file as translate-only.
+    if (translation_enabled and not _pipeline_flags["legacy"]
+            and not _pipeline_flags["want_typeset"]
+            and "translate" in _pipeline_flags["effective_ops"]):
+        try:
+            tm = _build_translation_only_manifest(completed_states)
+            tm_dir = output_folder / "translation"
+            tm_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(tm_dir / "translation.json", tm)
+        except (OSError, ValueError, TypeError):
+            pass
     editable_psd_export = None
     if ac.ArtifactType.EDITABLE_PSD in ac.profile_artifacts(output_profile):
         editable_psd_export = _export_editable_psds(

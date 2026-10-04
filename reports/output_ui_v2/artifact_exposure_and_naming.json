@@ -1,0 +1,26 @@
+{
+  "output_exposure": {
+    "traducao_pronta": "headline PDF (translated images are intermediate, not listed)",
+    "apenas_clean": "clean images only",
+    "apenas_traducao": "Ver tradução (source->target viewer); imagens intactas",
+    "traducao_clean": "clean images + Ver tradução",
+    "completo": "PDF + clean images + PSD + QC (translated image de-listed in favour of PDF)",
+    "personalizado": "produced_artifacts only",
+    "phantom_buttons": 0
+  },
+  "translation_viewer": {
+    "implemented": "YES (read-only)",
+    "endpoint": "GET /api/ui/translation/{job_id} (confined read of translation/translation.json)",
+    "frontend": "openTranslationView modal: per-page source->target pairs; 'nenhuma imagem foi alterada'",
+    "original_image_modified": "NO",
+    "also_available_for": "traducao_clean (pipeline now writes translation/translation.json there too)"
+  },
+  "canonical_naming": {
+    "user_clean_artifact": "images/clean/NNN.png (logical page index, zero-padded)",
+    "uses_source_filename_or_worker_name": "NO -- uses logical page index (stable, ordered)",
+    "raw_technical_name_exposed": "NO (raw Gemini/worker stays internal; only the approved buffer is persisted canonically)",
+    "collision_safe": "YES (distinct pages -> distinct paths; proven by test)",
+    "order_preserved": "YES (page index drives name, not download/async order)",
+    "backend_unchanged": "no Gemini/mask/seam/composite change; naming was already canonical (Mission 4 contract)"
+  }
+}

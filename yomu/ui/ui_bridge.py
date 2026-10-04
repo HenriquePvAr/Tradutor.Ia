@@ -1013,6 +1013,49 @@ class UiBridge:
         except (OSError, ValueError, TypeError):
             return False
 
+    def translation_view(self, job_id: str) -> dict[str, Any] | None:
+        """Read-only source->target view for a translate-only job's persisted translation.
+
+        Reads the canonical ``translation/translation.json`` confined to the job's output
+        directory. No provider call, no mutation -- it just renders what was already persisted
+        so the user never has to open raw JSON. Returns None when unavailable.
+        """
+        job = self.store.get_job(str(job_id or ""))
+        if not job:
+            return None
+        output_dir = self._effective_artifact_output_dir(job)
+        if output_dir is None:
+            return None
+        try:
+            root = output_dir.resolve()
+            path = (output_dir / "translation" / "translation.json").resolve()
+            if root != path and root not in path.parents:
+                return None
+            if not path.is_file():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        pages = []
+        for page in (data.get("pages") or [])[:1000]:
+            regions = [
+                {"source": str(r.get("source") or ""), "target": str(r.get("target") or "")}
+                for r in (page.get("regions") or [])
+                if isinstance(r, dict) and (r.get("source") or r.get("target"))
+            ]
+            if regions:
+                pages.append({"page_index": int(page.get("page_index") or 0), "regions": regions[:400]})
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        return {
+            "job_id": str(job_id),
+            "pages": pages,
+            "summary": {
+                "pages": int(summary.get("pages") or len(pages)),
+                "regions": int(summary.get("regions") or sum(len(p["regions"]) for p in pages)),
+                "translated_regions": int(summary.get("translated_regions") or 0),
+            },
+        }
+
     @classmethod
     def _effective_artifact_output_dir(cls, job: dict[str, Any]) -> Path | None:
         """Find the verified artifact directory for a job, including legacy frozen runs."""

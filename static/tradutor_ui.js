@@ -1364,7 +1364,7 @@
     traducao_clean: {ops: ['translate', 'clean'], profile: 'automatic',
       hint: 'Traduz e gera as imagens limpas, sem aplicar o texto traduzido.'},
     profissional: {ops: ['translate', 'clean', 'typeset', 'pdf', 'psd', 'qc'], profile: 'professional_qc',
-      hint: 'Resultado completo com PSD editável, relatório de qualidade e revisão.'},
+      hint: 'Gera todos os arquivos: PDF, imagens limpas, PSD editável e revisão.'},
     personalizado: {ops: [], profile: 'automatic', hint: 'Escolha manualmente quais etapas deseja executar.'},
   };
   const PLAN_REQUIRES = {typeset: ['translate'], psd: ['translate', 'typeset'], qc: ['translate', 'clean', 'typeset']};
@@ -1432,14 +1432,27 @@
     // backward-compatible payload fields stay coherent; the backend re-derives from the plan.
     applyOutputProfile((OUTPUT_PLAN_PRESETS[plan] || {}).profile || 'automatic');
     if (plan === 'personalizado') syncCustomOpsUI(); else { const d = $('#outputPlanDepHint'); if (d) d.hidden = true; }
+    // Keep a secondary selection visible: expand "Mais opções" when the chosen plan lives there.
+    if (SECONDARY_PLANS.has(plan)) setMorePlansExpanded(true);
     if (persist) { try { localStorage.setItem(OUTPUT_PLAN_STORAGE_KEY, plan); } catch (_) { /* default stays safe */ } }
     syncOutputPlanField();
     return plan;
   }
+  const SECONDARY_PLANS = new Set(['apenas_traducao', 'traducao_clean', 'personalizado']);
+  function setMorePlansExpanded(open) {
+    const toggle = $('#morePlansToggle');
+    const secondary = $('#outputPlanSecondary');
+    if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (secondary) secondary.hidden = !open;
+  }
   function syncOutputPlanField() {
     const downloadOnly = appState.selectedMode === 'download_only';
-    const options = $('#outputPlanOptions');
-    if (options) options.setAttribute('aria-disabled', downloadOnly ? 'true' : 'false');
+    ['#outputPlanPrimary', '#outputPlanSecondary'].forEach(sel => {
+      const grid = $(sel);
+      if (grid) grid.setAttribute('aria-disabled', downloadOnly ? 'true' : 'false');
+    });
+    const toggle = $('#morePlansToggle');
+    if (toggle) toggle.disabled = downloadOnly;
     $$('input[name="output_plan"]').forEach(input => { input.disabled = downloadOnly; });
     const custom = $('#outputCustomOps');
     if (custom) $$('input', custom).forEach(input => { input.disabled = downloadOnly; });
@@ -1458,6 +1471,10 @@
     syncSourceFormState();
     refreshStoredSourceExecutionDraft();
   }));
+  $('#morePlansToggle')?.addEventListener('click', () => {
+    const open = $('#morePlansToggle').getAttribute('aria-expanded') === 'true';
+    setMorePlansExpanded(!open);
+  });
   try { applyOutputPlan(localStorage.getItem(OUTPUT_PLAN_STORAGE_KEY) || 'traducao_pronta'); }
   catch (_) { applyOutputPlan('traducao_pronta'); }
   // Typesetting ON/OFF is only meaningful for PSD (§11): show it only for that format.
@@ -6897,7 +6914,7 @@
     } else if (reviewRequired) {
       message.textContent = 'Seu resultado foi gerado normalmente. A revisão é recomendada para melhorar alguns trechos.';
     } else if (profile === 'professional_qc') {
-      message.textContent = 'Material QC Profissional gerado.';
+      message.textContent = 'Todos os arquivos foram gerados.';
     } else {
       message.textContent = 'Seu resultado está pronto.';
     }
@@ -6914,8 +6931,13 @@
     // shown as "Não gerado"). Covers clean-only, translate-only (Tradução) and the rest.
     const ARTIFACT_DISPLAY_ORDER = ['final_pdf', 'translated_image', 'clean_image',
       'editable_psd', 'quality_report', 'translation_manifest'];
-    const visibleTypes = downloadOnly ? []
+    let visibleTypes = downloadOnly ? []
       : ARTIFACT_DISPLAY_ORDER.filter(kind => model.artifacts?.[kind]?.available === true);
+    // When the PDF is the deliverable, the translated page images are intermediate: headline
+    // the PDF instead of listing both (Tradução pronta/Completo stay about the final result).
+    if (visibleTypes.includes('final_pdf')) {
+      visibleTypes = visibleTypes.filter(kind => kind !== 'translated_image');
+    }
     for (const kind of visibleTypes) {
       const artifact = model.artifacts?.[kind] || {};
       const item = document.createElement('li');
@@ -6938,7 +6960,13 @@
       button.textContent = label;
       actions.appendChild(button);
     };
+    // "Ver tradução": translate modes without a final typeset (translate-only, translate+clean)
+    // deliver the translation data. Show a readable viewer instead of raw JSON. Primary for
+    // translate-only, where it is the main result.
+    const hasTranslationView = effOps.includes('translate') && !effOps.includes('typeset');
+    const translateOnlyMode = hasTranslationView && !effOps.includes('clean');
     if (status !== 'failed' && !downloadOnly && model.actions?.pdf) addAction('Abrir PDF', 'pdf', true);
+    if (status !== 'failed' && !downloadOnly && hasTranslationView) addAction('Ver tradução', 'translation', translateOnlyMode);
     if (status !== 'failed' && !downloadOnly && model.actions?.review) addAction('Abrir Review', 'review');
     if (status !== 'failed' && !downloadOnly && model.actions?.psd_folder) addAction('Abrir PSDs', 'psd_folder');
     if (status !== 'failed' && !downloadOnly && model.actions?.qc_folder) addAction('Abrir pasta de QC', 'qc_folder');
@@ -6961,10 +6989,40 @@
       if (appState.reviewMode) exitReviewMode();
       activateTab('nova');
       $('#urlInput')?.focus();
+    } else if (action === 'translation') {
+      void openTranslationView(jobId);
     } else if (['pdf', 'folder', 'psd_folder', 'qc_folder'].includes(action)) {
       void openArtifact(jobId, action);
     }
   });
+
+  // Read-only translation viewer: source -> target per page/region. No raw JSON, no editing.
+  async function openTranslationView(jobId) {
+    let view;
+    try {
+      view = await api(`/api/ui/translation/${encodeURIComponent(jobId)}`);
+    } catch (_) {
+      showToast('Não foi possível abrir a tradução deste capítulo.', 'warn');
+      return;
+    }
+    const pages = Array.isArray(view?.pages) ? view.pages : [];
+    const overlay = document.createElement('div');
+    overlay.className = 'translation-view-overlay';
+    overlay.tabIndex = -1;
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    const sum = view?.summary || {};
+    const head = `<div class="tv-head"><div><h3>Tradução</h3><p>${Number(sum.pages || pages.length)} páginas · ${Number(sum.translated_regions || sum.regions || 0)} textos traduzidos · nenhuma imagem foi alterada</p></div><button type="button" class="btn-ghost tv-close" aria-label="Fechar">Fechar</button></div>`;
+    const body = pages.length
+      ? pages.map(p => `<section class="tv-page"><h4>Página ${Number(p.page_index || 0)}</h4>${(p.regions || []).map(r => `<div class="tv-pair"><div class="tv-src">${escapeHtml(r.source || '')}</div><div class="tv-arrow" aria-hidden="true">→</div><div class="tv-tgt">${escapeHtml(r.target || '')}</div></div>`).join('')}</section>`).join('')
+      : '<p class="tv-empty">Nenhum texto traduzido foi encontrado.</p>';
+    overlay.innerHTML = `<div class="translation-view-modal" role="dialog" aria-modal="true" aria-label="Tradução">${head}<div class="tv-body">${body}</div></div>`;
+    overlay.querySelector('.tv-close')?.addEventListener('click', close);
+    document.body.appendChild(overlay);
+    overlay.focus();
+  }
 
   /* ---------- logs ---------- */
   function appendLogs(entries) {

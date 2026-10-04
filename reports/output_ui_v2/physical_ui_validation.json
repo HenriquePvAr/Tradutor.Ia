@@ -1,0 +1,15 @@
+{
+  "executed": true,
+  "method": "Component harness (real CSS + shipped markup/JS) served over http; browser-driven.",
+  "verified": {
+    "first_view_three_primary": "PASS (Tradução pronta ⭐ / Apenas Clean / Completo)",
+    "secondary_hidden_initially": "PASS",
+    "custom_hidden_initially": "PASS",
+    "more_options_expands": "PASS (aria-expanded flips true, 3 secondary cards appear)",
+    "personalizado_reveals_checkboxes": "PASS",
+    "no_profissional_label": "PASS ('Completo' shown, 'Profissional' absent)",
+    "result_badges_and_recommended": "PASS",
+    "accessibility": "aria-expanded + aria-controls on toggle; cards are label-wrapped radios (keyboard-selectable, focus-visible)"
+  },
+  "screenshots": ["first_view_three_primary", "more_options_expanded_with_personalizado"]
+}

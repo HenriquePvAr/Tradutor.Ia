@@ -41,6 +41,39 @@ def test_preset_cards_do_not_leak_internal_terms():
         assert forbidden not in section, f"leaked internal term: {forbidden}"
 
 
+def test_progressive_disclosure_structure():
+    html = Path("ui/ui_shell.html").read_text(encoding="utf-8")
+    # Three primary cards up front, three behind "Mais opções" (secondary, hidden by default).
+    primary = html[html.index('id="outputPlanPrimary"'):html.index('id="morePlansToggle"')]
+    for v in ("traducao_pronta", "apenas_clean", "profissional"):
+        assert f'value="{v}"' in primary
+    sec_open = html[html.index('id="outputPlanSecondary"'):html.index('>', html.index('id="outputPlanSecondary"'))]
+    assert "hidden" in sec_open  # secondary grid hidden by default
+    secondary = html[html.index('id="outputPlanSecondary"'):html.index('id="outputCustomOps"')]
+    for v in ("apenas_traducao", "traducao_clean", "personalizado"):
+        assert f'value="{v}"' in secondary
+    # Accessible toggle
+    assert 'aria-expanded="false"' in html and 'aria-controls="outputPlanSecondary"' in html
+
+
+def test_professional_is_labelled_completo_not_profissional():
+    html = Path("ui/ui_shell.html").read_text(encoding="utf-8")
+    # The preset value stays 'profissional' (backend id), the visible label is 'Completo'.
+    section = html[html.index('id="outputPlanField"'):html.index("</fieldset>", html.index("outputCustomOps"))]
+    assert 'value="profissional"' in section
+    assert ">Completo<" in section
+    assert "Profissional" not in section
+    # backend preset identifier + profile are unchanged
+    from yomu.runtime.output_plan import normalize_output_plan, PRESETS
+    assert normalize_output_plan("profissional").output_profile == "professional_qc"
+    assert PRESETS["profissional"][1] == "Completo"  # presentation label only
+
+
+def test_recommended_badge_on_default():
+    html = Path("ui/ui_shell.html").read_text(encoding="utf-8")
+    assert "plan-badge-rec" in html and "Recomendado" in html
+
+
 def test_js_sends_output_plan_and_custom_operations():
     js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
     assert "output_plan: appState.outputPlan" in js
@@ -50,6 +83,17 @@ def test_js_sends_output_plan_and_custom_operations():
     assert "function closePlanDeps" in js
     assert "'traducao_pronta'" in js
     assert "syncOutputPlanField" in js
+
+
+def test_translation_viewer_is_wired():
+    js = Path("static/tradutor_ui.js").read_text(encoding="utf-8")
+    # Translate modes without a final typeset offer a readable viewer (not raw JSON).
+    assert "async function openTranslationView" in js
+    assert "/api/ui/translation/" in js
+    assert "addAction('Ver tradução', 'translation'" in js
+    assert "nenhuma imagem foi alterada" in js  # translate-only reassurance copy
+    app = Path("yomu/ui/app.py").read_text(encoding="utf-8")
+    assert '@app.get("/api/ui/translation/{job_id}")' in app
 
 
 # ---- preset -> effective plan (backend is source of truth) ------------------------------

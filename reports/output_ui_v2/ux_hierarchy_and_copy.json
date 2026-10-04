@@ -1,0 +1,20 @@
+{
+  "hierarchy": {
+    "first_view": ["Tradução pronta (⭐ Recomendado)", "Apenas Clean", "Completo"],
+    "more_options": ["Apenas tradução", "Tradução + Clean", "Personalizado"],
+    "secondary_hidden_by_default": true,
+    "custom_checkboxes_hidden_until_personalizado": true,
+    "default": "traducao_pronta",
+    "toggle_accessible": "aria-expanded + aria-controls; keyboard-operable button",
+    "selection_persists_when_collapsed": "a secondary selection auto-expands Mais opções (SECONDARY_PLANS)"
+  },
+  "labels": {"profissional_ui_label": "Completo", "profissional_backend_id": "profissional (profile professional_qc, unchanged)", "typeset_visible": false, "internal_terms_visible": "none (gemini/oracle/chrome/provider/ocr absent)"},
+  "copy_matrix": {
+    "traducao_pronta": {"desc": "Traduz, remove o texto original e aplica a tradução.", "result": "PDF pronto para ler"},
+    "apenas_clean": {"desc": "Remove os textos e entrega as imagens limpas, sem traduzir.", "result": "Imagens limpas"},
+    "completo": {"desc": "Gera todos os arquivos: PDF, imagens limpas, PSD editável e revisão.", "result": "Todos os arquivos"},
+    "apenas_traducao": {"desc": "Traduz os textos encontrados sem modificar as imagens.", "result": "Só os textos traduzidos"},
+    "traducao_clean": {"desc": "Traduz os textos e gera as imagens limpas, sem aplicar a tradução.", "result": "Para diagramar depois"},
+    "personalizado": {"desc": "Escolha manualmente quais etapas deseja executar.", "result": "Você escolhe"}
+  }
+}

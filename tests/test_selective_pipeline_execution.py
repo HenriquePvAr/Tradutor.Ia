@@ -89,6 +89,11 @@ class SelectivePipelineExecutionTests(LocalBenchmarkPipelineE2ETests):
         progress = json.loads((self.output / "progress.json").read_text(encoding="utf-8"))
         item = progress["pages"][0]["debug_data"]["items"][0]
         self.assertEqual(item["translation"], "LEVANTA!")  # translation data exists/persisted
+        # translate+clean also persists the readable translation so "Ver tradução" works.
+        tv = self.output / "translation" / "translation.json"
+        self.assertTrue(tv.is_file())
+        tvdata = json.loads(tv.read_text(encoding="utf-8"))
+        self.assertIn("LEVANTA!", [r["target"] for p in tvdata["pages"] for r in p["regions"]])
 
     # --- TRANSLATE ONLY: translation persisted, no clean/typeset/image/PDF -----------------
     def test_translate_only_persists_translation_without_any_visual_artifact(self):

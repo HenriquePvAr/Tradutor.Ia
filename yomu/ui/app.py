@@ -1615,6 +1615,19 @@ async def api_job_cancel(request: Request, job_id: str) -> JSONResponse:
     return JSONResponse(result, status_code=status_code)
 
 
+@app.get("/api/ui/translation/{job_id}")
+def api_translation_view(request: Request, job_id: str) -> dict[str, Any]:
+    """Read-only source->target translation view for a translate-only job (no raw JSON)."""
+    _owned_ui_job(request, job_id)
+    view = BRIDGE.translation_view(job_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "translation_not_available",
+            "message": "Não há uma tradução disponível para este capítulo.",
+        })
+    return view
+
+
 @app.get("/api/ui/quality-review/revision/{job_id}")
 def api_quality_revision_status(request: Request, job_id: str) -> dict[str, Any]:
     _owned_ui_job(request, job_id)

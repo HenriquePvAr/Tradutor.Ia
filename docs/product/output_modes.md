@@ -4,21 +4,33 @@
 > `Tradução pronta`, `Apenas Clean`, `Apenas tradução`, `Tradução + Clean`, `Profissional`
 > e `Personalizado`. Base verificada: `b4da199`. Revisado em: 2026-10-04.
 
-## Interface — "O que você quer gerar?"
+## Interface — "O que você quer gerar?" (divulgação progressiva)
 
-A tela de nova tradução tem um seletor de cartões com seis opções. Cada preset envia um
-`output_plan` no payload; o backend (`yomu/runtime/output_plan.py`) é a **única fonte de
-verdade** e normaliza/valida o plano, sobrepondo os campos legados
-(`output_profile`/`output_format`/`translation_enabled`).
+A primeira visão mostra **três opções principais** + "Mais opções" (que revela as outras
+três). Cada preset envia um `output_plan`; o backend (`yomu/runtime/output_plan.py`) é a
+**única fonte de verdade** e normaliza/valida o plano, sobrepondo os campos legados.
 
-| Cartão | Envia | Operações efetivas |
+Primeira visão: **Tradução pronta** (⭐ Recomendado), **Apenas Clean**, **Completo**.
+Em "Mais opções": **Apenas tradução**, **Tradução + Clean**, **Personalizado**.
+
+| Cartão (label) | preset | O que o usuário recebe |
 | --- | --- | --- |
-| Tradução pronta (padrão) | `output_plan=traducao_pronta` | translate, clean, typeset, pdf |
-| Apenas Clean | `output_plan=apenas_clean` | clean (0 provedor, 0 YK) |
-| Apenas tradução | `output_plan=apenas_traducao` | translate (dados de tradução) |
-| Tradução + Clean | `output_plan=traducao_clean` | translate, clean |
-| Profissional | `output_plan=profissional` | translate, clean, typeset, pdf, psd, qc |
-| Personalizado | `output_plan=personalizado` + `operations[]` | o que o usuário marcar (com dependências) |
+| Tradução pronta (padrão) | `traducao_pronta` | **PDF** pronto para ler |
+| Apenas Clean | `apenas_clean` | **imagens limpas** (0 provedor, 0 YK) |
+| Completo | `profissional` | **todos os arquivos** (PDF, imagens limpas, PSD, revisão) |
+| Apenas tradução | `apenas_traducao` | **só os textos traduzidos** (imagens intactas) |
+| Tradução + Clean | `traducao_clean` | **tradução + imagens limpas** (sem aplicar o texto) |
+| Personalizado | `personalizado` + `operations[]` | o que o usuário marcar (com dependências) |
+
+- **"Completo"** é apenas o rótulo de produto; o identificador de preset continua
+  `profissional` e o perfil backend continua `professional_qc` (semântica inalterada).
+- **"Ver tradução"**: Apenas tradução e Tradução + Clean têm um visualizador somente-leitura
+  (origem→alvo por página) servido por `GET /api/ui/translation/{job_id}` lendo o
+  `translation/translation.json` canônico — o usuário nunca precisa abrir JSON cru.
+- **Tela final** headline o PDF em Tradução pronta/Completo (imagens traduzidas são
+  intermediárias e não poluem a lista).
+- **Nomes de arquivo canônicos:** as imagens limpas finais são sempre `images/clean/NNN.png`
+  (índice lógico da página, com zero-padding) — nunca um nome técnico de worker/VPS ou job-id.
 
 - **Personalizado** revela caixas de seleção (traduzir / imagens limpas / aplicar texto /
   PDF / PSD / QC). Dependências são aplicadas e explicadas ("Também será necessário:

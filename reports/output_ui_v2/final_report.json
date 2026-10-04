@@ -1,0 +1,28 @@
+{
+  "mission": "YOMU_OUTPUT_PRESETS_UX_REFINEMENT_AND_CANONICAL_OUTPUTS_V2",
+  "mission_result": "PASS (build/desktop smoke BLOCKED: PyInstaller not installed in this env)",
+  "base_head": "ec66f46",
+  "work_branch": "feat/output-presets-ux-refinement-v2",
+  "push": "NO",
+  "ux": {
+    "progressive_disclosure": "PASS (3 primary + Mais opções + 3 secondary)",
+    "default": "traducao_pronta (⭐ Recomendado)",
+    "profissional_renamed_to_completo": "PASS (label only; backend id/profile unchanged)",
+    "typeset_hidden": "PASS",
+    "copy_refined": "PASS (one description + one result pill per card)"
+  },
+  "output_exposure": {
+    "traducao_pronta": "PDF headline", "apenas_clean": "clean images",
+    "apenas_traducao": "Ver tradução (viewer) + imagens intactas",
+    "traducao_clean": "clean images + Ver tradução", "completo": "full set",
+    "phantom_buttons": 0
+  },
+  "translation_viewer": "IMPLEMENTED (read-only; GET /api/ui/translation/{job_id}; modal source->target; also for traducao_clean)",
+  "canonical_naming": "already canonical (images/clean/NNN.png by logical page); verified + collision-safe; no backend change",
+  "tests": {"ui": "tests/test_output_presets_ui.py (19)", "naming": "tests/test_canonical_output_naming.py (5)", "broad": "921 passed, 0 failures"},
+  "build_smoke": "BLOCKED: PyInstaller not installed. node --check + python import smoke pass.",
+  "desktop_smoke": "BLOCKED: same (component UI verified in-browser instead).",
+  "security": {"secrets": 0, "large_files_committed": 0, "remote_calls": 0, "production_mutations": 0},
+  "root_policy": "PASS", "codex_worktrees_touched": "NO",
+  "next_step": "Discord observability."
+}

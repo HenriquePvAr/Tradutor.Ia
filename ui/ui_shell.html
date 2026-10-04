@@ -355,42 +355,45 @@
           <div class="field">
             <fieldset class="output-profile-field" id="outputPlanField">
               <legend>O que você quer gerar?</legend>
-              <div class="output-plan-grid" id="outputPlanOptions" role="radiogroup" aria-label="O que você quer gerar">
+              <div class="output-plan-grid" id="outputPlanPrimary" role="radiogroup" aria-label="O que você quer gerar">
                 <label class="output-profile-card output-plan-card selected" data-output-plan-card="traducao_pronta">
-                  <input type="radio" name="output_plan" value="traducao_pronta" checked aria-describedby="planDescTraducaoPronta">
-                  <span class="output-profile-card-title">Tradução pronta</span>
-                  <span class="output-profile-card-subtitle">Resultado pronto para ler</span>
-                  <span class="output-profile-card-description" id="planDescTraducaoPronta">Traduz, remove o texto original, aplica a tradução e gera o PDF final.</span>
+                  <input type="radio" name="output_plan" value="traducao_pronta" checked>
+                  <span class="output-profile-card-title">Tradução pronta <span class="plan-badge-rec">Recomendado</span></span>
+                  <span class="output-profile-card-description">Traduz, remove o texto original e aplica a tradução.</span>
+                  <span class="plan-result">PDF pronto para ler</span>
                 </label>
                 <label class="output-profile-card output-plan-card" data-output-plan-card="apenas_clean">
-                  <input type="radio" name="output_plan" value="apenas_clean" aria-describedby="planDescApenasClean">
+                  <input type="radio" name="output_plan" value="apenas_clean">
                   <span class="output-profile-card-title">Apenas Clean</span>
-                  <span class="output-profile-card-subtitle">Imagens limpas</span>
-                  <span class="output-profile-card-description" id="planDescApenasClean">Remove o texto original e entrega as imagens limpas, sem traduzir.</span>
-                </label>
-                <label class="output-profile-card output-plan-card" data-output-plan-card="apenas_traducao">
-                  <input type="radio" name="output_plan" value="apenas_traducao" aria-describedby="planDescApenasTraducao">
-                  <span class="output-profile-card-title">Apenas tradução</span>
-                  <span class="output-profile-card-subtitle">Só o texto traduzido</span>
-                  <span class="output-profile-card-description" id="planDescApenasTraducao">Traduz os textos encontrados sem modificar as imagens.</span>
-                </label>
-                <label class="output-profile-card output-plan-card" data-output-plan-card="traducao_clean">
-                  <input type="radio" name="output_plan" value="traducao_clean" aria-describedby="planDescTraducaoClean">
-                  <span class="output-profile-card-title">Tradução + Clean</span>
-                  <span class="output-profile-card-subtitle">Para diagramar depois</span>
-                  <span class="output-profile-card-description" id="planDescTraducaoClean">Traduz os textos e gera as imagens limpas, sem aplicar o texto traduzido.</span>
+                  <span class="output-profile-card-description">Remove os textos e entrega as imagens limpas, sem traduzir.</span>
+                  <span class="plan-result">Imagens limpas</span>
                 </label>
                 <label class="output-profile-card output-plan-card" data-output-plan-card="profissional">
-                  <input type="radio" name="output_plan" value="profissional" aria-describedby="planDescProfissional">
-                  <span class="output-profile-card-title">Profissional</span>
-                  <span class="output-profile-card-subtitle">Completo + revisão</span>
-                  <span class="output-profile-card-description" id="planDescProfissional">Resultado completo com PSD editável, relatório de qualidade e revisão.</span>
+                  <input type="radio" name="output_plan" value="profissional">
+                  <span class="output-profile-card-title">Completo</span>
+                  <span class="output-profile-card-description">Gera todos os arquivos: PDF, imagens limpas, PSD editável e revisão.</span>
+                  <span class="plan-result">Todos os arquivos</span>
+                </label>
+              </div>
+              <button type="button" class="more-plans-toggle" id="morePlansToggle" aria-expanded="false" aria-controls="outputPlanSecondary">Mais opções <span class="more-plans-caret" aria-hidden="true">▾</span></button>
+              <div class="output-plan-grid" id="outputPlanSecondary" role="radiogroup" aria-label="Mais opções de saída" hidden>
+                <label class="output-profile-card output-plan-card" data-output-plan-card="apenas_traducao">
+                  <input type="radio" name="output_plan" value="apenas_traducao">
+                  <span class="output-profile-card-title">Apenas tradução</span>
+                  <span class="output-profile-card-description">Traduz os textos encontrados sem modificar as imagens.</span>
+                  <span class="plan-result">Só os textos traduzidos</span>
+                </label>
+                <label class="output-profile-card output-plan-card" data-output-plan-card="traducao_clean">
+                  <input type="radio" name="output_plan" value="traducao_clean">
+                  <span class="output-profile-card-title">Tradução + Clean</span>
+                  <span class="output-profile-card-description">Traduz os textos e gera as imagens limpas, sem aplicar a tradução.</span>
+                  <span class="plan-result">Para diagramar depois</span>
                 </label>
                 <label class="output-profile-card output-plan-card" data-output-plan-card="personalizado">
-                  <input type="radio" name="output_plan" value="personalizado" aria-describedby="planDescPersonalizado">
+                  <input type="radio" name="output_plan" value="personalizado">
                   <span class="output-profile-card-title">Personalizado</span>
-                  <span class="output-profile-card-subtitle">Você escolhe as etapas</span>
-                  <span class="output-profile-card-description" id="planDescPersonalizado">Escolha manualmente quais etapas deseja executar.</span>
+                  <span class="output-profile-card-description">Escolha manualmente quais etapas deseja executar.</span>
+                  <span class="plan-result">Você escolhe</span>
                 </label>
               </div>
               <fieldset class="output-custom-ops" id="outputCustomOps" hidden>
