@@ -99,3 +99,7 @@ out/
 e2e_test_runtime/
 large_strip_e2e_runtime/
 test_fixtures/quality_regression_diagnostics/real/**/source_crop.png
+
+# Required login artwork: force-tracked despite *.png/*.jpg catch-all (clean builds need it)
+!static/assets/auth-background.jpg
+!static/assets/auth-background-hd.png

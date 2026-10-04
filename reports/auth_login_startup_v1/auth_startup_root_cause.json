@@ -1,0 +1,42 @@
+{
+  "mission": "YOMU_AUTH_LOGIN_STARTUP_PHYSICAL_ROOT_CAUSE_FIX_V1",
+  "base_head": "3f38715",
+  "work_branch": "fix/auth-login-startup-physical-v1",
+  "push": "NO",
+  "owner_physical_evidence": "Owner tested EXE: history/selection/delete PASS; login FAIL. Then on clean-profile EXE owner said the login that appeared 'é uma tela mock/placeholder' and pointed to Beta 18 as the correct login.",
+  "two_distinct_symptoms": {
+    "symptom_1_app_opens_without_login": {
+      "classification": "WEBVIEW_PROFILE_REUSE / VALID_REMEMBERED_SESSION",
+      "is_product_bug": false,
+      "evidence": [
+        "yomu/desktop/app.py: _persistent_webview_profile_dir() = %LOCALAPPDATA%/YomuSekai/webview-profile, private_mode:False -> shared & persistent across all builds",
+        "owner profile Local Storage leveldb contains sb-*-auth-token (persisted Supabase session)",
+        "clean isolated-LOCALAPPDATA EXE: GET /api/ui/bootstrap => {community_authenticated:false, auth_state:'unauthenticated'} and login assets served 200",
+        "Supabase SDK restores the persisted session on startup -> authenticated -> login skipped, which is correct per 'Lembrar de mim' contract"
+      ],
+      "fix": "none (contract-correct). signOut({scope:'local'}) clears it; logout+restart -> login. Reliable testing must use an isolated profile (never delete owner profile)."
+    },
+    "symptom_2_login_looks_like_mock": {
+      "classification": "AUTH_ASSET_ROUTE (login background artwork absent from clean-checkout builds)",
+      "is_product_bug": true,
+      "root_cause": "static/assets/auth-background.jpg and auth-background-hd.png are excluded from git by the *.jpg and *.png catch-all rules in .gitignore. Builds produced from a clean git worktree/checkout (these audit-missions' EXEs, CI, fresh clones) omit the artwork, so .auth-login-page renders dark/empty = 'mock'. Owner's official releases (Beta 18) look correct only because they are built from the main working dir where the two files still exist locally as untracked files.",
+      "convergent_evidence": [
+        "CSS auth-background rules IDENTICAL between beta18-stage build and current source (center center/cover + hd.png override)",
+        "ui_shell.html auth surface + recovery link ('Recuperar acesso', data-i18n=auth.recovery) IDENTICAL beta18 vs current",
+        "auth-background.jpg md5 44ba439... and auth-background-hd.png md5 12c8bb6... IDENTICAL across source and beta builds",
+        "auth JS diffs (supabase_auth.js, auth_ui.js) are additive improvements (PKCE verifier guard, signup redirect, status label) - no login regression",
+        "the mock EXE (history-final-scroll-selection-auth-v1 dist) has NO auth-background* in its bundled static/assets -> dark login",
+        "my worktree (clean checkout) was missing the art (gitignored); git check-ignore confirmed .gitignore:27 *.png and :28 *.jpg exclude them",
+        "precedent: static/assets/auth/comic-original.png & comic-translated.png ARE tracked despite *.png"
+      ],
+      "fix": "Track the required login artwork in git (copy into tree + .gitignore negations + git add), matching the comic-*.png precedent. Every clean build now bundles the art -> login renders correctly everywhere."
+    }
+  },
+  "auth_startup_decision_verdict": "CORRECT. No-session -> backend unauthenticated + login served; form wired to real Supabase signInWithPassword. The startup/auth-surface logic was never the defect.",
+  "files_changed": [
+    ".gitignore (negations for the two login art files)",
+    "static/assets/auth-background.jpg (now tracked)",
+    "static/assets/auth-background-hd.png (now tracked)"
+  ],
+  "frozen_untouched": ["history selection/scroll/checkbox", "bulk delete", "delete local", "artifact cards", "PDF-only", "OutputPlan", "Gemini", "CLEAN", "YK", "auth decision logic", "login design"]
+}
