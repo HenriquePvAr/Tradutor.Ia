@@ -12,17 +12,30 @@
     "copy_refined": "PASS (one description + one result pill per card)"
   },
   "output_exposure": {
-    "traducao_pronta": "PDF headline", "apenas_clean": "clean images",
+    "traducao_pronta": "PDF headline",
+    "apenas_clean": "clean images",
     "apenas_traducao": "Ver tradução (viewer) + imagens intactas",
-    "traducao_clean": "clean images + Ver tradução", "completo": "full set",
+    "traducao_clean": "clean images + Ver tradução",
+    "completo": "full set",
     "phantom_buttons": 0
   },
   "translation_viewer": "IMPLEMENTED (read-only; GET /api/ui/translation/{job_id}; modal source->target; also for traducao_clean)",
   "canonical_naming": "already canonical (images/clean/NNN.png by logical page); verified + collision-safe; no backend change",
-  "tests": {"ui": "tests/test_output_presets_ui.py (19)", "naming": "tests/test_canonical_output_naming.py (5)", "broad": "921 passed, 0 failures"},
+  "tests": {
+    "ui": "tests/test_output_presets_ui.py (19)",
+    "naming": "tests/test_canonical_output_naming.py (5)",
+    "broad": "921 passed, 0 failures"
+  },
   "build_smoke": "BLOCKED: PyInstaller not installed. node --check + python import smoke pass.",
   "desktop_smoke": "BLOCKED: same (component UI verified in-browser instead).",
-  "security": {"secrets": 0, "large_files_committed": 0, "remote_calls": 0, "production_mutations": 0},
-  "root_policy": "PASS", "codex_worktrees_touched": "NO",
-  "next_step": "Discord observability."
+  "security": {
+    "secrets": 0,
+    "large_files_committed": 0,
+    "remote_calls": 0,
+    "production_mutations": 0
+  },
+  "root_policy": "PASS",
+  "codex_worktrees_touched": "NO",
+  "next_step": "Discord observability.",
+  "full_regression": "5778 passed, 141 skipped, 2 xfailed, 0 failures (baseline 5769; +9 new tests)"
 }
