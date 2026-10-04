@@ -1,0 +1,9 @@
+{
+  "reproduced": "YES (component harness with real CSS + exact toolbar/card markup + selection DOM logic)",
+  "root_cause": "The imported selection mode called renderHistory() on EVERY checkbox toggle / select-all / enter-exit (toggleHistorySelection->renderHistory('selection_change'), etc.), and entering selection mode added a grid column via `.hist-item:not(:has(.history-select-control))` / base `grid-template-columns:24px 70px 1fr auto`, reflowing every card. Both moved the viewport during normal selection use.",
+  "fix": "Checkbox is always in the DOM, absolutely positioned (no grid column), revealed by `#histList.selection-active` (pure CSS toggle). Selecting/select-all/enter-exit update only the affected cards' class+checkbox + the toolbar via applyHistorySelectionClasses() -- NO renderHistory. Prior lastUserHistoryScrollAt fix preserved.",
+  "verification": {
+    "enter_mode_scroll_same": true, "select_one_scroll_same": true, "select_all_scroll_same": true,
+    "full_rerender_on_checkbox_before": true, "full_rerender_on_checkbox_after": false
+  }
+}

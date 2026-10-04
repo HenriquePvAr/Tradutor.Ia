@@ -1,0 +1,9 @@
+{
+  "before": "[Sair da seleção] 0 selecionados [Selecionar todos visíveis] [Excluir selecionados] [Cancelar] -- duplicated exit (Sair + Cancelar), large text delete button",
+  "after": "normal: [Selecionar] only. selection: [Selecionar visíveis] N selecionados [🗑] [✕]",
+  "single_exit": "the ✕ icon (#histSelectionCancel, aria-label 'Sair da seleção'); the 'Selecionar' toggle hides in selection mode",
+  "delete_control": "trash icon (#histBulkDelete) with aria-label+title 'Excluir selecionados', disabled at 0, destructive colour only when enabled",
+  "selected_visual": "discreet gold accent (border/bg/inset shadow), not error-red",
+  "select_visible_label": "Selecionar visíveis / Desmarcar visíveis",
+  "count_plural": "N selecionado / N selecionados"
+}

@@ -1,0 +1,17 @@
+{
+  "SOURCE_AGENT": "CODEX",
+  "SOURCE_BRANCH": "feat/history-bulk-delete-artifact-cards-v1",
+  "SOURCE_HEAD": "e288fee",
+  "SOURCE_STATE": "UNCOMMITTED_WIP",
+  "OWNER_AUTHORIZATION": "OWNER_AUTHORIZED_WIP_SNAPSHOT_FROM_CODEX",
+  "CODEX_WORKTREE_MODIFIED": "NO",
+  "snapshot_patch": "C:/Users/henri/YomuExperimental/claude-takeover-bulk-selection-v1/codex_wip_tracked.patch",
+  "patch_sha256": "9d4e157e66453da40acd7e357d388c01f07780cde35f396963124e3bdf515dab",
+  "patch_bytes": 26723,
+  "imported_tracked": ["static/tradutor_ui.css","static/tradutor_ui.js","ui/ui_shell.html","yomu/ui/app.py","yomu/ui/ui_bridge.py"],
+  "imported_untracked": ["tests/test_history_bulk_delete_artifact_cards.py"],
+  "skipped_untracked": ["reports/history_bulk_delete_v1/* (Codex's own reports; not part of the feature)"],
+  "equivalence": "all 5 tracked files CONTENT-MATCH Codex working tree (EOL-only diff); feature test identical",
+  "validation": "node --check OK; test_history_bulk_delete_artifact_cards.py 4 passed",
+  "imported_at": "2026-10-04"
+}
