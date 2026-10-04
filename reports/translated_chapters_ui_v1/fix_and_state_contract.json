@@ -1,0 +1,17 @@
+{
+  "fix": "In commitHistoryMarkup: (1) restore synchronously ONLY if the in-place patch actually moved scrollTop; (2) the rAF pass compensates a late layout shift but is SKIPPED when lastUserHistoryScrollAt > startedAt (the user scrolled after capture) and only acts on a real (>1px) shift. (3) lastUserHistoryScrollAt is set by wheel/touchmove/touchstart/keydown (scroll keys) while the history view is active.",
+  "polling_preserved": "YES (renderHistory refresh path unchanged; polling still runs at 850ms)",
+  "scroll_preserved_non_scrolling_user": "YES",
+  "scroll_not_fought_while_scrolling": "YES (monotonic)",
+  "expanded_folder_state": "preserved via appState.expandedFolders (unchanged)",
+  "selection_by_id": "unchanged (keyed patcher uses data-id/data-folder)",
+  "focus_preserved": "the refresh never calls focus(); restore no longer overrides user input",
+  "layout": {
+    "hist_meta_min_width_0": "YES (middle grid column can shrink -> ellipsis)",
+    "long_paths": "ellipsized on their own line (small.rg-path) with full-path title tooltip",
+    "timestamps": "single-line (white-space:nowrap), no char-by-char breaking",
+    "outputs": "review-generation rows tidied (flex-wrap, gaps)",
+    "mode_labels": "preserved (Completo etc. unchanged)"
+  },
+  "preset_ui_untouched": "YES (ui_shell preset selector/Completo not modified)"
+}

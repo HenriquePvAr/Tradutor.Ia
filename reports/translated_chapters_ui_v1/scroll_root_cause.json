@@ -1,0 +1,13 @@
+{
+  "bug_reproduced": "YES",
+  "method": "Faithful component harness extracting the real commitHistoryMarkup/syncHistoryChildren/getHistoryScrollOwner/restoreHistoryScroll into a real scroll container; drove 850ms auto-poll (markup changed each tick) while simulating user scroll via wheel events.",
+  "root_cause": "commitHistoryMarkup re-restored the captured scrollTop on the NEXT animation frame (window.requestAnimationFrame -> restoreHistoryScroll(before.scroll_top)). When a poll's refresh coincided with the user scrolling, that rAF fired AFTER the user moved and yanked scrollTop back to the pre-scroll position. With polling every 850ms and markup changing each tick (card fields), the scroll repeatedly reverted -> 'tela volta/salta' and 'difícil/impossível continuar descendo'.",
+  "evidence": {
+    "before_fix": "user-scroll samples while auto-polling: 540,580,620,660,660,700,740,780,740,780 (monotonic=false -> reversions)",
+    "after_fix": "40,80,120,160,200,240,280,320,360,400 (monotonic=true)",
+    "non_scrolling_user": "position preserved across changed/grow/same polls (1143 throughout, incl. after rAF)"
+  },
+  "polling_interval_ms": 850,
+  "was_full_rerender": "NO (an incremental keyed DOM patcher already existed; the bug was purely the scroll re-restore fighting the user)",
+  "scrollIntoView_or_focus": "NO (renderRuntime does not touch history scroll/focus; no scrollIntoView in the refresh path)"
+}

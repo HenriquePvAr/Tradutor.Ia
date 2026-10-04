@@ -590,8 +590,19 @@
     display:flex; align-items:center; justify-content:center;
     font-family:'Black Han Sans',sans-serif; font-size:20px; color:var(--ink);
   }
-  .hist-meta .hm-title{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:14px;}
-  .hist-meta .hm-sub{font-size:10.5px; color:var(--muted); margin-top:4px; font-family:'JetBrains Mono',monospace;}
+  /* The middle grid column must be allowed to shrink so long paths/stats ellipsize instead
+     of blowing out the card width (owner-reported compressed layout). */
+  .hist-meta{min-width:0;}
+  .hist-meta .hm-title{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:14px; overflow-wrap:anywhere;}
+  .hist-meta .hm-sub{font-size:10.5px; color:var(--muted); margin-top:4px; font-family:'JetBrains Mono',monospace; overflow-wrap:anywhere;}
+  /* Review-generation rows: tidy, with the absolute path on its own ellipsized line + tooltip,
+     and the timestamp never breaking character-by-character. */
+  .review-generation-history{margin-top:10px; display:flex; flex-direction:column; gap:6px; min-width:0;}
+  .review-generation-history > strong{font-size:11px; color:var(--paper);}
+  .review-generation-row{display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; min-width:0;}
+  .review-generation-row > span{font-size:10.5px; color:var(--paper);}
+  .review-generation-row > small{font-size:10px; color:var(--muted); white-space:nowrap;}
+  .review-generation-row > small.rg-path{flex:1 1 100%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:'JetBrains Mono',monospace;}
   .community-author{display:flex; align-items:center; gap:6px; font-family:'Inter',sans-serif;}
   .community-author-mark{width:18px; height:18px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; background:var(--ink); color:var(--paper); font-size:10px; font-weight:700;}
   .hm-badges{display:flex; gap:6px; margin-top:8px;}

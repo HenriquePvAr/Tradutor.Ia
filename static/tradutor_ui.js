@@ -7569,7 +7569,7 @@
     const generationsHtml = generations.length ? `<div class="review-generation-history"><strong>Saídas revisadas</strong>${generations.map(gen => {
       const status = runStatusLabels[gen.status] || gen.status || 'desconhecido';
       const progress = gen.status === 'finished' ? 'concluída' : status;
-      return `<div class="review-generation-row"><span>${escapeHtml(String(gen.output_format || '').toUpperCase())} · ${escapeHtml(progress)} · tentativa ${Number(gen.attempt || 1)}</span><small>${escapeHtml(gen.created_at || '')}</small>${gen.status === 'finished' ? `<button type="button" class="btn-ghost" data-action="review-generation-folder" data-generation-job-id="${escapeAttr(gen.job_id)}">Abrir saída revisada</button>` : ''}${gen.output_path ? `<small>${escapeHtml(gen.output_path)}</small>` : ''}</div>`;
+      return `<div class="review-generation-row"><span>${escapeHtml(String(gen.output_format || '').toUpperCase())} · ${escapeHtml(progress)} · tentativa ${Number(gen.attempt || 1)}</span><small>${escapeHtml(gen.created_at || '')}</small>${gen.status === 'finished' ? `<button type="button" class="btn-ghost" data-action="review-generation-folder" data-generation-job-id="${escapeAttr(gen.job_id)}">Abrir saída revisada</button>` : ''}${gen.output_path ? `<small class="rg-path" title="${escapeAttr(gen.output_path)}">${escapeHtml(gen.output_path)}</small>` : ''}</div>`;
     }).join('')}</div>` : '';
     return `<div class="hist-item" data-id="${escapeAttr(record.id || '')}">
       <div class="hist-cover" style="background:${engine === 'rapid' ? '#2f7a6b' : '#c9a227'}">${escapeHtml(title.slice(0, 1).toUpperCase())}</div>
@@ -7688,11 +7688,14 @@
   // Patch keyed groups/cards in place. A changed field updates its card; the
   // scroll container and unaffected focused/expanded nodes stay mounted.
   let renderedHistoryHtml = null;
+  // Set by the user-input listeners below; read by commitHistoryMarkup's scroll restore.
+  let lastUserHistoryScrollAt = 0;
   function commitHistoryMarkup(list, html, reason = 'unspecified') {
     const view = $('#view-hist');
     const preserve = Boolean(view?.classList.contains('active') && !view.hidden);
     const owner = preserve ? getHistoryScrollOwner(list) : null;
     const before = historyScrollMetrics(owner);
+    const startedAt = performance.now();
     const changed = renderedHistoryHtml !== html;
     if (!changed && list.childNodes.length) {
       uiTrace('HISTORY_RENDER_COMMIT', {...before, reason, markup_changed: false,
@@ -7704,9 +7707,19 @@
     const changes = {count: 0};
     syncHistoryChildren(list, template.content, changes);
     renderedHistoryHtml = html;
-    if (preserve && owner && before.scroll_top > 0) {
-      restoreHistoryScroll(owner, before.scroll_top);
-      window.requestAnimationFrame(() => restoreHistoryScroll(owner, before.scroll_top));
+    if (preserve && owner) {
+      // The in-place patch should leave scrollTop untouched; restore synchronously only if it
+      // actually moved (e.g. nodes were replaced/reordered). The rAF pass compensates a LATE
+      // layout shift (images/max-height transitions) but must NEVER fight the user: if the user
+      // scrolled (wheel/touch/keyboard) after we captured the position, we leave their scroll
+      // alone. This is what caused the "volta/salta" during 850ms polling.
+      if (owner.scrollTop !== before.scroll_top) restoreHistoryScroll(owner, before.scroll_top);
+      window.requestAnimationFrame(() => {
+        if (lastUserHistoryScrollAt > startedAt) return;
+        if (Math.abs(Number(owner.scrollTop || 0) - before.scroll_top) > 1) {
+          restoreHistoryScroll(owner, before.scroll_top);
+        }
+      });
     }
     uiTrace('HISTORY_RENDER_COMMIT', {...before, reason, markup_changed: changed,
       changed_nodes: changes.count, record_count: appState.history.length});
@@ -7764,6 +7777,19 @@
       }
     }, 100);
   }
+  // A history refresh must never restore scroll over an input the user just made (see
+  // commitHistoryMarkup). lastUserHistoryScrollAt is declared above, next to renderedHistoryHtml.
+  function markUserHistoryScroll() {
+    if ($('#view-hist')?.classList.contains('active')) lastUserHistoryScrollAt = performance.now();
+  }
+  ['wheel', 'touchmove', 'touchstart', 'keydown'].forEach(type =>
+    document.addEventListener(type, event => {
+      if (type === 'keydown') {
+        const keys = ['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' ', 'Spacebar'];
+        if (!keys.includes(event.key)) return;
+      }
+      markUserHistoryScroll();
+    }, {passive: true, capture: true}));
   document.addEventListener('scroll', event => {
     if (!$('#view-hist')?.classList.contains('active')) return;
     const owner = getHistoryScrollOwner();
