@@ -6,7 +6,15 @@
   "bug_B_checkbox_visual": "FIXED (custom box: empty -> gold with dark ✓ when checked; card gold border; native input kept hidden for keyboard/screen-reader; focus ring). Verified in-browser.",
   "bug_C_auth_startup": "NOT A BUG (unauthenticated -> official login shown and fully rendered; assets bundled). No change (forcing login would break Lembrar de mim).",
   "selected_card_visual": "gold, not red",
-  "bulk_delete": "PRESERVED", "artifact_cards": "PRESERVED (PDF-only -> PDF)",
-  "providers": 0, "secrets": 0, "push": "NO",
-  "owner_review": "AWAITING"
+  "bulk_delete": "PRESERVED",
+  "artifact_cards": "PRESERVED (PDF-only -> PDF)",
+  "providers": 0,
+  "secrets": 0,
+  "push": "NO",
+  "owner_review": "AWAITING",
+  "full_regression": "5807 passed, 141 skipped, 2 xfailed, 0 failures",
+  "build": "PASS (PyInstaller 6.22.2 / .venv-beta)",
+  "exe": "C:/Users/henri/YomuExperimental/history-final-scroll-selection-auth-v1/dist/YomuSekai/YomuSekai.exe",
+  "exe_sha256": "a453295f1506e32e988dee04346cc7892410085393d58ee4a61eaa9f3861053c",
+  "exe_started": "YES (backend LISTENING 127.0.0.1:8080; serves checkbox fix; old instances closed; single instance)"
 }
