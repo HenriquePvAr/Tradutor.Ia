@@ -21,8 +21,14 @@
   },
   "build_smoke": "BLOCKED: PyInstaller not installed. Mitigations: node --check static/tradutor_ui.js OK; fresh-process import of ui modules OK; .spec bundles yomu via collect_submodules; UI change adds no new Python imports.",
   "desktop_smoke": "BLOCKED: same (no frozen binary without PyInstaller). Component UI verified in-browser instead.",
-  "security": {"secrets": 0, "large_files": 0, "remote_provider_calls": 0, "production_mutations": 0},
+  "security": {
+    "secrets": 0,
+    "large_files": 0,
+    "remote_provider_calls": 0,
+    "production_mutations": 0
+  },
   "root_policy": "PASS (no new root modules; UI files in ui/ + static/; backend in yomu/)",
   "codex_worktrees_touched": "NO",
-  "next_step": "Discord observability (per roadmap)."
+  "next_step": "Discord observability (per roadmap).",
+  "full_regression": "5769 passed, 141 skipped, 2 xfailed, 0 failures (baseline 5757; +12 new tests)"
 }
