@@ -90,7 +90,8 @@ def run_clean_strategy(request: CleanRequest, local_result: dict[str, Any], *,
         return _review(request, reason="alignment_failed", local_status=local_status,
                        fallback_invoked=True, fallback_status="ALIGNMENT_FAIL")
     seam_score = float(remote.get("seam_score") or 0.0)
-    if seam_score < SEAM_PASS_THRESHOLD:
+    # The worker's seam score is a discontinuity/error metric: lower is safer.
+    if seam_score > SEAM_PASS_THRESHOLD:
         return _review(request, reason="seam_failed", local_status=local_status,
                        fallback_invoked=True, fallback_status="SEAM_FAIL", seam_score=seam_score)
     if outside_changed != 0:

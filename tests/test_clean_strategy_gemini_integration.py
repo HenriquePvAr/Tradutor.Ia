@@ -16,7 +16,7 @@ def _request():
 
 
 def _remote(**overrides):
-    payload = {"status": "COMPLETED", "raw_image": np.full((4, 4, 3), 200, dtype=np.uint8), "seam_score": 0.9}
+    payload = {"status": "COMPLETED", "raw_image": np.full((4, 4, 3), 200, dtype=np.uint8), "seam_score": 0.1}
     payload.update(overrides)
     return lambda _request: payload
 
@@ -65,7 +65,7 @@ def test_timeout_alignment_seam_and_outside_fail_closed():
     bad_shape = run_clean_strategy(request, {"status": LOCAL_RECONSTRUCTION_HARD},
                                    fallback=_remote(raw_image=np.zeros((3, 3, 3), dtype=np.uint8)))
     assert bad_shape["fallback_status"] == "ALIGNMENT_FAIL"
-    seam = run_clean_strategy(request, {"status": LOCAL_RECONSTRUCTION_HARD}, fallback=_remote(seam_score=0.79))
+    seam = run_clean_strategy(request, {"status": LOCAL_RECONSTRUCTION_HARD}, fallback=_remote(seam_score=0.81))
     assert seam["fallback_status"] == "SEAM_FAIL"
     violating = np.full((4, 4, 3), 200, dtype=np.uint8)
     outside = run_clean_strategy(request, {"status": LOCAL_RECONSTRUCTION_HARD},
