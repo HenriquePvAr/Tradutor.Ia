@@ -1,0 +1,1 @@
+{"runs":3,"dataset_requests":2,"batch_mean_seconds":55.233,"batch_median_seconds":38.178,"batch_stddev_seconds":29.847,"throughput_requests_per_minute":2.173,"request_phase_mean_ms":{"generation":37850.387,"upload":4356.234,"recovery":132.861,"validation":405.652},"completed":6,"review":0,"errors":0}

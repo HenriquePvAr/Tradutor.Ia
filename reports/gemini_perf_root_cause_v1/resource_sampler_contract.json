@@ -1,0 +1,1 @@
+{"interval_seconds":2,"backend":"psutil_or_proc_fallback","metrics":["cpu_mean","cpu_peak","ram_mean","ram_peak","load_mean","load_peak","swap_activity","process_rss"],"sampler_failure_is_nonfatal":true}

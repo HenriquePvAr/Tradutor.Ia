@@ -1,0 +1,1 @@
+{"cpu_mean_c1_percent":6.649,"cpu_mean_c2_percent":8.718,"cpu_peak_c1_percent":36.07,"cpu_peak_c2_percent":59.7,"load_peak_c2":0.97,"cpu_bound":false,"conclusion":"CPU usage rises under C2 but Oracle was not saturated"}

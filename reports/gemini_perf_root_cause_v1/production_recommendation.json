@@ -1,0 +1,1 @@
+{"production_default":1,"two_slot_support":"EXPERIMENTAL","enable_c2_now":false,"reason":"C2 wins this controlled sample but variance is high and dataset has only two requests","next_action":"repeat with 6-10 consumed requests and 5 interleaved runs before changing default","chrome_architecture":"keep one Chrome/two tabs; do not test two browsers yet"}

@@ -1,0 +1,1 @@
+{"dataset_requests":2,"c1_runs":3,"c2_runs":3,"c1_mean_seconds":93.632,"c2_mean_seconds":55.233,"c1_median_seconds":84.661,"c2_median_seconds":38.178,"c1_stddev_seconds":28.446,"c2_stddev_seconds":29.847,"mean_speedup":1.695,"c1_requests_per_minute":1.282,"c2_requests_per_minute":2.173,"classification":"C2_WIN_WITH_HIGH_VARIANCE"}

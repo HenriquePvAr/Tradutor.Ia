@@ -53,3 +53,21 @@ The A+B and C+D gates proved real temporal overlap and zero cross-slot/stale out
 The small benchmark did not show a speedup (C1 136.404s; C2 154.389s), so
 `max_concurrency=2` is not recommended as the production default yet. Resource peaks
 were not sampled during those runs and must be measured before a default change.
+
+## Controlled performance root-cause experiment
+
+The follow-up experiment kept one Chrome, the same two persistent chats, the same
+consumed input pair, prompt, masks and validation path, and interleaved three C1 and
+three C2 batch runs. Each request records monotonic provider phases for slot acquire,
+page readiness, upload, prompt, Gemini generation detection and raw recovery; the
+worker records alignment and validation/compositing totals. A 2-second VPS sampler
+records CPU, RSS, load, swap and matching Chrome/worker processes using psutil or a
+native `/proc` fallback.
+
+Across the controlled sample, C1 averaged 93.632 seconds per two-request batch and C2
+55.233 seconds (1.695x mean speedup). Gemini generation dominated the path and had
+high variance in both modes; upload, recovery and validation ratios were approximately
+1.0x or lower under C2. CPU and RAM rose modestly under C2, but the 4-OCPU Oracle had
+load peak below 1.0 and no swap activity. This supports keeping C2 experimental rather
+than changing the production default: repeat with 6–10 consumed inputs and five runs
+before enabling it for normal traffic.

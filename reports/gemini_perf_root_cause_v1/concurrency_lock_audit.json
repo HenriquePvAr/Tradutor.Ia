@@ -1,0 +1,1 @@
+{"manager_lock":"RLock for persistent state only","global_browser_lock":false,"global_generation_lock":false,"global_upload_lock":false,"single_page_helper":false,"acquire_wait_observed":"sub-millisecond in phase timing","lock_serialization":"NO_EVIDENCE","result":"PASS"}

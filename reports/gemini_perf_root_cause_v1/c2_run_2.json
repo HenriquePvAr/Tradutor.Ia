@@ -1,0 +1,1 @@
+{"run_id":"C2-2","jobs":["perf3-c2-r3-a","perf3-c2-r3-b"],"batch_seconds":89.697,"request_seconds":[89.697,37.637],"generation_ms":[81512.191,30137.016],"upload_ms":[4957.995,4723.459],"recovery_ms":[140.583,81.162],"validation_ms":[390.153,424.497],"overlap_ms":30218.9,"completed":2,"review":0,"errors":0,"safety":{"cross_mix":0,"stale":0,"outside_mask":0,"sfx":0}}

@@ -1,0 +1,1 @@
+{"one_chrome":true,"renderer_processes_observed":7,"cpu_and_ram_increase_c2":true,"local_phase_slowdown":false,"page_evaluate_latency":"not separately sampled","conclusion":"possible shared-process cost but not dominant in measured phases"}

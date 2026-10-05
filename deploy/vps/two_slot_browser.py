@@ -11,6 +11,7 @@ from research.gemini_hard_clean_fallback.contracts import PROMPT_PROFILE
 from research.gemini_vps_web_worker.browser import GeminiWebProvider
 from chat_correlation import require_fresh_source
 from multi_slot_manager import MultiSlotManager
+from perf_timing import PhaseTimer
 
 
 class TwoSlotGeminiProvider(GeminiWebProvider):
@@ -57,8 +58,12 @@ class TwoSlotGeminiProvider(GeminiWebProvider):
 
     def submit_and_recover(self, input_path: str | Path, output_path: str | Path, *, job_id: str) -> dict:
         request_id = hashlib.sha256(f"{job_id}:{time.time_ns()}".encode()).hexdigest()[:16]
+        timer = PhaseTimer()
+        timer.mark("slot_acquire_start_at")
         slot = self.slots.acquire(job_id, request_id)
+        timer.mark("slot_acquired_at")
         page = self._page_for(slot.slot_id)
+        timer.mark("page_ready_at")
         started = time.time()
         rotation_needed = False
         try:
@@ -71,18 +76,23 @@ class TwoSlotGeminiProvider(GeminiWebProvider):
             self.slots.observe_chat(slot.slot_id, page.url)
             baseline = self._baseline(page)
             self.slots.transition(slot.slot_id, "UPLOADING")
+            timer.mark("upload_start_at")
             files = page.locator('input[type="file"]')
             if files.count() == 0:
                 page.get_by_role("button", name="Envio e ferramentas", exact=True).click()
                 files = page.locator('input[type="file"]')
                 files.first.wait_for(state="attached", timeout=10000)
             files.first.set_input_files(str(input_path))
+            timer.mark("upload_end_at")
             self.slots.transition(slot.slot_id, "PROMPTING")
+            timer.mark("prompt_start_at")
             page.get_by_text(re.compile("Imagem enviada|uploaded", re.I)).last.wait_for(timeout=30000)
             prompt = page.get_by_role("textbox").last
             prompt.fill("")
             prompt.fill(PROMPT_PROFILE)
+            timer.mark("prompt_end_at")
             generation_started = time.time()
+            timer.mark("generation_wait_start_at")
             self.slots.transition(slot.slot_id, "GENERATING")
             generation_seq = self.slots.next_generation(slot.slot_id)
             prompt.press("Enter")
@@ -100,7 +110,9 @@ class TwoSlotGeminiProvider(GeminiWebProvider):
                 self.slots.mark_rotation(slot.slot_id, "STALE_OUTPUT_OR_GENERATION_STUCK")
                 rotation_needed = True
                 raise RuntimeError("stale_output_rejected")
+            timer.mark("generation_detected_at")
             self.slots.transition(slot.slot_id, "RECOVERING")
+            timer.mark("raw_recovery_start_at")
             cdp = self.context.new_cdp_session(page)
             expr = """async (wanted) => { const img=[...document.images].find(x=>(x.currentSrc||x.src)===wanted&&x.naturalWidth>0); if(!img) throw new Error('new image disappeared'); try { const r=await fetch(img.currentSrc||img.src); const b=new Uint8Array(await r.arrayBuffer()); let s=''; for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode(...b.subarray(i,i+0x8000)); return {base64:btoa(s),width:img.naturalWidth,height:img.naturalHeight}; } catch(_) { const c=document.createElement('canvas'); c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext('2d').drawImage(img,0,0); return {dataUrl:c.toDataURL('image/png'),width:img.naturalWidth,height:img.naturalHeight}; } }"""
             evaluated = cdp.send("Runtime.evaluate", {"expression": f"({expr}).call(null, {source!r})", "awaitPromise": True, "returnByValue": True})
@@ -111,12 +123,14 @@ class TwoSlotGeminiProvider(GeminiWebProvider):
             data = base64.b64decode(encoded, validate=True)
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_bytes(data)
+            timer.mark("raw_recovery_end_at")
             self.slots.transition(slot.slot_id, "VALIDATING")
             self.slots.observe_chat(slot.slot_id, page.url)
             return {"job_id": job_id, "slot_id": slot.slot_id, "generation_seq": generation_seq,
                     "chat_reused": bool(generation_seq > 1), "bytes": len(data), "width": result["width"],
                     "height": result["height"], "send_started_at": generation_started,
                     "generation_finished_at": time.time(), "duration_seconds": time.time() - started,
+                    "performance_timing": timer.export(),
                     "stale_output_rejected": False}
         except Exception:
             if not rotation_needed:

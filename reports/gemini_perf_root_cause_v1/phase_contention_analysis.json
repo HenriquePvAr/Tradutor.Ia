@@ -1,0 +1,1 @@
+{"ratios_c2_over_c1":{"generation":0.956,"upload":0.970,"recovery":0.998,"validation":0.999},"dominant_phase":"Gemini generation","local_validation_contention":false,"interpretation":"C2 did not slow the measured local phases; batch gain comes from overlapping remote generation"}
