@@ -1,0 +1,19 @@
+{
+  "mission": "YOMU_CLEAN_ONLY_UI_TO_OUTPUTPLAN_PROPAGATION_ROOT_CAUSE_AND_FIX_V1",
+  "observed_job_id": "a9ad16f20e5546eda0bfc54391c11109",
+  "observed_run_id": "ce400d7f-9476-4bfa-85d8-4ee08e2cbda3",
+  "ui_selected": "apenas_clean",
+  "failure_layer": "job_configuration_persistence",
+  "root_cause": "UiBridge._normalize_payload produced the explicit clean-only plan, but _create_job and the local-folder configuration path did not persist output_plan or effective_operations. The runner therefore saw translation_enabled=false without the plan and reconstructed an empty legacy plan, so CLEAN was skipped.",
+  "evidence": {
+    "persisted_requested_mode": "quality",
+    "persisted_requested_scope": "full",
+    "persisted_translation_enabled": false,
+    "persisted_output_plan": null,
+    "persisted_effective_operations": null,
+    "translation_stage": "skipped_disabled",
+    "clean_artifacts": 0,
+    "provider_attempts": 0
+  },
+  "fixed": true
+}

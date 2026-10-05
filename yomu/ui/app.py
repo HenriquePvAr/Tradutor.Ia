@@ -1392,6 +1392,12 @@ def api_source_report(
 
 def required_yk_for_run(payload: dict[str, Any]) -> int:
     """Return the local entitlement cost without contacting the remote wallet."""
+    if payload.get("output_plan") is not None:
+        from yomu.runtime.output_plan import normalize_output_plan
+
+        plan = normalize_output_plan(
+            payload.get("output_plan"), operations=payload.get("operations"))
+        return 1 if plan.translation_enabled else 0
     return 0 if payload.get("download_only") is True else 1
 
 

@@ -5418,6 +5418,22 @@ class UiBridge:
         }
 
     @staticmethod
+    def _output_plan_configuration_snapshot(normalized: dict[str, Any]) -> dict[str, Any]:
+        """Persist the authoritative UI output plan at the job boundary.
+
+        The runner cannot reconstruct an explicit preset from legacy knobs alone:
+        ``apenas_clean`` intentionally has translation disabled, which otherwise
+        looks like an empty plan.  Keep the preset and its requested/effective
+        operation sets together in the durable job configuration.
+        """
+        fields = {"output_plan": str(normalized.get("output_plan") or "")}
+        for name in ("requested_operations", "effective_operations"):
+            value = normalized.get(name)
+            if value is not None:
+                fields[name] = list(value)
+        return fields
+
+    @staticmethod
     def _normalize_output_profile(value: object) -> str:
         profile = str(value or "").strip().lower()
         allowed = {OutputProfile.AUTOMATIC, OutputProfile.PROFESSIONAL_QC}
@@ -5757,6 +5773,7 @@ class UiBridge:
             "output_profile": normalized["output_profile"],
             "typesetting_mode": normalized.get("typesetting_mode", "on"),
         })
+        configuration.update(self._output_plan_configuration_snapshot(normalized))
         configuration.update(self._translation_configuration_snapshot(payload, normalized))
         configuration = self._seal_translation_context(
             current, configuration, principal=principal,
@@ -6361,6 +6378,7 @@ class UiBridge:
             "source_selection": source_selection or {},
             "chapter_slug": normalized["slug"],
         }
+        configuration.update(self._output_plan_configuration_snapshot(normalized))
         configuration.update(self._translation_configuration_snapshot(payload, normalized))
         idempotency_key = self._idempotency_key(payload)
         if idempotency_key:
@@ -6388,8 +6406,10 @@ class UiBridge:
                 )
 
                 requested_operations = (
-                    ["analyze_metadata", "download_assets"]
-                    if normalized["download_only"] else list(PIPELINE_OPERATIONS)
+                    list(normalized["requested_operations"])
+                    if normalized.get("requested_operations") is not None
+                    else (["analyze_metadata", "download_assets"]
+                          if normalized["download_only"] else list(PIPELINE_OPERATIONS))
                 )
                 requested_scope = (
                     "full" if normalized["full"] else str(normalized["max_images"])

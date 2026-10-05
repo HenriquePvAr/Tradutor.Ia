@@ -1,0 +1,10 @@
+{
+  "result": "PASS",
+  "exe": "C:/Users/henri/YomuExperimental/clean-only-ui-outputplan-v1/dist/YomuSekai/YomuSekai.exe",
+  "window_title": "Yomu Sekai",
+  "window_visible": true,
+  "backend_listen": "127.0.0.1:8080",
+  "automatic_interaction": false,
+  "job_started": false,
+  "owner_physical_retest": "READY"
+}

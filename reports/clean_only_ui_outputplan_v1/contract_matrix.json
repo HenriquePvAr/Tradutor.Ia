@@ -1,0 +1,11 @@
+{
+  "mission": "YOMU_CLEAN_ONLY_UI_TO_OUTPUTPLAN_PROPAGATION_ROOT_CAUSE_AND_FIX_V1",
+  "matrix": [
+    {"preset": "traducao_pronta", "translation": true, "effective_operations": ["clean", "pdf", "translate", "typeset"]},
+    {"preset": "apenas_clean", "translation": false, "effective_operations": ["clean"], "yk_cost": 0},
+    {"preset": "apenas_traducao", "translation": true, "effective_operations": ["translate"]},
+    {"preset": "traducao_clean", "translation": true, "effective_operations": ["clean", "translate"]},
+    {"preset": "profissional", "translation": true, "effective_operations": ["clean", "pdf", "psd", "qc", "translate", "typeset"]}
+  ],
+  "source_of_truth": "yomu.runtime.output_plan.normalize_output_plan"
+}

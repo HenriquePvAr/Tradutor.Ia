@@ -245,6 +245,16 @@ class SubmitTests(unittest.TestCase):
         job = self.bridge.store.get_job(result["job_id"])
         self.assertEqual(job["status"], JobStatus.QUEUED)
 
+    def test_clean_only_persists_output_plan_and_effective_operations(self):
+        result = self.start(output_plan="apenas_clean")
+        job = self.bridge.store.get_job(result["job_id"])
+        config = job["configuration"]
+        self.assertEqual(config["output_plan"], "apenas_clean")
+        self.assertEqual(config["requested_operations"], ["clean"])
+        self.assertEqual(config["effective_operations"], ["clean"])
+        self.assertFalse(config["translation_enabled"])
+        self.assertEqual(config["output_format"], "png")
+
     def test_download_only_does_not_require_translation_auth_handoff(self):
         with mock.patch("yomu.auth.secure_auth_context.AuthEnvelopeStore.seal") as seal:
             result = self.start(download_only=True, translation_enabled=True)

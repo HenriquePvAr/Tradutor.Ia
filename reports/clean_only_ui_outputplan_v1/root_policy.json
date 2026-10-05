@@ -1,0 +1,8 @@
+{
+  "safe_compositing_changed": false,
+  "authorized_mask_changed": false,
+  "ocr_changed": false,
+  "gemini_worker_changed": false,
+  "production_e2e_started_after_fix": false,
+  "owner_retest_required": true
+}

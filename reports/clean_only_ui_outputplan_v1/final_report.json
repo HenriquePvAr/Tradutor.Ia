@@ -1,0 +1,21 @@
+{
+  "mission": "YOMU_CLEAN_ONLY_UI_TO_OUTPUTPLAN_PROPAGATION_ROOT_CAUSE_AND_FIX_V1",
+  "mission_result": "PASS",
+  "ui_selected": "Apenas Clean",
+  "payload_output_preset": "apenas_clean",
+  "backend_persisted_preset": "apenas_clean",
+  "processing_mode": "quality (processing strategy only)",
+  "scope": "full",
+  "outputplan": {"translate": false, "clean": true, "typeset": false, "pdf": false, "psd": false, "qc": false},
+  "deepl_expected": false,
+  "yk_expected": 0,
+  "fix": "Persist explicit output-plan provenance and use it when deriving requested operations; calculate zero YK for explicit translation-free presets.",
+  "focused_tests": "119 passed",
+  "full_tests": "5867 passed, 141 skipped, 2 xfailed",
+  "build": "PASS",
+  "desktop_smoke": "PASS; updated visible EXE left open for owner",
+  "sha256": "60A0CC19877779E16776FD9DC561CD32FBECA40680C507EA7AA74D067B4B909F",
+  "push": "NO",
+  "owner_retest_required": true,
+  "owner_retest_command": "Select Apenas Clean in the updated desktop and start one real job; verify clean images and no translation/provider charge."
+}

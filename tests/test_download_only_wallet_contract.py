@@ -14,3 +14,7 @@ def test_normal_translation_keeps_one_yk_cost():
 
 def test_download_only_does_not_require_provider_credentials_by_contract():
     assert required_yk_for_run({"download_only": True}) == 0
+
+
+def test_clean_only_has_zero_yk_cost_without_being_download_only():
+    assert required_yk_for_run({"output_plan": "apenas_clean"}) == 0

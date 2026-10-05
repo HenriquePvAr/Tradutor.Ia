@@ -1,0 +1,9 @@
+{
+  "build": "PASS",
+  "pyinstaller": "6.22.2",
+  "python_environment": "C:/Projetos/Tradutor.Ia/.venv-beta",
+  "exe": "C:/Users/henri/YomuExperimental/clean-only-ui-outputplan-v1/dist/YomuSekai/YomuSekai.exe",
+  "sha256": "60A0CC19877779E16776FD9DC561CD32FBECA40680C507EA7AA74D067B4B909F",
+  "source_head": "710ee9a14c3bef402e690b733df50dd6a22c5050",
+  "output_isolated": true
+}
