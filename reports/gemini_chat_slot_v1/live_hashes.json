@@ -1,0 +1,10 @@
+{
+  "hashes_are_truncated": true,
+  "requests": [
+    {"job":"chat-slot-v1-c","generation_seq":3,"input_sha256":"174a92a4edd3","raw_sha256":"296cf5dd24cc","final_sha256":"109849d579c9"},
+    {"job":"chat-slot-v1-d","generation_seq":4,"input_sha256":"26940d01963f","raw_sha256":"8c7f3646c27b","final_sha256":"1c723481a6b2"},
+    {"job":"chat-slot-v1-e","generation_seq":5,"input_sha256":"26940d01963f","raw_sha256":"0a240abdc55f","final_sha256":"22ecb10ace7d"},
+    {"job":"chat-slot-v1-f","generation_seq":6,"input_sha256":"174a92a4edd3","raw_sha256":"dd30b77a50d2","final_sha256":"9bea2e4ab606"},
+    {"job":"chat-slot-v1-g","generation_seq":7,"input_sha256":"26940d01963f","raw_sha256":"9da11a2d8d2b","final_sha256":"76fcaa65ca2a"}
+  ]
+}
