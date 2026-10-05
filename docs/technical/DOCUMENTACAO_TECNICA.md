@@ -2857,6 +2857,15 @@ spoofing de fingerprint ou bypass de CAPTCHA. `YOMU_COMIX_CF_AUTOCAPTURE=1` é h
 no processo UI; `YOMU_DISABLE_COMIX_CF_PROFILE=1` desabilita a reutilização. Expiração retorna ao
 estado recuperável `waiting_source_verification`.
 
+**Gate de isolamento no retry automático.** `discover_chapter_source` dispara a captura
+automática somente quando `SourceError.code == "dynamic_source_unavailable"` **e**
+`SourceError.detail` não é um código de falha de infraestrutura local
+(`dynamic_resolver_isolation_unavailable`, `dynamic_resolver_child_cleanup_failed`). Falhas
+de isolamento — subprocesso não inicia, job object falha — não são corrigíveis por clearance
+CF e não devem disparar a captura. O subprocesso do resolver usa
+`CREATE_BREAKAWAY_FROM_JOB` (0x01000000) para escapar de job objects herdados do launcher
+PyInstaller antes de ser atribuído ao kill-job próprio.
+
 **Limitação conhecida — capítulos Comix grandes.** Um capítulo com muitas páginas (ex.: ~147
 slots) **não** materializa por completo dentro dos 180 s: a materialização por canvas é
 serial e lenta. O resultado é um **erro terminal seguro e específico**
