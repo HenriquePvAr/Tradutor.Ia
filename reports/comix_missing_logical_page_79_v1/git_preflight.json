@@ -1,0 +1,8 @@
+{
+  "branch": "integration/main-candidate-comix-ui-v1",
+  "head_before_fix": "d9545fee7ab255f3f480b33dde6682f1d4c34aed",
+  "worktree": "C:/Users/henri/.codex/worktrees/main-candidate-comix-ui-v1/Tradutor.Ia",
+  "status_before_fix": "clean",
+  "push": "NO",
+  "destructive_git_operations": false
+}

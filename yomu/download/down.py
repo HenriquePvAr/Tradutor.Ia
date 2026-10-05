@@ -2441,16 +2441,42 @@ def _parse_srcset_width(value):
 
 
 def _dedupe_candidates(candidates):
-    seen = set()
+    seen = {}
     unique = []
+
+    def logical_index(item):
+        try:
+            return int(item.get("logical_page_index") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     for item in candidates:
         url = _normalize_url(item.get("url", ""))
-        if not url or url in seen:
+        if not url:
             continue
-        seen.add(url)
         item = dict(item)
         item["url"] = url
+        prior_items = seen.setdefault(url, [])
+        if prior_items:
+            candidate_id = str(item.get("candidate_id") or "")
+            current_logical_index = logical_index(item)
+            preserve_distinct_slot = any(
+                bool(item.get("isChapterCandidate"))
+                and bool(previous.get("isChapterCandidate"))
+                and candidate_id
+                and candidate_id != str(previous.get("candidate_id") or "")
+                and current_logical_index > 0
+                and logical_index(previous) > 0
+                and current_logical_index != logical_index(previous)
+                for previous in prior_items
+            )
+            preserve_distinct_slot = preserve_distinct_slot and not any(
+                current_logical_index == logical_index(previous)
+                for previous in prior_items
+            )
+            if not preserve_distinct_slot:
+                continue
+        prior_items.append(item)
         unique.append(item)
 
     return unique

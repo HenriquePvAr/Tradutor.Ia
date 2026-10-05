@@ -1,0 +1,17 @@
+{
+  "focused": {
+    "command": "python -m pytest tests/test_downloader_regressions.py tests/test_large_chapter_download_budget.py -q",
+    "passed": 74,
+    "failed": 0
+  },
+  "full": {
+    "command": "python -m pytest -q",
+    "passed": 5865,
+    "skipped": 141,
+    "xfailed": 2,
+    "failed": 0,
+    "subtests": 732,
+    "warnings": 1
+  },
+  "new_failures": 0
+}

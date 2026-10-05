@@ -1,0 +1,23 @@
+{
+  "test_type": "controlled_source_download_only",
+  "synthetic_full_pipeline": false,
+  "ocr": false,
+  "translation": false,
+  "clean": false,
+  "gemini": false,
+  "typeset": false,
+  "candidate_count": 105,
+  "downloaded_count": 105,
+  "download_gate": "PASS",
+  "missing_logical_indices": [],
+  "alias_case": {
+    "logical_indices": [69, 79],
+    "same_canvas_url": true,
+    "distinct_candidate_ids": true,
+    "both_materialized": true
+  },
+  "duplicate_same_slot_rejected": true,
+  "network": "not_used; inline canvas fixture",
+  "real_job_recovery_executed": false,
+  "reason_real_job_not_repeated": "The mission requires root-cause isolation before any new real job; the fix was validated hermetically first."
+}

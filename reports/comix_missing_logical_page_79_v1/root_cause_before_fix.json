@@ -1,0 +1,46 @@
+{
+  "mission": "YOMU_COMIX_MISSING_LOGICAL_PAGE_79_DOWNLOAD_ROOT_CAUSE_AND_RECOVERY_V1",
+  "job_id": "e0b1f43f82c24bc3b05117a0acf7333b",
+  "run_id": "06c21ec1-b54f-4130-a92b-27a15ac38900",
+  "branch": "integration/main-candidate-comix-ui-v1",
+  "head_before_fix": "d9545fee7ab255f3f480b33dde6682f1d4c34aed",
+  "expected_logical_pages": 105,
+  "downloaded_logical_pages": 104,
+  "missing_logical_pages": [79],
+  "source_manifest": {
+    "accepted_candidates": 105,
+    "reader_resolved": 105,
+    "page_69": {
+      "candidate_id": "33011330ec148744359d",
+      "logical_page_index": 69,
+      "url": "canvas:286669d487ed7c4960c7"
+    },
+    "page_79": {
+      "candidate_id": "fe9da54f1f10c9d9fa04",
+      "logical_page_index": 79,
+      "url": "canvas:286669d487ed7c4960c7"
+    },
+    "page_80": {
+      "candidate_id": "07c6d4e4a49de0598a33",
+      "logical_page_index": 80
+    }
+  },
+  "download_report": {
+    "transport": "canvas",
+    "total_unique_urls": 104,
+    "total_downloaded": 104,
+    "retry_count": 0,
+    "network_failure_count": 0,
+    "missing_candidate_id": "fe9da54f1f10c9d9fa04",
+    "gate_reasons": ["viewer_images_missing", "viewer_count_mismatch", "incomplete_logical_pages"]
+  },
+  "root_cause": {
+    "kind": "pre_download_url_dedupe_dropped_distinct_manifest_slot",
+    "file": "yomu/download/down.py",
+    "function": "_dedupe_candidates",
+    "evidence": "The function retained only the first candidate for each normalized URL. Pages 69 and 79 had distinct candidate IDs and logical indices but the same canvas URL, so page 79 was removed before materialization; no retry could occur."
+  },
+  "safe_scope": "Fix candidate deduplication only; preserve distinct accepted chapter slots and leave OCR, translation, CLEAN, Gemini, compositing, and output stages unchanged.",
+  "targeted_recovery_needed": false,
+  "secrets_redacted": true
+}

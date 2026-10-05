@@ -26,6 +26,7 @@ from yomu.download.down import (
     _build_download_gate,
     _capture_driver_ownership,
     _candidate_skip_reason,
+    _dedupe_candidates,
     _download_candidates,
     _persist_download_metadata,
     _process_matches_ownership,
@@ -1120,6 +1121,32 @@ class DownloaderRegressionTests(unittest.TestCase):
             self.assertTrue(report["download_gate"]["passed"])
             self.assertEqual(report["download_gate"]["missing_viewer_images"], 0)
             self.assertNotIn("duplicate_image_bytes", [item["reason"] for item in report["ignored"]])
+
+    def test_distinct_logical_slots_sharing_canvas_url_are_not_deduped(self):
+        candidates = [
+            {
+                "candidate_id": "page-69",
+                "logical_page_index": 69,
+                "url": "canvas://same-render-token",
+                "isChapterCandidate": True,
+            },
+            {
+                "candidate_id": "page-79",
+                "logical_page_index": 79,
+                "url": "canvas://same-render-token",
+                "isChapterCandidate": True,
+            },
+            {
+                "candidate_id": "page-79-duplicate",
+                "logical_page_index": 79,
+                "url": "canvas://same-render-token",
+                "isChapterCandidate": True,
+            },
+        ]
+
+        result = _dedupe_candidates(candidates)
+
+        self.assertEqual([item["candidate_id"] for item in result], ["page-69", "page-79"])
 
     def test_lazy_placeholder_uses_declared_chapter_dimensions(self):
         candidate = {

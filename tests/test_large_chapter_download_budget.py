@@ -105,6 +105,39 @@ def _download(count: int, limits: DownloadLimits, tmp: str):
 
 
 class LargeChapterDownloadBudgetTests(unittest.TestCase):
+    def test_105_page_canvas_chapter_preserves_distinct_slots_with_same_url(self):
+        candidates = _canvas_candidates(105)
+        # Reproduce the Comix reader collision: two accepted logical slots expose
+        # the same canvas identity while retaining distinct manifest identities.
+        candidates[78]["url"] = candidates[68]["url"]
+        report = {
+            "downloaded": [],
+            "ignored": [],
+            "timings": {"download_seconds": 0.0, "validation_seconds": 0.0, "image_save_seconds": 0.0},
+            "expected_chapter_candidate_ids": [item["candidate_id"] for item in candidates],
+        }
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp) / "input"
+            target.mkdir(parents=True, exist_ok=True)
+            saved = down._download_candidates(
+                None,
+                candidates,
+                None,
+                3,
+                None,
+                tmp,
+                report,
+                referer="https://comix.to/reader/",
+                target_folder=str(target),
+                transports=[],
+                parallel_diagnostics={},
+            )
+
+        self.assertEqual(105, len(saved))
+        self.assertEqual(105, len(report["downloaded"]))
+        self.assertTrue(report["download_gate"]["passed"])
+        self.assertEqual([], report["download_gate"]["missing_logical_indices"])
+
     def test_205_page_canvas_chapter_downloads_in_full(self):
         with TemporaryDirectory() as tmp:
             saved, budget, report, target = _download(205, DownloadLimits(), tmp)

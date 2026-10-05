@@ -1,0 +1,19 @@
+{
+  "status": "PASS",
+  "pyinstaller": "6.22.2",
+  "python_environment": "C:/Projetos/Tradutor.Ia/.venv-beta",
+  "source_head": "d9545fee7ab255f3f480b33dde6682f1d4c34aed",
+  "source_worktree": "C:/Users/henri/.codex/worktrees/main-candidate-comix-ui-v1/Tradutor.Ia",
+  "exe": "C:/Users/henri/YomuExperimental/comix-missing-page-79-v1/dist/YomuSekai/YomuSekai.exe",
+  "sha256": "0C69A967AB527218AE165F04D4D64098D9184A36E9C3AF4FBDFBE1FA5CD7A17B",
+  "desktop_smoke": {
+    "status": "PASS",
+    "alive_after_seconds": 8,
+    "terminated_by_smoke": true,
+    "job_started": false
+  },
+  "warning_summary": [
+    "optional browserforge undetected_playwright module unavailable",
+    "optional pycparser/scipy hidden imports unavailable"
+  ]
+}

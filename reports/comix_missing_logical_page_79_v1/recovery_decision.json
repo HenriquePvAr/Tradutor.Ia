@@ -1,0 +1,8 @@
+{
+  "targeted_missing_page_recovery": "NOT_NEEDED",
+  "decision": "FIX_PRE_DOWNLOAD_DEDUPE",
+  "why": "The missing candidate was discarded before any transport or retry path. Preserving the distinct manifest slot restores it to the normal materialization path and avoids a special page-79 retry that would duplicate recovery logic.",
+  "production_default_changed": false,
+  "ocr_translation_clean_gemini_changed": false,
+  "next_real_validation": "Rerun only the source/download stages for the same Comix chapter and confirm 105/105 before allowing downstream stages."
+}
