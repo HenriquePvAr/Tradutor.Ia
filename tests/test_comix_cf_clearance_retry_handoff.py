@@ -151,29 +151,28 @@ def test_clearance_override_reuse_disabled_by_env(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: CREATE_BREAKAWAY_FROM_JOB present in creationflags
+# Isolation failure telemetry
 # ---------------------------------------------------------------------------
 
-def test_create_breakaway_from_job_flag_included_in_child_command():
-    """Popen creationflags must include CREATE_BREAKAWAY_FROM_JOB (0x01000000)."""
-    import subprocess as sp
+def test_isolation_failure_emits_telemetry_with_exception_type():
+    """_resolve_in_child_process must emit telemetry before raising isolation error."""
     r = _resolver()
-    captured = {}
+    emitted = []
 
-    class _FakePopen:
-        def __init__(self, cmd, **kw):
-            captured["creationflags"] = kw.get("creationflags", 0)
-            captured["cmd"] = cmd
-            # Immediately simulate process that errors so _run_child_command raises
-            raise OSError("fake popen failure for flag inspection")
+    def _fake_run_child(*_a, **_kw):
+        raise OSError(5, "fake access denied")
 
-    with mock.patch("subprocess.Popen", _FakePopen):
-        try:
-            r._run_child_command(["echo", "x"], deadline=0)
-        except Exception:
-            pass
+    def _fake_telemetry(event, **fields):
+        emitted.append({"event": event, **fields})
 
-    breakaway = getattr(sp, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
-    assert captured.get("creationflags", 0) & breakaway, (
-        "CREATE_BREAKAWAY_FROM_JOB must be set in subprocess.Popen creationflags"
-    )
+    with mock.patch.object(r, "_run_child_command", side_effect=_fake_run_child), \
+            mock.patch.object(r, "_append_telemetry", side_effect=_fake_telemetry):
+        with pytest.raises(r.DynamicReaderError) as exc_info:
+            r._resolve_in_child_process(
+                "https://comix.to/title/x/1",
+                cancel_check=None, timeout=30.0)
+
+    assert exc_info.value.code == "dynamic_resolver_isolation_unavailable"
+    iso_events = [e for e in emitted if e.get("error_code") == "dynamic_resolver_isolation_unavailable"]
+    assert iso_events, "telemetry event for isolation_unavailable must be emitted"
+    assert iso_events[0].get("exception_type") == "OSError"

@@ -317,7 +317,8 @@ def _append_telemetry(event: str, **fields: Any) -> None:
                "image_src_present",
                "active_container_data_page", "capture_failure_reason",
                "already_materialized_revisited", "retry_pending_indices", "materialization_target_count",
-               "out_of_scope_materialized_count"}
+               "out_of_scope_materialized_count",
+               "exception_type", "winerror"}
     safe = {key: value for key, value in fields.items() if key in allowed}
     safe["event"] = event[:64]
     safe.setdefault("site", "comix.to")
@@ -2344,8 +2345,7 @@ def _run_child_command(command: list[str], *, deadline: float,
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, text=True,
             creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                           | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                           | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)),
+                           | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
             start_new_session=(os.name != "nt"),
         )
         _assign_child_to_job(job, process)
@@ -2418,6 +2418,13 @@ def _resolve_in_child_process(url: str, *, cancel_check: Callable[[], bool] | No
         try:
             outcome = _run_child_command(command, deadline=deadline, cancel_check=cancel_check)
         except Exception as exc:
+            _append_telemetry(
+                "dynamic_resolution_failed",
+                status="isolation_unavailable",
+                error_code="dynamic_resolver_isolation_unavailable",
+                exception_type=type(exc).__name__,
+                winerror=getattr(exc, "winerror", None) or getattr(exc, "errno", None),
+            )
             raise DynamicReaderError("dynamic_resolver_isolation_unavailable") from exc
         if not outcome["reaped"] or outcome["active_processes"]:
             raise DynamicReaderError("dynamic_resolver_child_cleanup_failed")
