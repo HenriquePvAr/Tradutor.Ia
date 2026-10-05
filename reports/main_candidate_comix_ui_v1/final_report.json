@@ -4,6 +4,7 @@
   "latest_complete_product_base": "44f2f94",
   "integration_base": "44f2f94",
   "integration_branch": "integration/main-candidate-comix-ui-v1",
+  "final_head": "4acdda24a551e2514985782d3e33221d921e7386",
   "integration_strategy": "AUDITED_PORT",
   "commits_ported_from_a": ["44f2f94 and its product ancestry"],
   "commits_ported_from_b": ["c8c382a capability subset", "4a148c4 documentation subset"],
@@ -20,5 +21,6 @@
   "ready_for_main_candidate": false,
   "blockers": ["Real Comix source/download smoke and owner-assisted clearance capture remain pending; no chapter URL was used, so no external calls were made."],
   "push": false,
-  "merge_main": false
+  "merge_main": false,
+  "worktree_clean_at_report": true
 }
