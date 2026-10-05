@@ -4557,6 +4557,16 @@ class UiBridge:
             key=lambda job: float(job.get("updated_at") or 0), default=None,
         )
 
+    def _displayed_source_verification(self, owner_id: str | None = None) -> dict[str, Any] | None:
+        jobs = (self.store.list_jobs_for_owner(
+            owner_id, statuses=[JobStatus.WAITING_SOURCE_VERIFICATION], limit=None)
+            if owner_id else self.store.list_jobs(
+                statuses=[JobStatus.WAITING_SOURCE_VERIFICATION], limit=None))
+        return max(
+            (job for job in jobs if self._is_translation_job(job)),
+            key=lambda job: float(job.get("updated_at") or 0), default=None,
+        )
+
     def _displayed_source_ready(self) -> dict[str, Any] | None:
         return max(
             (job for job in self.store.list_jobs(
@@ -4746,13 +4756,14 @@ class UiBridge:
             default=None,
         )
         waiting = self._displayed_source_review_for_owner(owner_id) if owner_id else self._displayed_source_review()
+        source_verification = self._displayed_source_verification(owner_id)
         source_ready = self._displayed_source_ready_for_owner(owner_id) if owner_id else self._displayed_source_ready()
         staging_jobs = list_jobs(statuses=[JobStatus.STAGING], limit=None)
         staging = max(
             (job for job in staging_jobs if self._is_translation_job(job)),
             key=lambda job: float(job.get("updated_at") or 0), default=None,
         )
-        present_job = active or waiting or source_ready or staging
+        present_job = active or source_verification or waiting or source_ready or staging
         record = self._job_record(present_job)
         status = (present_job["status"] if present_job else "ready")
         stage = str((present_job or {}).get("stage") or "created")
@@ -4806,7 +4817,7 @@ class UiBridge:
         # A queued job is pending work, not "pronto". Reporting it as ready is what made a
         # successful submit look like nothing happened.
         pending = (
-            bool(queued) and not running and waiting is None
+            bool(queued) and not running and waiting is None and source_verification is None
             and source_ready is None and staging is None
         )
         if pending:
@@ -4880,6 +4891,7 @@ class UiBridge:
             "queue_running": running or pending,   # a queued job is still "em andamento"
             "resumable": resumable,
             "source_review": self._job_record(waiting),
+            "source_verification": self._job_record(source_verification),
             "source_ready": self._job_record(source_ready) or standalone_source_ready,
             "standalone_source_ready": standalone_source_ready,
             "quality_review": quality_review,
@@ -5212,6 +5224,8 @@ class UiBridge:
 
     def _require_validated_source(self, payload: dict[str, Any]) -> None:
         """Fail before job creation unless the submitted URL matches a ready analysis."""
+        if payload.get("source_verification_pending") is True:
+            return
         if payload.get("source_validation_required") is not True:
             return
         analysis_id = str(payload.get("source_analysis_result_id") or "")
@@ -5321,6 +5335,13 @@ class UiBridge:
                 result["awaiting_source_review"] = True
                 result["analysis"] = duplicate.get("source_analysis") or {}
                 result["source_provenance"] = self._public_job_source_provenance(duplicate)
+                return result
+            if duplicate.get("status") == JobStatus.WAITING_SOURCE_VERIFICATION:
+                result.update({
+                    "source_verification": True,
+                    "status": JobStatus.WAITING_SOURCE_VERIFICATION,
+                    "message": "Aguardando verificação da fonte no navegador.",
+                })
                 return result
             result["worker"] = self.ensure_worker()
             return result
@@ -6051,7 +6072,8 @@ class UiBridge:
         if idempotency_key:
             pending = self.store.list_jobs(
                 statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
-                          JobStatus.SOURCE_ANALYSIS_READY, *JobStatus.IN_FLIGHT], limit=None)
+                          JobStatus.WAITING_SOURCE_VERIFICATION, JobStatus.SOURCE_ANALYSIS_READY,
+                          *JobStatus.IN_FLIGHT], limit=None)
             for job in pending:
                 if str((job.get("configuration") or {}).get("idempotency_key") or "") == idempotency_key:
                     return job
@@ -6064,7 +6086,7 @@ class UiBridge:
             return None
         pending = self.store.list_jobs(
             statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
-                      JobStatus.SOURCE_ANALYSIS_READY,
+                      JobStatus.WAITING_SOURCE_VERIFICATION, JobStatus.SOURCE_ANALYSIS_READY,
                       *JobStatus.IN_FLIGHT], limit=None)
         for job in pending:
             if not self._is_translation_job(job):
@@ -6690,6 +6712,23 @@ class UiBridge:
             "create_source_profile": config.get("create_source_profile") is True,
         }
         return await self.start(payload)
+
+    def resume_source_verification(self, job_id: str) -> dict[str, Any]:
+        """Requeue the same job after a legitimate owner-side verification."""
+        job = self._displayed_source_verification()
+        if not job or job.get("id") != str(job_id or "").strip():
+            raise ValueError("source_verification_not_available")
+        queued = self.store.transition(
+            job["id"], JobStatus.QUEUED, stage="queued",
+            reason_code="source_verification_retry",
+            interrupted_reason="",
+        )
+        self.history_revision += 1
+        return {
+            "ok": True, "job_id": queued["id"], "run_id": queued["run_id"],
+            "status": JobStatus.QUEUED, "stage": "queued",
+            "worker": self.ensure_worker(),
+        }
 
     def retry_job(self, job_id: str) -> dict[str, Any]:
         """Create a fresh, isolated attempt for a terminal URL job.

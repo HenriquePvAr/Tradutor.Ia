@@ -1,0 +1,8 @@
+{
+  "initial_run": "5830 passed, 141 skipped, 2 xfailed, 1 failed",
+  "initial_failure": "stale assertion expecting the pre-change activeOperationStatuses string",
+  "corrective_test_update": "applied",
+  "post_update_targeted_validation": "30 passed",
+  "full_suite_rerun_after_test_only_expectation_update": false,
+  "status": "PASS_WITH_TARGETED_POST_FIX; FULL_RERUN_NOT_REPEATED"
+}

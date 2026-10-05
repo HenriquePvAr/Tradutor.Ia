@@ -1,0 +1,7 @@
+{
+  "waiting_state": "waiting_source_verification",
+  "resume_endpoint": "/api/ui/source/verification/resume",
+  "resume_transition": "waiting_source_verification -> queued",
+  "creates_new_job": false,
+  "clears_interrupted_reason": true
+}

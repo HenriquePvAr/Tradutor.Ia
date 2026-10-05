@@ -37,7 +37,8 @@ ACTIVE_OPERATION_STATUSES = {
 def test_source_declares_the_active_operation_statuses_used_by_the_model():
     # If the JS Set changes, this test's model must be updated deliberately.
     assert ("const activeOperationStatuses = new Set(['staging', 'claiming', "
-            "'starting', 'running', 'cancelling', 'awaiting_source_review']);") in SOURCE
+            "'starting', 'running', 'cancelling', 'awaiting_source_review', "
+            "'waiting_source_verification']);") in SOURCE
 
 
 def test_clear_helper_is_defined_and_guarded_by_active_job_identity():

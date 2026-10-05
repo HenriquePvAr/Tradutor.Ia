@@ -1,0 +1,6 @@
+{
+  "code": "challenge_required",
+  "markers": ["checking your browser", "verify you are human", "turnstile", "recaptcha"],
+  "normal_reader_markup_is_challenge": false,
+  "classifier_tests": "PASS"
+}

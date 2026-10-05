@@ -67,13 +67,14 @@ class JobStatus:
     FINISHED = "finished"
     REVIEW_REQUIRED = "review_required"
     AWAITING_SOURCE_REVIEW = "awaiting_source_review"
+    WAITING_SOURCE_VERIFICATION = "waiting_source_verification"
     SOURCE_ANALYSIS_READY = "source_analysis_ready"
 
     ALL = frozenset(
         {
             STAGING, QUEUED, CLAIMING, STARTING, RUNNING, CANCELLING, CANCELLED,
             INTERRUPTED, RESUMABLE, FAILED, FINISHED, REVIEW_REQUIRED,
-            AWAITING_SOURCE_REVIEW, SOURCE_ANALYSIS_READY,
+            AWAITING_SOURCE_REVIEW, WAITING_SOURCE_VERIFICATION, SOURCE_ANALYSIS_READY,
         }
     )
     TERMINAL = frozenset({CANCELLED, FAILED, FINISHED, REVIEW_REQUIRED})
@@ -122,7 +123,8 @@ _DEFAULT_TERMINAL_REASONS = {
 # stray write can never move a job into a nonsensical state from another module.
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     JobStatus.STAGING: frozenset({
-        JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW, JobStatus.CANCELLED, JobStatus.FAILED,
+        JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW, JobStatus.WAITING_SOURCE_VERIFICATION,
+        JobStatus.CANCELLED, JobStatus.FAILED,
     }),
     JobStatus.QUEUED: frozenset({JobStatus.CLAIMING, JobStatus.CANCELLED}),
     JobStatus.CLAIMING: frozenset(
@@ -130,7 +132,8 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
         # result has to reach review from here. Additive: nothing previously allowed was
         # removed, and a claimed job still cannot jump straight to a running state.
         {JobStatus.STARTING, JobStatus.QUEUED, JobStatus.FAILED, JobStatus.INTERRUPTED,
-         JobStatus.AWAITING_SOURCE_REVIEW, JobStatus.CANCELLING}
+         JobStatus.AWAITING_SOURCE_REVIEW, JobStatus.WAITING_SOURCE_VERIFICATION,
+         JobStatus.CANCELLING}
          | {JobStatus.SOURCE_ANALYSIS_READY}
     ),
     JobStatus.STARTING: frozenset(
@@ -143,6 +146,9 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
         }
     ),
     JobStatus.AWAITING_SOURCE_REVIEW: frozenset(
+        {JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}
+    ),
+    JobStatus.WAITING_SOURCE_VERIFICATION: frozenset(
         {JobStatus.QUEUED, JobStatus.CANCELLED, JobStatus.FAILED}
     ),
     JobStatus.SOURCE_ANALYSIS_READY: frozenset(

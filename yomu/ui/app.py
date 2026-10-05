@@ -1447,7 +1447,7 @@ async def api_run(
                 "action": "Abra o painel local em 127.0.0.1 ou localhost.",
             })
         guarded_payload = dict(payload)
-        if not requests_local_folder:
+        if not requests_local_folder and payload.get("source_verification_pending") is not True:
             # The normal UI now obtains this analysis inside the Start click. Direct URL
             # submissions without that fresh result still fail before job creation.
             guarded_payload["source_validation_required"] = True
@@ -1481,7 +1481,7 @@ async def api_run(
         # cookies and provider responses never reach the browser.
         messages = {
             "unsupported_source": ("Esta fonte ainda não é compatível com o Tradutor IA.", "Você pode enviá-la ao desenvolvedor para análise."),
-            "challenge_required": ("O site exige uma verificação interativa.", "Conclua a verificação no site ou use uma fonte sem desafio."),
+            "challenge_required": ("A fonte solicitou uma verificação no navegador.", "Conclua a verificação legítima e tente continuar o mesmo job."),
             "authentication_required": ("Esta fonte exige autenticação.", "Use uma página pública, sem login."),
             "source_access_denied": ("A fonte recusou o acesso público.", "Verifique a URL ou tente novamente mais tarde."),
             "source_rate_limited": ("Não foi possível acessar essa fonte agora.", "Aguarde antes de tentar novamente."),
@@ -2898,6 +2898,18 @@ async def api_source_retry(
             "message": "Esta revisão de fonte não pode mais ser repetida.",
             "action": "Atualize a tela e escolha a revisão atualmente exibida.",
         }) from exc
+
+
+@app.post("/api/ui/source/verification/resume")
+def api_source_verification_resume(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    try:
+        job_id = str(payload.get("job_id") or "")
+        _owned_ui_job(request, job_id, mutate=True)
+        return BRIDGE.resume_source_verification(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
 
 
 @app.post("/api/ui/source/authorization")

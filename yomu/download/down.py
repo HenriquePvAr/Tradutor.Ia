@@ -548,7 +548,11 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None,
                 diagnostic_callback, "DYNAMIC_RESOLVER_END", provider=provider,
                 reason_code=reason_code, result=result,
                 elapsed_ms=int((time.perf_counter() - resolver_started) * 1000))
-            if code in {"challenge_required", "login_required", "permission_required", "access_denied"}:
+            if code == "challenge_required":
+                # An interactive challenge is a human-verification state, not a generic
+                # access denial and never an empty-reader result. No solver/bypass exists.
+                failure = SourceError("challenge_required", "dynamic_reader_challenge")
+            elif code in {"login_required", "permission_required", "access_denied"}:
                 failure = SourceError("source_access_denied", f"dynamic_reader_{code}")
             else:
                 failure = SourceError("dynamic_source_unavailable", code or "dynamic_reader")

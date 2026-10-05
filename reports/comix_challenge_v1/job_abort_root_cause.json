@@ -1,0 +1,7 @@
+{
+  "root_cause": "challenge_required was converted by the dynamic Comix fallback into source_access_denied, then the worker terminally failed the job; preflight UI also treated the error as a submit failure instead of a resumable job state.",
+  "fixed": true,
+  "new_state": "waiting_source_verification",
+  "same_job_resume": true,
+  "bypass_added": false
+}

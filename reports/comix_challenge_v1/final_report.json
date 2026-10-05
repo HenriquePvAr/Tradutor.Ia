@@ -1,0 +1,13 @@
+{
+  "mission": "YOMU_COMIX_JOB_ABORT_CHALLENGE_AWARE_ADAPTIVE_SOURCE_FIX_V1",
+  "mission_result": "PARTIAL",
+  "implementation": "PASS",
+  "root_cause_identified": true,
+  "challenge_wait_and_resume": "PASS",
+  "output_format_control_removed": "PASS",
+  "build": "PASS",
+  "real_comix_e2e": "NOT_EXECUTED",
+  "reason_for_partial": "No chapter URL/job was supplied; comix.to root alone is not a valid evidence of a real chapter run. The owner must select a chapter and complete any legitimate verification.",
+  "clean_gemini_deepl_yk_changed": false,
+  "push": false
+}

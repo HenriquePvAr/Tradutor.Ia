@@ -565,6 +565,19 @@ class Worker:
                     source_analysis_json=json.dumps(
                         analysis, ensure_ascii=False, sort_keys=True),
                 )
+            if code == "challenge_required":
+                self.store.transition(
+                    job_id, JobStatus.WAITING_SOURCE_VERIFICATION,
+                    reason_code="challenge_required", stage="waiting_source_verification",
+                    error_type="source_verification", error_message="challenge_required",
+                    interrupted_reason="owner_source_verification_required",
+                    **self._record_failure_diagnostic(job_id, exc, code),
+                )
+                self._append_job_log(
+                    job_id, "source_validation",
+                    "SOURCE_CHALLENGE_REQUIRED state=waiting_source_verification",
+                )
+                return
             self.store.transition(
                 job_id, JobStatus.FAILED, reason_code=code, stage="source_analysis",
                 error_type="source_analysis", error_message=str(code),

@@ -1443,7 +1443,15 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         try:
             page.wait_for_timeout(1200)
             page.wait_for_timeout(400)
+            # Read only bounded visible text for classification. Challenge pages are
+            # explicitly surfaced; their DOM is never treated as an empty reader.
+            from yomu.download.sources.chapter_source import looks_like_challenge
+            page_text = str(page.evaluate("() => (document.body && document.body.innerText || '').slice(0, 20000)") or "")
+            if looks_like_challenge(page_text):
+                raise DynamicReaderError("challenge_required", "visible_challenge_marker")
         except Exception as exc:
+            if isinstance(exc, DynamicReaderError):
+                raise
             raise DynamicReaderError("browser_action_failed") from exc
         stage_end("page_action_initial_wait", action_started)
         discovery_started = stage_start("reader_discovery_and_preload")

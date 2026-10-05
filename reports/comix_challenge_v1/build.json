@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "pyinstaller": "6.22.2",
+  "exe": "C:/Users/henri/YomuExperimental/comix-source-challenge-v1/dist/YomuSekai/YomuSekai.exe",
+  "sha256": "26E4D33DD3A7F785731B8E1B9A4647AD5EC28B492EBD5748D6176B984DA8EF77",
+  "old_validation_instances_closed": true,
+  "new_exe_started": true
+}

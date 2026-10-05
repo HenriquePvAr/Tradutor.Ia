@@ -149,7 +149,7 @@
       try {
         updateTranslationStartControls();
         const status = String(appState.status || '').toLowerCase();
-        const activeStatuses = ['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review'];
+        const activeStatuses = ['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review', 'waiting_source_verification'];
         if (isCanonicalCommunityAuthenticated() && !activeStatuses.includes(status)) {
           setTranslationFormLocked(false);
         }
@@ -186,11 +186,11 @@
   // The legacy queued label remains in this compatibility note while the
   // visible copy adds the clearer waiting state.
   // queued: 'na fila'
-  const runStatusLabels = {ready: 'pronto', staging: 'preparando', queued: 'na fila · aguardando', running: 'processando', awaiting_source_review: 'confirme as páginas', source_analysis_ready: 'fonte analisada', finished: 'concluído', review_required: 'concluído — revisão recomendada', review_completed: 'revisão concluída', failed: 'falhou', legacy_unverified: 'resultado antigo não verificado', error: 'falhou', cancelled: 'cancelado'};
+  const runStatusLabels = {ready: 'pronto', staging: 'preparando', queued: 'na fila · aguardando', running: 'processando', awaiting_source_review: 'confirme as páginas', waiting_source_verification: 'aguardando verificação da fonte', source_analysis_ready: 'fonte analisada', finished: 'concluído', review_required: 'concluído — revisão recomendada', review_completed: 'revisão concluída', failed: 'falhou', legacy_unverified: 'resultado antigo não verificado', error: 'falhou', cancelled: 'cancelado'};
   const terminalRunStatuses = new Set(['finished', 'review_required', 'review_completed', 'failed', 'cancelled']);
-  const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
+  const inFlightStatuses = new Set(['staging', 'queued', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review', 'waiting_source_verification']);
   // Queued work remains visible in the queue, but is not currently owned by a runner.
-  const activeOperationStatuses = new Set(['staging', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review']);
+  const activeOperationStatuses = new Set(['staging', 'claiming', 'starting', 'running', 'cancelling', 'awaiting_source_review', 'waiting_source_verification']);
   const MAX_VISIBLE_TOASTS = 3;
   const TOAST_DISMISS_MS = 3200;
   const TOAST_DEDUP_LIMIT = 80;
@@ -896,6 +896,7 @@
     source_lazy_resolution: 'carregando páginas do leitor',
     source_selection: 'preparando a ordem das páginas',
     awaiting_source_review: 'Preparando as páginas...',
+    waiting_source_verification: 'Aguardando verificação da fonte no navegador...',
     reviewing_pages: 'Preparando as páginas...',
     downloading: 'Obtendo as páginas...',
     downloading_pages: 'Obtendo as páginas...',
@@ -1307,7 +1308,6 @@
   $('#localImageModalClose')?.addEventListener('click', closeLocalImageModal);
   $('#localImageModal')?.addEventListener('click', event => { if (event.target === $('#localImageModal')) closeLocalImageModal(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeLocalImageModal(); });
-  $('#outputFormatSelect')?.addEventListener('change', event => { appState.outputFormat = ['pdf', 'png', 'psd'].includes(event.target.value) ? event.target.value : 'pdf'; syncTypesettingField(); syncSourceFormState(); });
   const OUTPUT_PROFILE_STORAGE_KEY = 'yomu.outputProfile';
   function normalizeOutputProfile(value) {
     const profile = String(value == null ? '' : value).trim().toLowerCase();
@@ -1335,14 +1335,6 @@
     if (options) options.setAttribute('aria-disabled', downloadOnly ? 'true' : 'false');
     $$('input[name="output_profile"]').forEach(input => { input.disabled = downloadOnly; });
     if (hint) hint.hidden = !downloadOnly;
-    const psdOption = $('#outputFormatSelect option[value="psd"]');
-    if (psdOption) {
-      psdOption.disabled = appState.outputProfile !== 'professional_qc' || downloadOnly;
-      if (psdOption.disabled && $('#outputFormatSelect').value === 'psd') {
-        $('#outputFormatSelect').value = 'pdf';
-        appState.outputFormat = 'pdf';
-      }
-    }
   }
   $$('input[name="output_profile"]').forEach(input => input.addEventListener('change', event => {
     applyOutputProfile(event.currentTarget.value, {persist: true});
@@ -1483,8 +1475,9 @@
   // Typesetting ON/OFF is only meaningful for PSD (§11): show it only for that format.
   function syncTypesettingField() {
     const field = $('#typesettingModeField');
-    const isPsd = ($('#outputFormatSelect')?.value === 'psd');
-    if (field) field.hidden = !isPsd;
+    // OutputPlan is the sole user-facing authority. The legacy format control was
+    // intentionally removed from the main form; PSD is selected by the Complete plan.
+    if (field) field.hidden = true;
     const hint = $('#typesettingModeHint');
     if (hint) hint.textContent = ($('#typesettingModeSelect')?.value === 'off')
       ? 'Página limpa para diagramação manual.'
@@ -1506,8 +1499,7 @@
       localFolder: $('#localFolderInput')?.value?.trim() || '',
       chapterName: $('#nameInput')?.value?.trim() || '',
       outputSlug: slugify($('#outputInput')?.value || ''),
-      outputFormat: ['pdf', 'png', 'psd'].includes($('#outputFormatSelect')?.value)
-        ? $('#outputFormatSelect').value : 'pdf',
+      outputFormat: 'pdf',
       typesettingMode: ($('#typesettingModeSelect')?.value === 'off') ? 'off' : 'on',
       outputProfile: appState.outputProfile === 'professional_qc' ? 'professional_qc' : 'automatic',
       translationProvider: normalizeTranslationProvider($('#providerSelect')?.value)
@@ -1823,7 +1815,9 @@
     appState.activeEffectiveOps = appState.selectedMode === 'download_only' ? [] : planOps;
     const payload = {
       source_type: appState.selectedSourceType,
-      output_format: form.outputFormat || 'pdf',
+      // Legacy field retained only for backward-compatible payload parsing. The backend
+      // derives the effective artifact contract from output_plan.
+      output_format: 'pdf',
       output_profile: appState.selectedMode === 'download_only' ? 'automatic' : (form.outputProfile === 'professional_qc' ? 'professional_qc' : 'automatic'),
       typesetting_mode: form.typesettingMode || 'on',
       chapter_name: form.chapterName || guess.title,
@@ -2583,6 +2577,29 @@
       } catch (error) {
         sourceTrace('TRANSLATION_START_ERROR', {sequence, elapsed_ms: 0, request_count: 1, error_code: String(error.code || 'source_analyze_failed').slice(0, 80)});
         sourceTrace('SOURCE_ANALYZE_REQUEST_FAILED', {trace_id: traceId, reason_code: String(error.code || 'source_analyze_failed')});
+        if (String(error.code || '') === 'challenge_required') {
+          // Create the durable job only after the explicit source probe reports a
+          // challenge. The worker will keep this same job waiting; no CAPTCHA solver
+          // or alternate fetch is attempted here.
+          try {
+            const pendingPayload = {...payload, source_verification_pending: true};
+            const pending = await api('/api/ui/run', {
+              method: 'POST', body: JSON.stringify({...pendingPayload, trace_id: traceId}),
+            });
+            appState.currentJobId = String(pending.job_id || '');
+            appState.currentRunId = String(pending.run_id || '');
+            ensurePolling();
+            renderLocalPipelineState('waiting_source_verification', {
+              status: 'waiting_source_verification',
+              message: 'Aguardando verificação da fonte no navegador…',
+            });
+            showToast('Conclua a verificação legítima no navegador e tente continuar este job.', 'warn');
+            return pending;
+          } catch (pendingError) {
+            showSourceValidationError(pendingError);
+            return;
+          }
+        }
         showSourceValidationError(error);
         if (button) { button.textContent = previousLabel || 'Iniciar tradução'; button.removeAttribute('aria-busy'); }
         if (button) delete button.dataset.busy;
@@ -2961,7 +2978,7 @@
   });
 
   /* ---------- real pipeline presentation ---------- */
-  const stageOrder = ['source_analysis', 'awaiting_source_review', 'download', 'validation', 'ocr', 'translate', 'render', 'pdf', 'quality_review'];
+  const stageOrder = ['source_analysis', 'awaiting_source_review', 'waiting_source_verification', 'download', 'validation', 'ocr', 'translate', 'render', 'pdf', 'quality_review'];
   const stageAliases = {
     idle: 'idle',
     prepare: 'idle',
@@ -2981,6 +2998,7 @@
     source_lazy_resolution: 'source_analysis',
     source_selection: 'awaiting_source_review',
     awaiting_source_review: 'awaiting_source_review',
+    waiting_source_verification: 'waiting_source_verification',
     reviewing_pages: 'awaiting_source_review',
     'baixando imagens': 'download',
     downloading: 'download',
@@ -3275,7 +3293,9 @@
     renderResumableJobs(runtime.resumable);
     renderQueue();
     appendLogs(runtime.logs || []);
-    if (awaitingReview && runtime.source_review && shouldRenderSourceReview(runtime.source_review)) {
+    if (appState.status === 'waiting_source_verification' && runtime.source_verification) {
+      renderSourceVerification(runtime.source_verification);
+    } else if (awaitingReview && runtime.source_review && shouldRenderSourceReview(runtime.source_review)) {
       renderSourceReview(runtime.source_review);
     }
     else if (!awaitingReview) $('#sourceReviewPanel') && ($('#sourceReviewPanel').hidden = true);
@@ -6744,7 +6764,20 @@
     $('#sourceReviewMeta').innerHTML = `Adapter: <strong>${escapeHtml(adapter)}</strong> v${escapeHtml(version)} · transporte: <strong>${escapeHtml(transport)}</strong> · confiança: <strong>${escapeHtml(score)}</strong> · ${candidates} candidatos · ${acceptedCount} páginas aceitas · ${rejectedCount} descartadas${outcome ? ` · resultado: <code>${escapeHtml(outcome)}</code>` : ''}${reasonText ? ` · motivos: ${reasonText}` : ''}${warnings}`;
     $('#sourceReviewList').innerHTML = accepted.length ? accepted.map((item, index) => `<label class="source-page-option"><input type="checkbox" data-source-candidate-id="${escapeAttr(item.id || '')}" checked><span><strong>Página ${escapeHtml(Number(item.order || index + 1))}</strong><span>${escapeHtml(item.width || '—')} × ${escapeHtml(item.height || '—')} · ${escapeHtml(item.origin || 'dom')}</span></span></label>`).join('') : '<div class="muted">Nenhuma página confirmável foi preservada.</div>';
     prepareSourceReviewControls();
+    $('#confirmSourcePages').hidden = false;
+    $('#retrySourceReview').textContent = 'Tentar novamente';
     $('#confirmSourcePages').disabled = !accepted.length;
+  }
+  function renderSourceVerification(record) {
+    const panel = $('#sourceReviewPanel');
+    if (!panel) return;
+    appState.sourceReview = {job_id: record?.id || record?.job_id || '', verification: true};
+    panel.hidden = false;
+    $('#sourceReviewMeta').textContent = 'A fonte solicitou uma verificação interativa. Conclua-a no navegador legítimo e depois tente continuar este mesmo job.';
+    $('#sourceReviewList').innerHTML = '<div class="muted">Nenhuma página foi descartada; o job está aguardando a verificação da fonte.</div>';
+    $('#confirmSourcePages').hidden = true;
+    $('#retrySourceReview').textContent = 'Continuar após verificação';
+    $('#cancelSourceReview').hidden = false;
   }
   function safeReviewThumbnail(value) {
     const thumbnail = String(value || '').trim();
@@ -6834,7 +6867,8 @@
     const button = $('#retrySourceReview');
     if (button) button.disabled = true;
     try {
-      const result = await api('/api/ui/source/retry', {
+      const verification = appState.status === 'waiting_source_verification';
+      const result = await api(verification ? '/api/ui/source/verification/resume' : '/api/ui/source/retry', {
         method: 'POST', body: JSON.stringify({job_id: review.job_id}),
       });
       if (!result?.ok) throw new Error(result?.reason_code || 'A nova análise foi recusada.');
@@ -6848,7 +6882,7 @@
         showToast('Análise refeita. Revise as páginas novamente.', 'warn');
       } else {
         $('#sourceReviewPanel').hidden = true;
-        showToast('Análise refeita e processamento enfileirado.', 'ok');
+        showToast(verification ? 'Verificação reenviada. O mesmo job voltou para a análise.' : 'Análise refeita e processamento enfileirado.', 'ok');
       }
     } catch (error) {
       showToast(error.message || 'Não foi possível repetir a análise.', 'error');

@@ -1,0 +1,10 @@
+{
+  "source": "https://comix.to/",
+  "source_supplied_by_owner": true,
+  "probe_executed": false,
+  "reason": "The supplied URL is a site root, not an identified chapter; no chapter/job was submitted and no challenge was solved automatically.",
+  "external_calls": 0,
+  "provider_calls": 0,
+  "yk_consumed": 0,
+  "gemini_calls": 0
+}

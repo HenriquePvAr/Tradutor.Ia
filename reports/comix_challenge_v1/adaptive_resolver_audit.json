@@ -1,0 +1,6 @@
+{
+  "resolver": "yomu/download/readers/scrapling_reader_resolver.py",
+  "bounded_materialization_and_fail_closed_behavior_preserved": true,
+  "visible_body_challenge_marker_detection_added": true,
+  "challenge_error_preserved": true
+}

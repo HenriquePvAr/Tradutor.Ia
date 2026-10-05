@@ -1,0 +1,7 @@
+{
+  "existing_adapter_reused": true,
+  "existing_adaptive_resolver_reused": true,
+  "new_scraper_created": false,
+  "direct_then_dynamic_strategy_preserved": true,
+  "challenge_policy": "wait for legitimate owner verification; no bypass"
+}

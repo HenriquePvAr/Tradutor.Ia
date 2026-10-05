@@ -1020,10 +1020,10 @@ class SourceReviewTests(unittest.TestCase):
         worker, prepared = run_source_phase(self.bridge, result["job_id"], raises)
         self.assertIsNone(prepared)
         self.assertEqual(worker.spawns, 0)
-        failed = self.bridge.store.list_jobs(statuses=[JobStatus.FAILED])
-        self.assertEqual(len(failed), 1)
-        self.assertEqual(failed[0]["reason_code"], "challenge_required")
-        self.assertIsNotNone(failed[0]["finished_at"])
+        waiting = self.bridge.store.list_jobs(statuses=[JobStatus.WAITING_SOURCE_VERIFICATION])
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]["reason_code"], "challenge_required")
+        self.assertIsNone(waiting[0]["finished_at"])
 
 
 class SourceAnalysisTimeoutTests(unittest.TestCase):

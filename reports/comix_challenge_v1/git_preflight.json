@@ -1,0 +1,8 @@
+{
+  "base_head": "8bfecae",
+  "work_branch": "fix/comix-source-challenge-and-job-abort-v1",
+  "worktree": "C:/Projetos/Tradutor.Ia-worktrees/comix-source-challenge-v1",
+  "push": false,
+  "destructive_git_commands": false,
+  "note": "Clean integration head selected; dirty main worktree was not modified."
+}

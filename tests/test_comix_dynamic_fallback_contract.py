@@ -86,8 +86,10 @@ def test_comix_real_dynamic_access_denial_remains_controlled():
     denied = DynamicReaderError("challenge_required")
     with mock.patch.object(down, "analyze_chapter_source", side_effect=direct), \
          mock.patch("yomu.download.readers.scrapling_reader_resolver.resolve", side_effect=denied):
-        with pytest.raises(SourceError, match="source_access_denied"):
+        with pytest.raises(SourceError) as caught:
             down.discover_chapter_source(URL)
+    assert caught.value.code == "challenge_required"
+    assert caught.value.detail == "dynamic_reader_challenge"
 
 
 def test_comix_522_continues_to_bounded_specialized_fallback():
@@ -144,8 +146,8 @@ def test_comix_preflight_challenge_resolver_failure_is_terminal_and_no_bypass():
          mock.patch("yomu.download.readers.scrapling_reader_resolver.resolve", side_effect=challenge) as resolve:
         with pytest.raises(SourceError) as caught:
             down.discover_chapter_source(URL)
-    assert caught.value.code == "source_access_denied"
-    assert caught.value.detail == "dynamic_reader_challenge_required"
+    assert caught.value.code == "challenge_required"
+    assert caught.value.detail == "dynamic_reader_challenge"
     resolve.assert_called_once()
 
 

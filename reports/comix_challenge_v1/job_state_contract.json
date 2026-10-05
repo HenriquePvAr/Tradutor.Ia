@@ -1,0 +1,7 @@
+{
+  "claiming_to_waiting": "allowed",
+  "staging_to_waiting": "allowed",
+  "waiting_to_queued": "allowed",
+  "waiting_to_running": "forbidden",
+  "waiting_to_cancelled": "allowed"
+}

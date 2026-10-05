@@ -1,0 +1,12 @@
+{
+  "head": "8bfecae",
+  "features_present": [
+    "OutputPlan",
+    "Gemini safe fallback",
+    "persistent chat per slot",
+    "two-slot ownership",
+    "Discord observability",
+    "source analysis and adaptive Comix resolver"
+  ],
+  "ancestry_checked": true
+}
