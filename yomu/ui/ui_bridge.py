@@ -36,7 +36,7 @@ from yomu.community.community_auth import RequestPrincipal, bind_is_loopback, pe
 from yomu.runtime.artifact_contract import OutputProfile
 from yomu.runtime.job_completion import build_job_completion_summary
 from yomu.config.settings import effective_ocr_engine
-from yomu.runtime.job_store import JobStatus, JobStore
+from yomu.runtime.job_store import JobStatus, JobStore, TransitionError
 from yomu.export.output_manifest import MANIFEST_FILENAME, load_verified_run_manifest, sanitize_source_url
 from yomu.ui.ui_helpers import (
     DEFAULT_TRANSLATION_PROVIDER,
@@ -6093,6 +6093,8 @@ class UiBridge:
                           *JobStatus.IN_FLIGHT], limit=None)
             for job in pending:
                 if str((job.get("configuration") or {}).get("idempotency_key") or "") == idempotency_key:
+                    if self._retire_stale_source_analysis_job(job):
+                        continue
                     return job
         try:
             url = clean_url(str(payload.get("url") or "")).strip()
@@ -6111,8 +6113,57 @@ class UiBridge:
             same_slug = bool(slug and self._chapter_slug_from_job(job) == slug)
             same_url = job.get("source_url") == url
             if same_slug or (same_url and not slug):
+                if self._retire_stale_source_analysis_job(job):
+                    continue
                 return job
         return None
+
+    @staticmethod
+    def _is_stale_source_analysis_job(job: dict[str, Any] | None) -> bool:
+        """Recognise the old malformed ready row that can safely be replaced."""
+        if not job or job.get("status") != JobStatus.SOURCE_ANALYSIS_READY:
+            return False
+        config = job.get("configuration") or {}
+        if not isinstance(config, dict) or config.get("download_authorization"):
+            return False
+        execution_operations = config.get("execution_operations")
+        if isinstance(execution_operations, list) and execution_operations:
+            return False
+        output_plan = str(config.get("output_plan") or "").strip().casefold()
+        requested = config.get("requested_operations")
+        effective = config.get("effective_operations")
+        legacy_clean_shape = (
+            output_plan in {"apenas_clean", "clean"}
+            and requested == ["clean"]
+            and effective == ["clean"]
+        )
+        reason_code = str(job.get("reason_code") or "").strip().casefold()
+        return legacy_clean_shape or reason_code in {
+            "workspace_policy_operation_denied",
+            "workspace_policy_resolution_pending",
+        }
+
+    def _retire_stale_source_analysis_job(self, job: dict[str, Any] | None) -> bool:
+        """Retire one known stale ready row so a fresh UI intent can be queued."""
+        if not self._is_stale_source_analysis_job(job):
+            return False
+        assert job is not None
+        try:
+            self.store.transition(
+                str(job["id"]), JobStatus.FAILED,
+                reason_code="stale_source_analysis_replaced",
+                stage="source_analysis_ready",
+                error_type="stale_source_analysis",
+                error_message=(
+                    "Replaced automatically by a fresh pipeline intent after "
+                    "legacy output-plan resolution was incomplete."
+                ),
+                writer_component="ui_bridge.stale_duplicate_recovery",
+            )
+            return True
+        except TransitionError:
+            current = self.store.get_job(str(job.get("id") or ""))
+            return bool(current and current.get("status") != JobStatus.SOURCE_ANALYSIS_READY)
 
     @staticmethod
     def _idempotency_key(payload: dict[str, Any]) -> str:

@@ -1479,9 +1479,19 @@ async def api_run(
             "routes_current.jsonl", "SOURCE_RUN_ROUTE_RESULT", trace_id=trace_id,
             route="/api/ui/run", status="ok", reason_code=str(result.get("reason_code") or "")[:80],
         )
-        _append_diagnostic_log("app_current.jsonl", "JOB_CREATE_RESULT", trace_id=trace_id, status="success" if result.get("job_id") else "not_created", job_created=bool(result.get("job_id")))
+        created_new_job = bool(result.get("job_id") and not result.get("duplicate"))
+        _append_diagnostic_log(
+            "app_current.jsonl", "JOB_CREATE_RESULT", trace_id=trace_id,
+            status="success" if result.get("job_id") else "not_created",
+            job_created=created_new_job,
+            duplicate_reused=bool(result.get("duplicate")),
+        )
         if result.get("job_id"):
-            _append_diagnostic_log("app_current.jsonl", "QUEUE_INSERT_RESULT", trace_id=trace_id, status="success", job_created=True)
+            _append_diagnostic_log(
+                "app_current.jsonl", "QUEUE_INSERT_RESULT", trace_id=trace_id,
+                status="success", job_created=created_new_job,
+                duplicate_reused=bool(result.get("duplicate")),
+            )
         return result
     except SourceError as exc:
         # Source diagnostics are coded and deliberately generic: URL fragments, headers,

@@ -761,6 +761,62 @@ class QueueVisibilityTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]["configuration"]["requested_scope"], "3")
 
+    def test_stale_clean_source_ready_duplicate_is_retired_for_fresh_submit(self):
+        old_id = self.bridge.store.create_job(
+            source_url=WEBTOON_URL,
+            output_dir=str(self.tmp / "old"),
+            command=["python", "run_webtoon.py"],
+            configuration={
+                "job_type": "translation",
+                "chapter_slug": "serie_ep_1",
+                "output_plan": "apenas_clean",
+                "requested_operations": ["clean"],
+                "effective_operations": ["clean"],
+                "execution_operations": None,
+            },
+        )
+        self.bridge.store.transition(old_id, JobStatus.CLAIMING, worker_id="w-test")
+        self.bridge.store.transition(old_id, JobStatus.SOURCE_ANALYSIS_READY,
+                                     reason_code="workspace_policy_resolution_pending")
+
+        duplicate = self.bridge._pending_duplicate({
+            "url": WEBTOON_URL, "slug": "serie_ep_1", "mode": "quality",
+        })
+
+        self.assertIsNone(duplicate)
+        old = self.bridge.store.get_job(old_id)
+        self.assertEqual(old["status"], JobStatus.FAILED)
+        self.assertEqual(old["reason_code"], "stale_source_analysis_replaced")
+        self.assertEqual(old["error_type"], "stale_source_analysis")
+
+    def test_valid_source_ready_job_remains_a_duplicate(self):
+        job_id = self.bridge.store.create_job(
+            source_url=WEBTOON_URL,
+            output_dir=str(self.tmp / "valid"),
+            command=["python", "run_webtoon.py"],
+            configuration={
+                "job_type": "translation",
+                "chapter_slug": "serie_ep_1",
+                "output_plan": "apenas_clean",
+                "requested_operations": ["clean"],
+                "effective_operations": ["clean"],
+                "execution_operations": ["analyze_metadata", "download_assets", "run_ocr", "reconstruct"],
+                "download_authorization": {"authorized": True},
+            },
+        )
+        self.bridge.store.transition(job_id, JobStatus.CLAIMING, worker_id="w-test")
+        self.bridge.store.transition(job_id, JobStatus.SOURCE_ANALYSIS_READY,
+                                     reason_code="source_structure_compatible")
+
+        duplicate = self.bridge._pending_duplicate({
+            "url": WEBTOON_URL, "slug": "serie_ep_1", "mode": "quality",
+        })
+
+        self.assertIsNotNone(duplicate)
+        self.assertEqual(duplicate["id"], job_id)
+        self.assertEqual(self.bridge.store.get_job(job_id)["status"],
+                         JobStatus.SOURCE_ANALYSIS_READY)
+
     def test_incoherent_pipeline_intent_remains_fail_closed(self):
         readiness = SourceReadinessStore(self.bridge.store.db_path)
         try:

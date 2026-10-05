@@ -1,0 +1,44 @@
+{
+  "mission": "same_source_clean_retry_automatic_recovery",
+  "root_cause": {
+    "code_path": "yomu/ui/ui_bridge.py::_pending_duplicate",
+    "old_state": "SOURCE_ANALYSIS_READY",
+    "old_job_shape": {
+      "output_plan": "apenas_clean",
+      "requested_operations": ["clean"],
+      "effective_operations": ["clean"],
+      "execution_operations": null,
+      "download_authorization": false
+    },
+    "effect": "The stale row was classified as an active duplicate and prevented a fresh job from being inserted."
+  },
+  "automatic_recovery": {
+    "enabled": true,
+    "predicate": "Only SOURCE_ANALYSIS_READY rows with the legacy clean-only shape, no execution operations, and no download authorization are eligible.",
+    "transition": "SOURCE_ANALYSIS_READY -> FAILED",
+    "reason_code": "stale_source_analysis_replaced",
+    "preserves_history": true,
+    "raw_database_mutation": false,
+    "valid_ready_rows_remain_duplicates": true
+  },
+  "observability": {
+    "job_create_log_distinguishes_new_job_from_duplicate": true,
+    "duplicate_reused": true,
+    "job_created": true
+  },
+  "verification": {
+    "focused_tests": "99 passed",
+    "full_regression": "5874 passed, 141 skipped, 2 xfailed, 732 subtests passed",
+    "build": {
+      "tool": "PyInstaller 6.22.2",
+      "exe": "C:\\Users\\henri\\YomuExperimental\\outputplan-execution-ops-v2\\dist\\YomuSekai\\YomuSekai.exe",
+      "sha256": "48EAD433A9490E6340D7702F52B8995178EB1715F5B9830E585649F3AD139EE4",
+      "window_opened": true,
+      "window_responsive": true,
+      "job_started_automatically": false
+    },
+    "owner_physical_retest": "pending",
+    "synthetic_generation": false,
+    "push": false
+  }
+}
