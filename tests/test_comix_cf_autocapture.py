@@ -26,6 +26,14 @@ def test_capture_retry_fires_once_for_comix_when_ui_enabled():
     capture.assert_called_once()
 
 
+def test_successful_source_analysis_does_not_open_human_capture():
+    with mock.patch.object(down, "_discover_chapter_source_once", return_value="ANALYSIS"), \
+            mock.patch.object(down, "_comix_cf_autocapture_enabled", return_value=True), \
+            mock.patch.object(down, "_run_comix_clearance_capture") as capture:
+        assert down.discover_chapter_source(COMIX) == "ANALYSIS"
+    capture.assert_not_called()
+
+
 def test_capture_is_disabled_for_headless_worker():
     with mock.patch.object(down, "_discover_chapter_source_once",
                            side_effect=SourceError("dynamic_source_unavailable", "reader")), \

@@ -13,6 +13,7 @@ import os
 import pickle
 import re
 import signal
+import socket
 import subprocess
 import struct
 import sys
@@ -2487,80 +2488,108 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
 
 
 def capture_cloudflare_clearance(argv: list[str] | None = None) -> int:
-    """Open real Chrome for owner verification and persist only the resulting local clearance."""
-    cloak_bin = _discover_cloak_binary()
+    """Open an official visible browser for owner-assisted clearance capture.
+
+    This launcher is intentionally separate from the automatic CloakBrowser resolver.  The
+    owner must be able to see and complete a challenge in the dedicated persistent profile.
+    """
     browser = discover_system_browser()
-    chrome_exe = cloak_bin or (browser[1] if browser else None)
+    chrome_exe = browser[1] if browser else None
     if not chrome_exe:
         print("COMIX_CF_CAPTURE unavailable: no system Chrome found", flush=True)
         return 2
     target = (argv[0] if argv else "") or "https://comix.to/"
-    try:
-        port = int(os.environ.get("YOMU_COMIX_CDP_PORT", "9222") or "9222")
-    except ValueError:
-        port = 9222
+
+    # A fixed port can be occupied by another browser or a stale capture.  Reserve a local
+    # ephemeral port for this capture; the browser and CDP attach still use the same value.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+
     base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "YomuSekai"
     profile = base / "comix_cdp_profile"
     cookie_path = _comix_cf_cookie_path()
     profile.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.Popen([
-        chrome_exe, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-        "--no-first-run", "--no-default-browser-check",
-        "--window-position=-32000,-32000", "--new-window", target,
-    ])
+    try:
+        proc = subprocess.Popen([
+            chrome_exe, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+            "--no-first-run", "--no-default-browser-check", "--new-window", target,
+        ])
+    except Exception:
+        print("COMIX_CF_CAPTURE_RESULT reason=launch_failed", flush=True)
+        return 1
+
     found = None
     user_agent = ""
+    terminal_reason = "challenge_not_resolved"
+    cdp = None
     try:
         from patchright.sync_api import sync_playwright
         deadline = time.monotonic() + 240.0
         with sync_playwright() as playwright:
             cdp = None
             for _ in range(30):
+                if proc.poll() is not None:
+                    terminal_reason = "browser_exited"
+                    break
                 try:
                     cdp = playwright.chromium.connect_over_cdp(f"http://localhost:{port}")
                     break
                 except Exception:
                     time.sleep(1.0)
             if cdp is None:
-                return 1
-            context = cdp.contexts[0] if cdp.contexts else None
-            while time.monotonic() < deadline:
-                cookies = context.cookies("https://comix.to") if context else []
-                candidate = next((item for item in cookies
-                                  if item.get("name") == "cf_clearance" and item.get("value")), None)
-                if candidate:
-                    title = ""
-                    try:
-                        title = (context.pages[0].title() or "").lower() if context and context.pages else ""
-                    except Exception:
-                        pass
-                    if not any(marker in title for marker in ("just a moment", "checking", "verifying")):
-                        found = str(candidate["value"])
-                        try:
-                            user_agent = str(context.pages[0].evaluate("navigator.userAgent"))
-                        except Exception:
-                            user_agent = ""
+                terminal_reason = "browser_exited" if proc.poll() is not None else "cdp_connect_failed"
+            else:
+                context = cdp.contexts[0] if cdp.contexts else None
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        terminal_reason = "browser_exited"
                         break
-                time.sleep(1.5)
+                    cookies = context.cookies("https://comix.to") if context else []
+                    candidate = next((item for item in cookies
+                                      if item.get("name") == "cf_clearance" and item.get("value")), None)
+                    if candidate:
+                        title = ""
+                        try:
+                            title = (context.pages[0].title() or "").lower() if context and context.pages else ""
+                        except Exception:
+                            pass
+                        if not any(marker in title for marker in ("just a moment", "checking", "verifying")):
+                            found = str(candidate["value"])
+                            try:
+                                user_agent = str(context.pages[0].evaluate("navigator.userAgent"))
+                            except Exception:
+                                user_agent = ""
+                            terminal_reason = "capture_success" if user_agent else "capture_no_useragent"
+                            break
+                    time.sleep(1.5)
+                else:
+                    terminal_reason = "capture_timeout"
             try:
                 cdp.close()
             except Exception:
                 pass
     except Exception as exc:  # pragma: no cover - interactive environment
-        print(f"COMIX_CF_CAPTURE error={type(exc).__name__}", flush=True)
-        return 1
+        terminal_reason = "cdp_connect_failed" if cdp is None else "capture_failed"
     finally:
         try:
             proc.terminate()
         except Exception:
             pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
     if not found:
-        print("COMIX_CF_CAPTURE no_cookie", flush=True)
+        print(f"COMIX_CF_CAPTURE_RESULT reason={terminal_reason}", flush=True)
         return 1
     if not user_agent:
-        print("COMIX_CF_CAPTURE no_useragent", flush=True)
+        print("COMIX_CF_CAPTURE_RESULT reason=capture_no_useragent", flush=True)
         return 1
     cookie_path.parent.mkdir(parents=True, exist_ok=True)
     cookie_path.write_text(json.dumps({"cf_clearance": found, "user_agent": user_agent}), encoding="utf-8")
-    print("COMIX_CF_CAPTURE ok", flush=True)
+    print("COMIX_CF_CAPTURE_RESULT reason=capture_success", flush=True)
     return 0
