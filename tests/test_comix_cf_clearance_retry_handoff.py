@@ -4,9 +4,10 @@ Root cause: discover_chapter_source triggered CF capture on
 dynamic_resolver_isolation_unavailable (local subprocess failure) — a code path
 where CF clearance is irrelevant because the child process never starts.
 
-Two fixes:
-  1. scrapling_reader_resolver.py: CREATE_BREAKAWAY_FROM_JOB in Popen creationflags
-  2. down.py: isolation detail codes excluded from CF capture trigger
+Fix: down.py: isolation detail codes excluded from CF capture trigger.
+(CREATE_BREAKAWAY_FROM_JOB was tried and reverted; the actual subprocess failure
+was NotADirectoryError/WinError 267 from cwd=Path(__file__).resolve().parent
+passing through base_library.zip — fixed by removing cwd from Popen.)
 """
 import importlib
 import json

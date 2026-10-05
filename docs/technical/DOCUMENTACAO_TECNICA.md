@@ -2862,9 +2862,16 @@ automática somente quando `SourceError.code == "dynamic_source_unavailable"` **
 `SourceError.detail` não é um código de falha de infraestrutura local
 (`dynamic_resolver_isolation_unavailable`, `dynamic_resolver_child_cleanup_failed`). Falhas
 de isolamento — subprocesso não inicia, job object falha — não são corrigíveis por clearance
-CF e não devem disparar a captura. O subprocesso do resolver usa
-`CREATE_BREAKAWAY_FROM_JOB` (0x01000000) para escapar de job objects herdados do launcher
-PyInstaller antes de ser atribuído ao kill-job próprio.
+CF e não devem disparar a captura.
+
+**Causa raiz histórica — `NotADirectoryError` / WinError 267.** Em builds PyInstaller onedir
+(`COLLECT`), os módulos Python do bundle são empacotados em `_internal/base_library.zip`.
+O `__file__` de `scrapling_reader_resolver.py` no EXE congelado apontava para dentro desse
+zip (e.g. `…\_internal\base_library.zip\yomu\download\readers\scrapling_reader_resolver.py`).
+O `subprocess.Popen` usava `cwd=str(Path(__file__).resolve().parent)`, que passava pelo
+arquivo zip como se fosse um diretório — Windows retornava `ERROR_DIRECTORY` (WinError 267),
+levantando `NotADirectoryError` → `dynamic_resolver_isolation_unavailable`. Corrigido
+removendo o argumento `cwd` (todos os caminhos passados ao filho são absolutos).
 
 **Limitação conhecida — capítulos Comix grandes.** Um capítulo com muitas páginas (ex.: ~147
 slots) **não** materializa por completo dentro dos 180 s: a materialização por canvas é

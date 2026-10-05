@@ -2341,7 +2341,7 @@ def _run_child_command(command: list[str], *, deadline: float,
     cleanup_killed_descendants = False
     try:
         process = subprocess.Popen(
-            command, cwd=str(Path(__file__).resolve().parent),
+            command,
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, text=True,
             creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
