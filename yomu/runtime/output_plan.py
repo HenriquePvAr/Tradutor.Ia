@@ -29,6 +29,13 @@ class Operation:
     QC = "qc"                 # quality report + linguistic review manifest
 
 
+# Separate namespace consumed by workspace authorization and the worker.
+EXECUTION_OPERATIONS = (
+    "analyze_metadata", "download_assets", "run_ocr", "translate",
+    "reconstruct", "generate_pdf",
+)
+
+
 ALL_OPERATIONS = (
     Operation.TRANSLATE, Operation.CLEAN, Operation.TYPESET,
     Operation.PDF, Operation.PSD, Operation.QC,
@@ -90,6 +97,22 @@ class OutputPlan:
             return "translation"  # textual deliverable, no image/PDF
         return "png"  # image-only deliverable (e.g. Apenas Clean)
 
+    @property
+    def execution_operations(self) -> frozenset:
+        """Map output intent to the internal operations that must be authorized."""
+        if self.download_only:
+            return frozenset({"analyze_metadata", "download_assets"})
+        execution = {"analyze_metadata", "download_assets"}
+        if self.operations:
+            execution.add("run_ocr")
+        if self.operations & {Operation.CLEAN, Operation.TYPESET, Operation.PSD, Operation.QC}:
+            execution.add("reconstruct")
+        if Operation.TRANSLATE in self.operations:
+            execution.add("translate")
+        if Operation.PDF in self.operations:
+            execution.add("generate_pdf")
+        return frozenset(execution)
+
     def to_config(self) -> dict:
         """The subset of job-configuration knobs this plan drives. Merged into the
         job config by the caller; every key is one the pipeline already consumes."""
@@ -97,6 +120,7 @@ class OutputPlan:
             "output_plan": self.preset,
             "requested_operations": sorted(self.requested_operations),
             "effective_operations": sorted(self.operations),
+            "execution_operations": sorted(self.execution_operations),
             "translation_enabled": self.translation_enabled,
             "download_only": self.download_only,
             "output_profile": self.output_profile,

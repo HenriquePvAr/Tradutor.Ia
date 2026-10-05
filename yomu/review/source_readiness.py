@@ -649,7 +649,15 @@ class SourceReadinessStore:
                 return {"ok": False, "job_id": job_id,
                         "reason_code": "source_analysis_lineage_mismatch"}
             authorization_owner = _safe_id(analysis.get("owner"), "owner")
-            requested = tuple(sorted(set(map(str, config.get("requested_operations") or ()))))
+            # Output operations (e.g. ``clean``) and execution operations (e.g.
+            # ``download_assets``) are separate namespaces.  New jobs provide the
+            # resolved execution set; legacy jobs retain the historical field.
+            requested_values = (
+                config.get("execution_operations")
+                or config.get("requested_operations")
+                or ()
+            )
+            requested = tuple(sorted(set(map(str, requested_values))))
             mode_allowed = (
                 {"analyze_metadata", "download_assets"} if config.get("download_only")
                 else set(PIPELINE_OPERATIONS)

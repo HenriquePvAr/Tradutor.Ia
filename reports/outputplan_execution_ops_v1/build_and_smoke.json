@@ -1,0 +1,11 @@
+{
+  "build": "PASS",
+  "pyinstaller": "6.22.2",
+  "exe": "C:/Users/henri/YomuExperimental/outputplan-execution-ops-v1/dist/YomuSekai/YomuSekai.exe",
+  "sha256": "D040DA7D17B7D3686C5A79ADB349972D4C60C161827DE505D9DA573B78D22953",
+  "pid": 13496,
+  "window_expected": "Yomu Sekai",
+  "job_started_by_smoke": false,
+  "previous_build_closed": true,
+  "owner_retest_required": true
+}

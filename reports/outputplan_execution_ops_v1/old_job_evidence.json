@@ -1,0 +1,18 @@
+{
+  "job_id": "e3fde760f8cc4f7abe2169b90f3a370a",
+  "job_prefix": "85e1af6b6928",
+  "run_id": "06dfa346-03f1-4743-93e4-f3f0b6ba8ea7",
+  "output_plan": "apenas_clean",
+  "requested_operations": ["clean"],
+  "effective_operations": ["clean"],
+  "execution_operations_persisted": false,
+  "status": "source_analysis_ready",
+  "stage": "source_analysis_ready",
+  "authorization_present": false,
+  "denial_reason": "workspace_policy_operation_denied",
+  "cause": "The authorization resolver compared output operation clean against the internal execution-operation namespace and therefore never saw download_assets.",
+  "download_started": false,
+  "ocr_started": false,
+  "clean_started": false,
+  "db_mutated": false
+}

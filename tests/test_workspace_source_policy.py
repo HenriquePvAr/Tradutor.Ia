@@ -107,7 +107,8 @@ class WorkspaceAuthorizedTransitionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def create_ready(self, *, mode="fast", full=True, max_images=None,
-                     download_only=False, requested=True):
+                     download_only=False, requested=True,
+                     requested_operations=None, execution_operations=None):
         job_id = self.jobs.create_job(
             source_url="https://fixture.invalid/chapter",
             output_dir=str(Path(self.tmp.name) / "output"),
@@ -119,9 +120,10 @@ class WorkspaceAuthorizedTransitionTests(unittest.TestCase):
                 "requested_scope": "full" if full else str(max_images),
                 "effective_scope": "full" if full else str(max_images),
                 "scope_source": "user", "scope_hash": "c" * 64,
-                "requested_operations": (
+                "requested_operations": requested_operations or (
                     ["analyze_metadata", "download_assets"] if download_only
                     else list(PIPELINE_OPERATIONS)),
+                "execution_operations": execution_operations,
                 "mode": mode, "download_only": download_only,
                 "full": full, "max_images": max_images,
             })
@@ -141,6 +143,18 @@ class WorkspaceAuthorizedTransitionTests(unittest.TestCase):
             source_selection_json=json.dumps({"candidate_ids": ["p1", "p2"]}),
             reason_code="workspace_policy_resolution_pending")
         return job_id, result
+
+    def test_clean_output_ops_are_authorized_via_execution_ops(self):
+        execution = ["analyze_metadata", "download_assets", "run_ocr", "reconstruct"]
+        job_id, result = self.create_ready(
+            requested_operations=["clean"], execution_operations=execution)
+        outcome = self.ready.resolve_ready_pipeline(job_id)
+        decision = self.ready.latest_authorization(
+            owner="local", analysis_result_id=result.analysis_id)
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(decision.allowed_operations, tuple(sorted(execution)))
+        self.assertNotIn("translate", decision.allowed_operations)
+        self.assertEqual(self.jobs.get_job(job_id)["configuration"]["requested_operations"], ["clean"])
 
     def test_worker_handoff_keeps_claim_nonclaimable(self):
         job_id, _ = self.create_ready()

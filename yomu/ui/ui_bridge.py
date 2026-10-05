@@ -6405,9 +6405,15 @@ class UiBridge:
                     PIPELINE_OPERATIONS, SourceReadinessStore, default_workspace_id,
                 )
 
-                requested_operations = (
+                requested_output_operations = (
                     list(normalized["requested_operations"])
                     if normalized.get("requested_operations") is not None
+                    else (["analyze_metadata", "download_assets"]
+                          if normalized["download_only"] else list(PIPELINE_OPERATIONS))
+                )
+                execution_operations = (
+                    list(normalized["execution_operations"])
+                    if normalized.get("execution_operations") is not None
                     else (["analyze_metadata", "download_assets"]
                           if normalized["download_only"] else list(PIPELINE_OPERATIONS))
                 )
@@ -6432,7 +6438,8 @@ class UiBridge:
                     "scope_hash": hashlib.sha256(json.dumps(
                         scope_identity, sort_keys=True, separators=(",", ":")
                     ).encode("utf-8")).hexdigest(),
-                    "requested_operations": requested_operations,
+                    "requested_operations": requested_output_operations,
+                    "execution_operations": execution_operations,
                     "requested_at": time.time(),
                 })
                 readiness = SourceReadinessStore(self.store.db_path)
@@ -7607,6 +7614,8 @@ class UiBridge:
                                      if output_plan is not None else None),
             "effective_operations": (sorted(output_plan.operations)
                                      if output_plan is not None else None),
+            "execution_operations": (sorted(output_plan.execution_operations)
+                                      if output_plan is not None else None),
         }
 
     @staticmethod

@@ -1,0 +1,11 @@
+{
+  "focused": "158 passed, 10 subtests passed",
+  "full": "5872 passed, 141 skipped, 2 xfailed, 732 subtests passed",
+  "new_regressions": [
+    "output plan resolves clean-only execution dependencies",
+    "workspace authorization accepts clean output through execution operations",
+    "requested output operations remain clean in persisted job provenance",
+    "translation remains excluded from clean-only authorization"
+  ],
+  "new_failures": 0
+}

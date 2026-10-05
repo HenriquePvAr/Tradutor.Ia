@@ -25,6 +25,27 @@ def test_professional_closes_to_full_operation_set():
     assert normalize_output_plan("profissional").operations == frozenset(op.ALL_OPERATIONS)
 
 
+def test_output_plan_resolves_separate_execution_operations():
+    clean = normalize_output_plan("apenas_clean")
+    assert clean.requested_operations == frozenset({Operation.CLEAN})
+    assert clean.operations == frozenset({Operation.CLEAN})
+    assert clean.execution_operations == frozenset({
+        "analyze_metadata", "download_assets", "run_ocr", "reconstruct",
+    })
+    assert "translate" not in clean.execution_operations
+
+    ready = normalize_output_plan("traducao_pronta")
+    assert ready.execution_operations == frozenset({
+        "analyze_metadata", "download_assets", "run_ocr", "translate",
+        "reconstruct", "generate_pdf",
+    })
+
+    download = normalize_output_plan("download")
+    assert download.execution_operations == frozenset({
+        "analyze_metadata", "download_assets",
+    })
+
+
 def test_psd_and_qc_pull_the_professional_profile():
     for custom in ({Operation.PSD}, {Operation.QC}):
         plan = normalize_output_plan("personalizado", operations=custom)

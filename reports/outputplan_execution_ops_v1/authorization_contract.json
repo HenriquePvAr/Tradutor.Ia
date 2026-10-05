@@ -1,0 +1,32 @@
+{
+  "output_namespace": ["translate", "clean", "typeset", "pdf", "psd", "qc"],
+  "execution_namespace": ["analyze_metadata", "download_assets", "run_ocr", "translate", "reconstruct", "generate_pdf"],
+  "policy_namespace": ["analyze_metadata", "download_assets", "run_ocr", "translate", "reconstruct", "generate_pdf", "publish"],
+  "single_source_of_truth_resolver": "yomu.runtime.output_plan.OutputPlan.execution_operations",
+  "matrices": {
+    "apenas_clean": {
+      "output": ["clean"],
+      "execution": ["analyze_metadata", "download_assets", "run_ocr", "reconstruct"],
+      "translate": false,
+      "publish": false
+    },
+    "traducao_pronta": {
+      "output": ["clean", "pdf", "translate", "typeset"],
+      "execution": ["analyze_metadata", "download_assets", "run_ocr", "translate", "reconstruct", "generate_pdf"],
+      "publish": false
+    },
+    "profissional": {
+      "output": ["clean", "pdf", "psd", "qc", "translate", "typeset"],
+      "execution": ["analyze_metadata", "download_assets", "run_ocr", "translate", "reconstruct", "generate_pdf"],
+      "publish": false
+    },
+    "download": {
+      "output": [],
+      "execution": ["analyze_metadata", "download_assets"],
+      "publish": false
+    }
+  },
+  "policy_remains_fail_closed": true,
+  "clean_only_translate_authorized": false,
+  "clean_only_yk": 0
+}
