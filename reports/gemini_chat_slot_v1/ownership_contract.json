@@ -1,0 +1,1 @@
+{"acquire":true,"busy_slot_rejects_second_owner":true,"release":true,"queue_serializes_jobs":true,"cross_job_output_mismatch":0}

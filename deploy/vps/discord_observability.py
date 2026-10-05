@@ -13,7 +13,7 @@ import requests
 from fastapi import APIRouter, HTTPException
 
 SCHEMA_VERSION = "yomu-observability-v1"
-EVENTS = {"WORKER_READY", "JOB_CREATED", "JOB_STARTED", "JOB_ANALYZED", "REMOTE_FALLBACK_QUEUED", "REMOTE_FALLBACK_STARTED", "REMOTE_PROGRESS", "REVIEW_REQUIRED", "JOB_COMPLETED", "JOB_FAILED", "REMOTE_AUTH_REQUIRED", "WORKER_DEGRADED"}
+EVENTS = {"WORKER_READY", "JOB_CREATED", "JOB_STARTED", "JOB_ANALYZED", "REMOTE_FALLBACK_QUEUED", "REMOTE_FALLBACK_STARTED", "REMOTE_PROGRESS", "REVIEW_REQUIRED", "JOB_COMPLETED", "JOB_FAILED", "REMOTE_AUTH_REQUIRED", "WORKER_DEGRADED", "CHAT_ROTATED"}
 router = APIRouter()
 _seen: OrderedDict[str, float] = OrderedDict()
 _lock = threading.Lock()
@@ -53,7 +53,15 @@ def _content(event: dict[str, Any]) -> str:
         return ("🌐 Yomu · Fallback remoto\n\nElegíveis: " + str(event.get("eligible", "UNKNOWN")) +
                 "\nLocal: " + str(event.get("local", "UNKNOWN")) +
                 "\nProcessados: " + str(event.get("processed", "0 / UNKNOWN")) +
-                "\nChat reuse: UNKNOWN")
+                "\n\nBrowser: " + str(event.get("browser_count", "UNKNOWN")) +
+                "\nSlot: " + str(event.get("slot_id", "UNKNOWN")) +
+                "\nChat reused: " + str(event.get("chat_reused", "UNKNOWN")) +
+                "\nGeneration: " + str(event.get("generation_seq", "UNKNOWN")) +
+                "\nRotation: " + str(event.get("rotation_count", "UNKNOWN")))
+    if name == "CHAT_ROTATED":
+        return ("🔄 Yomu · Chat rotacionado\n\nSlot: " + str(event.get("slot_id", "UNKNOWN")) +
+                "\nReason: " + str(event.get("reason", "UNKNOWN")) +
+                "\nPrevious generations: " + str(event.get("generation_seq", "UNKNOWN")))
     if name == "JOB_COMPLETED":
         return ("✅ Yomu · Concluído\n\nPáginas: " + str(event.get("pages", "UNKNOWN")) +
                 "\nLocal: " + str(event.get("local", "UNKNOWN")) +
