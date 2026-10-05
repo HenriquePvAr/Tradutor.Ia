@@ -378,8 +378,9 @@ def _assert_startup_port_available(host: str, port: int) -> None:
     probe_host = "127.0.0.1" if bind_host in {"0.0.0.0", "::"} else bind_host
     family = socket.AF_INET6 if ":" in probe_host else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as probe:
-        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        # SO_REUSEADDR lets us probe even through TIME_WAIT connections.
+        # We only need to detect an active listener, not reserve the port.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((probe_host, bind_port))
         except OSError as exc:

@@ -2082,7 +2082,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             fetch_kwargs = dict(
                 real_chrome=True, executable_path=executable,
                 headless=not using_cloak,
-                args=["--window-position=-32000,-32000"] if using_cloak else [],
+                args=["--window-position=-32000,-32000", "--start-minimized"] if using_cloak else [],
                 timeout=max(1, int(min(float(timeout), remaining) * 1000)), wait=1200,
                 network_idle=False, page_setup=page_setup, page_action=page_action,
                 retries=1, retry_delay=0,
