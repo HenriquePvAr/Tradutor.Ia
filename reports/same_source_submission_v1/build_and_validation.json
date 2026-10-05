@@ -1,0 +1,16 @@
+{
+  "build": "PASS",
+  "pyinstaller": "6.22.2",
+  "venv": "C:/Projetos/Tradutor.Ia/.venv-beta",
+  "exe": "C:/Users/henri/YomuExperimental/same-source-new-translation-v1/dist/YomuSekai/YomuSekai.exe",
+  "sha256": "9832BE9BBDB611110E63795315A497D7FE7EB06DA2C99ED48F045E84177284DE",
+  "process": {
+    "pid": 20940,
+    "window_title": "Yomu Sekai",
+    "responding": true,
+    "job_started": false
+  },
+  "previous_validation_instance_closed": true,
+  "owner_visual_retest_required": true,
+  "push": "NO"
+}

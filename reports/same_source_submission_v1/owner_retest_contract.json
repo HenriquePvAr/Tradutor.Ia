@@ -1,0 +1,20 @@
+{
+  "build_must_be_opened": true,
+  "owner_action": "Retry the same Comix URL with Apenas Clean in the newly opened build.",
+  "expected_before_source_analysis_finishes": [
+    "previous completion card remains hidden",
+    "previous artifact actions remain hidden",
+    "no old 100% pipeline is repainted"
+  ],
+  "expected_on_source_analysis_timeout": [
+    "new job is still not claimed as created",
+    "error/retry state is visible",
+    "start control is not permanently stuck in ANALISANDO A FONTE"
+  ],
+  "expected_on_success": [
+    "only then a new job identity is adopted",
+    "polling may render the new job state"
+  ],
+  "owner_visual_confirmation_required": true,
+  "ready_for_owner_same_url_clean_only_retest": true
+}

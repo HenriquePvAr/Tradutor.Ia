@@ -1,0 +1,10 @@
+{
+  "focused_command": "pytest -q tests/test_same_source_submission_state.py tests/test_start_retry_after_prejob_failure.py tests/test_source_readiness.py tests/test_new_translation_source_policy_state.py tests/test_output_plan.py tests/test_translation_start.py",
+  "result": "160 passed, 2 subtests passed",
+  "regression_file": "tests/test_same_source_submission_state.py",
+  "assertions": [
+    "new translation suppresses historical result while source analysis is pending",
+    "source-analysis failure returns retry gate to blocked instead of validating",
+    "suppression ends only after a durable job/run identity exists"
+  ]
+}

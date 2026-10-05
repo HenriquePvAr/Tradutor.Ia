@@ -103,6 +103,9 @@
     currentChapterName: '',
     currentStageVersion: 0,
     newTranslationDraft: false,
+    // Keep a fresh composition isolated from the previous terminal job while
+    // source analysis is in flight or has failed before job creation.
+    suppressHistoricalResult: false,
     terminalStatusByIdentity: new Map(),
     retryDialogContext: null,
     authUserId: '',
@@ -784,6 +787,7 @@
     if (name === 'nova' && !appState.reviewMode) {
       const wasFreshDraft = appState.newTranslationDraft;
       appState.newTranslationDraft = true;
+      appState.suppressHistoricalResult = true;
       // A genuinely new translation starts in the safest, least surprising
       // cache mode: process the selected source again.  Once the draft is
       // active, preserve an explicit operator choice (including force=false)
@@ -2031,6 +2035,7 @@
     appState.currentChapterName = $('#nameInput')?.value?.trim() || '';
     appState.currentStageVersion += 1;
     appState.newTranslationDraft = false;
+    appState.suppressHistoricalResult = true;
     $('#balloonText') && ($('#balloonText').textContent = window.TradutorI18n?.t('pipeline.validating_source') || 'Validando fonte');
     persistPipelineIdentity('validating_source');
     uiTrace('pipeline_request_created', {request_id: appState.currentRequestId});
@@ -2215,6 +2220,14 @@
     }
   }
   function showSourceValidationError(error) {
+    // The direct Start path performs source analysis inline. On timeout/error it
+    // must leave the retry gate usable instead of keeping the form "validating".
+    appState.sourceValidation = {
+      status: 'blocked', analysisResultId: '', sourceUrl: appState.currentSourceUrl || '',
+      reasonCode: String(error?.code || error?.reason_code || 'source_validation_failed'),
+      analysis: null,
+    };
+    appState.sourceReady = null;
     const box = $('#startError');
     const code = sourceErrorCategory(error.code || error.reason_code);
     const message = error.message || reasonText(code) || 'Não foi possível analisar esta fonte.';
@@ -2588,6 +2601,7 @@
             });
             appState.currentJobId = String(pending.job_id || '');
             appState.currentRunId = String(pending.run_id || '');
+            appState.suppressHistoricalResult = false;
             ensurePolling();
             renderLocalPipelineState('waiting_source_verification', {
               status: 'waiting_source_verification',
@@ -2671,6 +2685,7 @@
       resetRunPreview();                            // never carry the previous job's card over
       appState.currentJobId = String(result.job_id || '');
       appState.currentRunId = String(result.run_id || '');
+      appState.suppressHistoricalResult = false;
       persistPipelineIdentity(result.stage || 'queued');
       uiTrace('pipeline_job_created', {
         request_id: appState.currentRequestId,
@@ -3235,6 +3250,18 @@
     return Boolean(queuedRecord && activeOperationStatuses.has(String(queuedRecord.status || '').toLowerCase()));
   }
   function renderRuntime(runtime) {
+    if (appState.suppressHistoricalResult) {
+      const sourceAnalysisPending = appState.sourceValidation.status === 'validating'
+        || Boolean(startInFlight);
+      if (sourceAnalysisPending) appState.status = 'staging';
+      appState.activeJobId = '';
+      appState.latestJobId = '';
+      setRunControls(sourceAnalysisPending, false);
+      $('#runStatusCard') && ($('#runStatusCard').hidden = true);
+      $('#jobCompletionPanel') && ($('#jobCompletionPanel').hidden = true);
+      $('#artifactActions') && ($('#artifactActions').innerHTML = '');
+      return;
+    }
     appState.status = runtime.status || 'ready';
     appState.queue = runtime.queue || [];
     const awaitingReview = appState.status === 'awaiting_source_review';

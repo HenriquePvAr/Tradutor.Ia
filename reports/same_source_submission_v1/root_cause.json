@@ -1,0 +1,24 @@
+{
+  "mission": "YOMU_SAME_SOURCE_NEW_TRANSLATION_STALE_STATE_AND_JOB_SUBMISSION_FIX_V1",
+  "base_head": "b839bf2eecf3cef1e504ab3ac1857f7b197658ac",
+  "source_analysis_request": true,
+  "source_analysis_result": "failed_before_job_creation",
+  "failure_code": "source_analysis_failed",
+  "failure_class": "TimeoutError",
+  "failure_layer": ["SOURCE_ANALYSIS", "UI_STATE"],
+  "run_route_reached": false,
+  "job_create_attempted": false,
+  "db_insert_attempted": false,
+  "root_cause": "Comix challenge/clearance fallback timed out before /api/ui/run. During that interval renderRuntime treated the empty currentJobId as permission to render runtime.latest, so the previous terminal result reappeared. The error path also left sourceValidation in validating, keeping the start control disabled.",
+  "same_url_is_direct_cause": false,
+  "same_url_exposes_stale_render": true,
+  "old_result_repainted": true,
+  "fix": {
+    "historical_result_suppressed_until_job_ownership": true,
+    "source_validation_error_releases_retry_gate": true,
+    "clean_only_pipeline_changed": false
+  },
+  "synthetic_events": 0,
+  "mock_provider": 0,
+  "mock_gemini": 0
+}
