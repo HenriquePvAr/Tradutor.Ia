@@ -2847,6 +2847,16 @@ bounded); `budget_insufficient` quando não cabe outra passada com a margem de c
 (`_should_read_response_body`: dedup por URL, `content-type`/`content-length`), reduzindo
 leituras redundantes **sem perder cobertura** (só descarta o que a promoção rejeitaria).
 
+**Clearance Cloudflare — owner-assisted, sem solver automático.** Quando o Comix mantém um
+challenge visível, o processo UI pode abrir Chrome real com perfil dedicado e o owner pode
+concluir a verificação. A captura CDP salva apenas localmente, fora do Git, o
+`cf_clearance` e o User-Agent em `%LOCALAPPDATA%\YomuSekai\comix_cf_cookie.json`; o valor nunca
+vai para logs, reports ou Discord. Em tentativas posteriores, o resolver pode reutilizar esse
+clearance através do `StealthyFetcher` com `solve_cloudflare=False`. Não há solver automático,
+spoofing de fingerprint ou bypass de CAPTCHA. `YOMU_COMIX_CF_AUTOCAPTURE=1` é habilitado apenas
+no processo UI; `YOMU_DISABLE_COMIX_CF_PROFILE=1` desabilita a reutilização. Expiração retorna ao
+estado recuperável `waiting_source_verification`.
+
 **Limitação conhecida — capítulos Comix grandes.** Um capítulo com muitas páginas (ex.: ~147
 slots) **não** materializa por completo dentro dos 180 s: a materialização por canvas é
 serial e lenta. O resultado é um **erro terminal seguro e específico**

@@ -68,6 +68,8 @@ def _run_resolve_with(failure_sequence):
     with mock.patch.object(resolver, "supports_url", return_value=True), \
             mock.patch.object(resolver, "discover_system_browser", return_value=("chrome", "/fake/chrome")), \
             mock.patch.object(resolver, "_DynamicFetcher", fake_fetcher), \
+            mock.patch.object(resolver, "_StealthyFetcher", None), \
+            mock.patch.object(resolver, "_load_comix_cf_override", return_value=None), \
             mock.patch.object(resolver, "_resolution_failure_code", side_effect=list(failure_sequence)), \
             mock.patch.object(resolver, "_append_telemetry", side_effect=record), \
             mock.patch.object(resolver, "_resolve_in_child_process", side_effect=_inline_boundary(adapter)), \
@@ -155,6 +157,8 @@ class MaterializationRetryTests(unittest.TestCase):
         with mock.patch.object(resolver, "supports_url", return_value=True), \
                 mock.patch.object(resolver, "discover_system_browser", return_value=("chrome", "/fake")), \
                 mock.patch.object(resolver, "_DynamicFetcher", fake_fetcher), \
+                mock.patch.object(resolver, "_StealthyFetcher", None), \
+                mock.patch.object(resolver, "_load_comix_cf_override", return_value=None), \
                 mock.patch.object(resolver, "_append_telemetry"), \
                 mock.patch.object(resolver, "_resolve_in_child_process",
                                   side_effect=_inline_boundary(adapter)):

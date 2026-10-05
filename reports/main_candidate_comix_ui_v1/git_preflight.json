@@ -1,0 +1,16 @@
+{
+  "source_branch_a": "fix/comix-source-challenge-and-job-abort-v1",
+  "source_head_a": "44f2f94",
+  "source_branch_b": "feat/comix-cloudflare-clearance-v1",
+  "source_head_b": "4a148c4",
+  "common_merge_base": "6ff0b871",
+  "main": "6ff0b871",
+  "origin_main": "121d6285",
+  "e16a99a_ancestry_a": true,
+  "e16a99a_ancestry_b": true,
+  "source_a_worktree_clean": true,
+  "source_b_worktree_tracked_clean": true,
+  "source_b_untracked_preserved": true,
+  "push": false,
+  "merge_main": false
+}

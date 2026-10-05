@@ -3365,6 +3365,8 @@ async def shutdown_processes() -> None:
 
 
 def main() -> int:
+    # Only the visible owner-facing UI may open a browser for human Comix verification.
+    os.environ.setdefault("YOMU_COMIX_CF_AUTOCAPTURE", "1")
     try:
         bind_host = validate_bind_security(APP_HOST, AUTH)
     except AuthConfigurationError as exc:

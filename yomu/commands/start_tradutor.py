@@ -69,7 +69,7 @@ def _detached_flags() -> int:
 
 def build_child_command(role: str, *, frozen: bool | None = None) -> list[str]:
     """Build the worker/UI child command for Python and frozen runtimes."""
-    if role not in {"worker", "ui", "dynamic-resolver"}:
+    if role not in {"worker", "ui", "dynamic-resolver", "comix-cf-capture"}:
         raise ValueError(f"unknown child role: {role}")
     if frozen is None:
         frozen = bool(getattr(sys, "frozen", False))
@@ -79,6 +79,7 @@ def build_child_command(role: str, *, frozen: bool | None = None) -> list[str]:
         "worker": "worker_service.py",
         "ui": "app_ui.py",
         "dynamic-resolver": "yomu/download/readers/dynamic_resolver_process.py",
+        "comix-cf-capture": "yomu/download/readers/scrapling_reader_resolver.py",
     }[role]
     script = REPO_ROOT / script_name
     return [background_python_executable(), "-u", str(script)]
@@ -130,6 +131,9 @@ def _run_internal_child(role: str, argv: list[str]) -> int:
     if role == "dynamic-resolver":
         import yomu.download.readers.dynamic_resolver_process as dynamic_resolver_process
         return dynamic_resolver_process.main(argv)
+    if role in {"comix-cf-capture", "comix-cf-warmup"}:
+        from yomu.download.readers import scrapling_reader_resolver
+        return scrapling_reader_resolver.capture_cloudflare_clearance(argv)
     if role == "pipeline":
         print("CHILD_POST_BOOT_BEGIN role=pipeline", flush=True)
         try:

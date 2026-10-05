@@ -1,0 +1,7 @@
+{
+  "status": "PASS",
+  "command": "python tools/repository/check_root_policy.py",
+  "root_python_files": 10,
+  "new_production_root_implementations": 0,
+  "e16a99a_structure_preserved": true
+}

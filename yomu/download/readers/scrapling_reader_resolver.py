@@ -33,6 +33,11 @@ except Exception as exc:  # pragma: no cover - exercised in minimal installs
     # paths and is intentionally never written to diagnostics.
     _DYNAMIC_IMPORT_ERROR = type(exc).__name__[:80]
 
+try:  # optional; used only to replay an owner-obtained clearance
+    from scrapling.fetchers import StealthyFetcher as _StealthyFetcher
+except Exception:  # pragma: no cover - optional capability
+    _StealthyFetcher = None
+
 
 SELECTED_DYNAMIC_HOSTS = frozenset({"comix.to", "www.comix.to"})
 MAX_PAGES = 400
@@ -45,6 +50,13 @@ MAX_CANONICAL_ATTEMPTS = 3
 # remaining budget so a stuck browser operation raises into Scrapling's cleanup path.
 DYNAMIC_RESOLVER_DEADLINE_SECONDS = 180.0
 DYNAMIC_RESOLVER_CLEANUP_RESERVE_SECONDS = 3.0
+# Comix clearance is an operator-owned browser artifact. It is stored outside the repository
+# and replayed only when a human obtained it in the dedicated Chrome profile. Automatic solver
+# and fingerprint-spoofing paths are intentionally not enabled here.
+COMIX_CF_REUSE_ENABLED = (
+    os.environ.get("YOMU_DISABLE_COMIX_CF_PROFILE", "").strip().lower()
+    not in {"1", "true", "yes"}
+)
 # Missing-page (canonical materialization) budget model.  Each unresolved logical page
 # gets its OWN bounded budget so one slow page cannot starve the pages after it; the
 # chapter-level ceiling is proportional to the number of unresolved pages (with a hard
@@ -59,6 +71,26 @@ MAX_RESOLUTION_ATTEMPTS = 3
 MAX_SCROLL_STEPS = 120
 SCROLL_STABLE_ROUNDS = 3
 _PAGE_SELECTOR = "img.rpage-page__img"
+
+
+def _comix_cf_cookie_path() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return Path(base) / "YomuSekai" / "comix_cf_cookie.json"
+
+
+def _load_comix_cf_override() -> tuple[str, str] | None:
+    """Read a human-obtained Comix clearance without logging or versioning it."""
+    if not COMIX_CF_REUSE_ENABLED:
+        return None
+    try:
+        data = json.loads(_comix_cf_cookie_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    cookie = str((data or {}).get("cf_clearance") or "").strip()
+    user_agent = str((data or {}).get("user_agent") or "").strip()
+    if not cookie or not user_agent or len(cookie) > 8192 or len(user_agent) > 512:
+        return None
+    return cookie, user_agent
 
 
 def _expected_page_indices(control_count: int) -> list[int]:
@@ -2023,12 +2055,21 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             pending_responses.clear()
         try:
             fetch_started = stage_start("dynamic_fetch")
-            response = _DynamicFetcher.fetch(
-                url, real_chrome=True, executable_path=browser[1], headless=True,
+            fetch_kwargs = dict(
+                real_chrome=True, executable_path=browser[1], headless=True,
                 timeout=max(1, int(min(float(timeout), remaining) * 1000)), wait=1200,
                 network_idle=False, page_setup=page_setup, page_action=page_action,
                 retries=1, retry_delay=0,
             )
+            clearance = _load_comix_cf_override()
+            if clearance is not None and _StealthyFetcher is not None:
+                cookie_value, user_agent = clearance
+                response = _StealthyFetcher.fetch(
+                    url, solve_cloudflare=False, useragent=user_agent,
+                    cookies=[{"name": "cf_clearance", "value": cookie_value,
+                              "domain": ".comix.to", "path": "/"}], **fetch_kwargs)
+            else:
+                response = _DynamicFetcher.fetch(url, **fetch_kwargs)
             stage_end("dynamic_fetch", fetch_started)
         except DynamicReaderError as exc:
             _append_telemetry("dynamic_resolution_failed", status="error", error_code=exc.code)
@@ -2410,3 +2451,77 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
         return _resolve_in_child_process(url, cancel_check=cancel_check, timeout=timeout)
     return _resolve_in_child_process(
         url, cancel_check=cancel_check, timeout=timeout, max_pages=max_pages)
+
+
+def capture_cloudflare_clearance(argv: list[str] | None = None) -> int:
+    """Open real Chrome for owner verification and persist only the resulting local clearance."""
+    browser = discover_system_browser()
+    if browser is None or not browser[1]:
+        print("COMIX_CF_CAPTURE unavailable: no system Chrome found", flush=True)
+        return 2
+    target = (argv[0] if argv else "") or "https://comix.to/"
+    try:
+        port = int(os.environ.get("YOMU_COMIX_CDP_PORT", "9222") or "9222")
+    except ValueError:
+        port = 9222
+    base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "YomuSekai"
+    profile = base / "comix_cdp_profile"
+    cookie_path = _comix_cf_cookie_path()
+    profile.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen([
+        browser[1], f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+        "--no-first-run", "--no-default-browser-check", "--new-window", target,
+    ])
+    found = None
+    user_agent = ""
+    try:
+        from patchright.sync_api import sync_playwright
+        deadline = time.monotonic() + 240.0
+        with sync_playwright() as playwright:
+            cdp = None
+            for _ in range(30):
+                try:
+                    cdp = playwright.chromium.connect_over_cdp(f"http://localhost:{port}")
+                    break
+                except Exception:
+                    time.sleep(1.0)
+            if cdp is None:
+                return 1
+            context = cdp.contexts[0] if cdp.contexts else None
+            while time.monotonic() < deadline:
+                cookies = context.cookies("https://comix.to") if context else []
+                candidate = next((item for item in cookies
+                                  if item.get("name") == "cf_clearance" and item.get("value")), None)
+                if candidate:
+                    title = ""
+                    try:
+                        title = (context.pages[0].title() or "").lower() if context and context.pages else ""
+                    except Exception:
+                        pass
+                    if not any(marker in title for marker in ("just a moment", "checking", "verifying")):
+                        found = str(candidate["value"])
+                        try:
+                            user_agent = str(context.pages[0].evaluate("navigator.userAgent"))
+                        except Exception:
+                            user_agent = ""
+                        break
+                time.sleep(1.5)
+            try:
+                cdp.close()
+            except Exception:
+                pass
+    except Exception as exc:  # pragma: no cover - interactive environment
+        print(f"COMIX_CF_CAPTURE error={type(exc).__name__}", flush=True)
+        return 1
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    if not found:
+        print("COMIX_CF_CAPTURE no_cookie", flush=True)
+        return 1
+    cookie_path.parent.mkdir(parents=True, exist_ok=True)
+    cookie_path.write_text(json.dumps({"cf_clearance": found, "user_agent": user_agent}), encoding="utf-8")
+    print("COMIX_CF_CAPTURE ok", flush=True)
+    return 0

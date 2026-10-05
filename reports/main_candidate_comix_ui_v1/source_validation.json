@@ -1,0 +1,13 @@
+{
+  "static_fetch": "NOT_RUN",
+  "challenge_detection": "PASS_BY_FOCUSED_TESTS",
+  "dynamic_browser_fallback": "PASS_BY_FOCUSED_TESTS",
+  "cf_clearance": "PASS_BY_CONTRACT_TESTS; REAL_OWNER_CAPTURE_NOT_RUN",
+  "human_verification_recoverable": "PASS_BY_FOCUSED_TESTS",
+  "job_resume": "PASS_BY_FOCUSED_TESTS",
+  "three_page_download": "NOT_RUN",
+  "full_count_discovery": "NOT_RUN",
+  "deepl_calls": 0,
+  "yk_consumed": 0,
+  "gemini_clean_calls": 0
+}

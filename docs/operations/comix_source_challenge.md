@@ -7,3 +7,9 @@ When a claimed URL job reaches that outcome, the worker persists `waiting_source
 The main output-format selector was removed. The effective output contract remains owned by the existing OutputPlan; the legacy `output_format` value is retained only as compatibility metadata.
 
 No CAPTCHA, anti-bot, fingerprint spoofing, cookies, tokens, or credentials are handled by this flow.
+
+## Owner-obtained Cloudflare clearance
+
+When the owner legitimately completes a visible Comix challenge in the dedicated Chrome profile, the UI-only CDP capture path may persist the resulting `cf_clearance` and matching User-Agent under `%LOCALAPPDATA%\YomuSekai\comix_cf_cookie.json`. The file is outside Git and its value is never logged or sent to Discord. The resolver may replay that owner-provided clearance through the existing dynamic browser path; it does not run an automatic Cloudflare solver or stealth bypass.
+
+The UI opt-in is `YOMU_COMIX_CF_AUTOCAPTURE=1`. `YOMU_DISABLE_COMIX_CF_PROFILE=1` disables clearance reuse. Expiration is expected; an expired clearance returns to the same recoverable human-verification state.

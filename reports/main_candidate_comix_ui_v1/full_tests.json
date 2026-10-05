@@ -1,0 +1,10 @@
+{
+  "status": "PASS",
+  "passed": 5835,
+  "skipped": 141,
+  "xfailed": 2,
+  "failed": 0,
+  "subtests": 732,
+  "warnings": 1,
+  "new_failures": 0
+}

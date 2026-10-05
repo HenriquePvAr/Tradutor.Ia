@@ -1,0 +1,12 @@
+{
+  "challenge_detection": {"a": true, "b": false, "action": "preserve_a"},
+  "human_verification_wait": {"a": true, "b": false, "action": "preserve_a"},
+  "job_resume": {"a": true, "b": false, "action": "preserve_a"},
+  "cancel_waiting_job": {"a": true, "b": false, "action": "preserve_a"},
+  "owner_clearance_capture": {"a": false, "b": true, "action": "port_to_yomu"},
+  "clearance_replay": {"a": false, "b": true, "action": "port_to_yomu_without_solver"},
+  "automatic_stealth_solver": {"a": false, "b": true, "action": "skip_policy_violation"},
+  "cdp_capture": {"a": false, "b": true, "action": "port_to_yomu"},
+  "source_specific_comix_gate": {"a": true, "b": true, "action": "single_yomu_gate"},
+  "outputplan_gemini_yk_discord": {"a": true, "b": false, "action": "preserve_a"}
+}

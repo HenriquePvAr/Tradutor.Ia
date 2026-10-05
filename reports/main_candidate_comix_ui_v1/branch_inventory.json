@@ -1,0 +1,8 @@
+{
+  "branch_a_unique_commits": ["44f2f94", "8bfecae", "7c5c400", "1f8adb3", "8098b58", "03ec156", "e288fee", "b1fdf29", "7066cf1", "e16a99a"],
+  "branch_b_unique_commits": ["c8c382a", "4a148c4"],
+  "branch_b_code_commit": "c8c382a",
+  "branch_b_docs_commit": "4a148c4",
+  "branch_a_scope": "product head after repository reorganization plus challenge-aware resumable jobs",
+  "branch_b_scope": "pre-reorganization Comix Cloudflare clearance proposal and documentation"
+}

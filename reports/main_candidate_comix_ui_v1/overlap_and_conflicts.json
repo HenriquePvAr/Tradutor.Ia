@@ -1,0 +1,8 @@
+{
+  "overlapping_files": ["app_ui.py", "down.py", "scrapling_reader_resolver.py", "docs/technical/DOCUMENTACAO_TECNICA.md", "ui/ui_shell.html"],
+  "root_path_overlap_resolution": "Do not merge B root implementations; A compatibility shims and yomu/ packages remain authoritative.",
+  "semantic_conflicts": ["B automatic solve_cloudflare path conflicts with no-bypass policy; omitted."],
+  "state_machine_conflicts": [],
+  "conflicts_found": false,
+  "conflicts_resolved": "N/A; audited port avoided blind merge"
+}

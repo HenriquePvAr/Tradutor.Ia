@@ -1,0 +1,5 @@
+{
+  "status": "PASS",
+  "result": "112 passed",
+  "coverage": ["Comix challenge", "owner CDP capture gate", "clearance replay contract", "resumable job", "cancel/resume state", "materialization retry", "dynamic resolver", "launcher", "root policy"]
+}

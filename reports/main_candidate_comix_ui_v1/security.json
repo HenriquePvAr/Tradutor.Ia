@@ -1,0 +1,9 @@
+{
+  "status": "PASS",
+  "clearance_or_cookie_versioned": false,
+  "clearance_or_cookie_logged": false,
+  "clearance_or_cookie_sent_to_discord": false,
+  "automatic_solver_ported": false,
+  "webhook_or_token_added": false,
+  "source_profile_in_git": false
+}

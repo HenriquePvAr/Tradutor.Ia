@@ -1,0 +1,8 @@
+{
+  "challenge_wait_and_resume": {"implementation_commit": "44f2f94", "implementation_files": ["yomu/runtime/job_store.py", "yomu/runtime/worker_service.py", "yomu/ui/ui_bridge.py", "yomu/ui/app.py", "static/tradutor_ui.js"], "status": "PORTED_FROM_A"},
+  "owner_clearance_capture": {"source_commit": "c8c382a", "final_files": ["yomu/download/readers/scrapling_reader_resolver.py", "yomu/download/down.py", "yomu/commands/start_tradutor.py", "yomu/ui/app.py"], "status": "AUDITED_PORT"},
+  "clearance_replay": {"source_commit": "c8c382a", "status": "AUDITED_PORT_WITH_SOLVER_DISABLED"},
+  "automatic_stealth_solver": {"source_commit": "c8c382a", "status": "NOT_PORTED_POLICY_VIOLATION"},
+  "documentation": {"source_commit": "4a148c4", "status": "RECONCILED_TO_FINAL_IMPLEMENTATION"},
+  "tests": {"source_commit": "c8c382a", "status": "ADAPTED_TO_TESTS_LAYOUT_AND_EXPANDED"}
+}

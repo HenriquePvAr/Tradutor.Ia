@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "pyinstaller": "6.22.2",
+  "exe": "C:/Users/henri/YomuExperimental/main-candidate-comix-ui-v1/dist/YomuSekai/YomuSekai.exe",
+  "sha256": "6A1F527710FCA96F9BCD7C486595447253328F1A0D39CFEE87AA76E532CCCE7E",
+  "desktop_smoke": "PASS; process alive after 8 seconds; terminated by smoke",
+  "source_worktree": "C:/Users/henri/.codex/worktrees/main-candidate-comix-ui-v1/Tradutor.Ia"
+}

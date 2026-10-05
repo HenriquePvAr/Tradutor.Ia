@@ -456,8 +456,56 @@ def _emit_source_fallback_event(callback, event, **fields):
         pass
 
 
+def _is_comix_url(url) -> bool:
+    try:
+        host = (urlparse(str(url or "")).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "comix.to" or host.endswith(".comix.to")
+
+
+def _comix_cf_autocapture_enabled() -> bool:
+    return os.environ.get("YOMU_COMIX_CF_AUTOCAPTURE", "").strip() == "1"
+
+
+def _run_comix_clearance_capture(url, diagnostic_callback=None) -> bool:
+    """Ask the owner to solve the visible challenge, then capture it over local CDP."""
+    try:
+        from yomu.download.readers import scrapling_reader_resolver as resolver
+        _emit_source_fallback_event(diagnostic_callback, "COMIX_CF_CAPTURE_START", provider="comix")
+        result = resolver.capture_cloudflare_clearance([str(url or "")])
+        ok = result == 0
+        _emit_source_fallback_event(
+            diagnostic_callback, "COMIX_CF_CAPTURE_END", provider="comix",
+            result="ok" if ok else "failed")
+        return ok
+    except Exception:
+        _emit_source_fallback_event(
+            diagnostic_callback, "COMIX_CF_CAPTURE_END", provider="comix", result="failed")
+        return False
+
+
 def discover_chapter_source(url, *, cancel_check=None, on_progress=None,
                             diagnostic_callback=None, max_images=None):
+    captured_once = False
+    while True:
+        try:
+            return _discover_chapter_source_once(
+                url, cancel_check=cancel_check, on_progress=on_progress,
+                diagnostic_callback=diagnostic_callback, max_images=max_images)
+        except Exception as exc:
+            if (not captured_once
+                    and str(getattr(exc, "code", "") or "") == "dynamic_source_unavailable"
+                    and _comix_cf_autocapture_enabled()
+                    and _is_comix_url(url)
+                    and _run_comix_clearance_capture(url, diagnostic_callback)):
+                captured_once = True
+                continue
+            raise
+
+
+def _discover_chapter_source_once(url, *, cancel_check=None, on_progress=None,
+                                  diagnostic_callback=None, max_images=None):
     """Discover a chapter's pages the cheapest way that can prove it saw the whole reader.
 
     Same public contract as ``analyze_chapter_source`` (a ``SourceAnalysis``): this is a drop-in

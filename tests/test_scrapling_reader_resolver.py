@@ -149,6 +149,14 @@ class _ViewportCanvasPage:
 class ScraplingResolverTests(unittest.TestCase):
     URL = "https://comix.to/title/k72ge-home/1536897-chapter-1"
 
+    def setUp(self):
+        self._stealth_off = mock.patch.object(resolver, "_StealthyFetcher", None)
+        self._cf_off = mock.patch.object(resolver, "_load_comix_cf_override", return_value=None)
+        self._stealth_off.start()
+        self._cf_off.start()
+        self.addCleanup(self._stealth_off.stop)
+        self.addCleanup(self._cf_off.stop)
+
     def test_policy_is_selected_only(self):
         self.assertTrue(resolver.supports_url(self.URL))
         self.assertFalse(resolver.supports_url("https://example.test/chapter/1"))
