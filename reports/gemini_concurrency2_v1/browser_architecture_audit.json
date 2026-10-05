@@ -1,0 +1,1 @@
+{"architecture_a_tested":"ONE_BROWSER_TWO_TABS","browser_count":1,"pages":2,"profiles_shared":false,"profile_process_shared":true,"architecture_b_tested":false,"reason":"architecture A produced real overlap and passed isolation gates"}

@@ -1,0 +1,6 @@
+{
+  "latest_valid_product_head": "89b46cb",
+  "ancestry_checked": ["8098b58", "d099df1", "89b46cb"],
+  "persistent_chat_precondition": "STRONG_PASS",
+  "work_branch": "research/gemini-two-slots-concurrency2-v1"
+}

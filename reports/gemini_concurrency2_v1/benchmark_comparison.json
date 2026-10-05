@@ -1,0 +1,1 @@
+{"same_inputs":true,"request_count":2,"c1_total_seconds":136.404,"c2_total_seconds":154.389,"speedup":0.884,"throughput_c1_requests_per_minute":0.882,"throughput_c2_requests_per_minute":0.778,"completed_c1":2,"completed_c2":2,"review_delta":0,"error_delta":0,"conclusion":"C2 did not demonstrate material speedup in this sample; do not make it production default yet"}

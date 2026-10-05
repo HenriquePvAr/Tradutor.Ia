@@ -1,0 +1,1 @@
+{"mode":"two_slots_concurrent","request_count":2,"jobs":["bench-c2-a","bench-c2-b"],"total_seconds":154.389,"mean_request_seconds":93.795,"completed":2,"review":0,"errors":0,"outside_mask_changed_pixels":0,"sfx_damage":0,"overlap_ms":21826.364}

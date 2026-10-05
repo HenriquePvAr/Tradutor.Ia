@@ -1,0 +1,1 @@
+{"architecture":"ONE_BROWSER_TWO_TABS","browser_count":1,"page_ids_distinct":true,"real_overlap_observed":true,"gate_ab":"PASS","gate_cd":"PASS","failure_domain":"single Chrome crash can affect both slots"}

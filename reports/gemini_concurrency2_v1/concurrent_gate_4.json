@@ -1,0 +1,1 @@
+{"rounds":[["conc2-gate-a","conc2-gate-b"],["conc2-gate-c","conc2-gate-d"]],"chat_reuse_second_round":true,"generation_sequences":{"slot-1":9,"slot-2":2},"cross_job_mix":0,"stale_output":0,"outside_mask_changed_pixels":0,"sfx_damage":0,"result":"PASS"}

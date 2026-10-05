@@ -1,0 +1,1 @@
+{"slot_count":2,"max_concurrency":2,"browser_id":"browser-1","chat_count":2,"chat_fingerprints_distinct":true,"chat_url_exposed":false,"slot_fields":["slot_id","browser_id","page_id","chat_fingerprint","state","current_job_id","current_request_id","generation_seq","rotation_count","created_at","last_used_at","healthy"]}

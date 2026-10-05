@@ -1,24 +1,27 @@
 # Gemini persistent chat slots
 
-The current VPS worker is deliberately configured as:
+The validated VPS experiment is configured as:
 
-`1 browser → 1 slot → 1 persistent Gemini chat → max concurrency 1`
+`1 browser → 2 explicit pages → 2 persistent Gemini chats → max concurrency 2`
 
-The slot state is stored as runtime metadata under `.runtime/chat-slots/slot-1.json`.
-It contains slot ownership, a stable conversation id, generation sequence, last-use
-time and rotation count. It never stores cookies, tokens, webhook values or browser
-profile data. Chat URL is operational state only and is omitted from health/Discord.
+The experiment state is stored as runtime metadata under `.runtime/chat-slots-v2/`.
+The existing slot-1 chat is migrated forward and slot-2 receives a new chat. Each
+slot has an explicit browser target/page id, ownership, generation sequence, last-use
+time and rotation count. Public health and Discord expose only an irreversible chat
+fingerprint; never a URL or raw conversation id.
 
 ## Ownership and queue
 
-Every job must acquire `slot-1` with its job/request identity. A busy slot rejects a
-second acquire; the existing queue keeps the second job pending until the first
-releases the slot. Release returns the slot to `IDLE` without closing the chat.
+Every job atomically acquires one healthy `IDLE` slot with its job/request identity.
+With both slots busy, a third job stays queued; no slot-3 is created. Release returns
+the owning slot to `IDLE` without closing its chat. A request never migrates between
+slots while active.
 
-The worker reports `browser_count`, `slot_count`, `active_slots`, `max_concurrency`,
-`queue_depth`, `chat_generation_seq` and `chat_rotation_count` through the private
-health endpoint. Concurrency remains 1; a second browser/chat is intentionally not
-implemented.
+The worker reports `browser_count`, `slot_count`, `healthy_slots`, `active_slots`,
+`max_concurrency`, `queue_depth`, per-slot state, independent generation sequences and
+rotation counts through the private health endpoint. The chosen architecture is one
+Chrome process with two explicit pages; a Chrome crash is therefore a shared failure
+domain for both slots.
 
 ## Reuse and stale-output firewall
 
@@ -46,5 +49,7 @@ materializing a stale output.
 Discord receives only safe slot metrics: slot number, reuse status, generation
 sequence and rotation count. It never receives the chat URL or conversation id.
 
-Future concurrency uses one independent browser/page/chat per slot (`slot-1/chat-1`,
-`slot-2/chat-2`). It is intentionally outside this mission.
+The A+B and C+D gates proved real temporal overlap and zero cross-slot/stale output.
+The small benchmark did not show a speedup (C1 136.404s; C2 154.389s), so
+`max_concurrency=2` is not recommended as the production default yet. Resource peaks
+were not sampled during those runs and must be measured before a default change.
