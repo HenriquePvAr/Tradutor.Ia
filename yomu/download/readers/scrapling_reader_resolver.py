@@ -2478,7 +2478,8 @@ def capture_cloudflare_clearance(argv: list[str] | None = None) -> int:
     profile.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen([
         browser[1], f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-        "--no-first-run", "--no-default-browser-check", "--new-window", target,
+        "--no-first-run", "--no-default-browser-check",
+        "--window-position=-32000,-32000", "--new-window", target,
     ])
     found = None
     user_agent = ""
@@ -2528,6 +2529,9 @@ def capture_cloudflare_clearance(argv: list[str] | None = None) -> int:
             pass
     if not found:
         print("COMIX_CF_CAPTURE no_cookie", flush=True)
+        return 1
+    if not user_agent:
+        print("COMIX_CF_CAPTURE no_useragent", flush=True)
         return 1
     cookie_path.parent.mkdir(parents=True, exist_ok=True)
     cookie_path.write_text(json.dumps({"cf_clearance": found, "user_agent": user_agent}), encoding="utf-8")
