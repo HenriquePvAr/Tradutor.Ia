@@ -1,0 +1,9 @@
+{
+  "required_dataset_size": ">=6 distinct development-consumed images",
+  "required_paired_runs": ">=3",
+  "same_dataset_c1_c2": "not executable",
+  "reason": "dataset gate failed before real calls",
+  "new_gemini_calls": 0,
+  "future_holdout_used": false,
+  "production_default_preserved": 1
+}

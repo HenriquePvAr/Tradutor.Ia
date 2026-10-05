@@ -1,0 +1,13 @@
+{
+  "dataset_policy": "development-consumed only; no future holdout; no blind M20",
+  "job_directories_scanned": 53,
+  "distinct_source_image_sha256": 3,
+  "distinct_required": 6,
+  "eligible_for_mission": false,
+  "source_groups": [
+    {"sha256_prefix": "174a92a4edd3", "representative_job": "case02-v2-frozen-1", "repeats": 23},
+    {"sha256_prefix": "26940d01963f", "representative_job": "case03-first-safe-contract", "repeats": 29},
+    {"sha256_prefix": "6657a50f4277", "representative_job": "integration-smoke-case02-20261004", "repeats": 1}
+  ],
+  "finding": "Only three distinct source images are evidenced by consumed Gemini job artifacts; generated outputs and clean dataset images were excluded."
+}

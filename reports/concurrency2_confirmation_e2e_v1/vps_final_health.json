@@ -1,0 +1,18 @@
+{
+  "api": "PASS",
+  "queue": "PASS",
+  "worker": "UP",
+  "browser": "CONNECTED",
+  "gemini_session": "PRESERVED",
+  "browser_count": 1,
+  "slot_count": 2,
+  "healthy_slots": 2,
+  "active_slots": 0,
+  "max_concurrency": 1,
+  "configured_max_concurrency": 1,
+  "effective_max_concurrency": 1,
+  "queue_depth": 0,
+  "chat_reuse_enabled": true,
+  "chat_rotation_count": 0,
+  "chat_urls_or_ids_recorded": false
+}

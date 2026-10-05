@@ -1,0 +1,8 @@
+{
+  "production_config_changed": false,
+  "configured_max_concurrency": 1,
+  "effective_max_concurrency": 1,
+  "slots_available": 2,
+  "chat_reuse_preserved": true,
+  "reason": "Confirmation gate blocked; production remains C1 as required."
+}

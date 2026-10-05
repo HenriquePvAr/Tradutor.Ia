@@ -1,0 +1,10 @@
+{
+  "mission": "YOMU_CONCURRENCY2_CONFIRMATION_DEFAULT_AND_OPERATIONAL_E2E_V1",
+  "base_head": "1f8adb3",
+  "latest_valid_product_head": "7c5c40039c56225163b539b2fbdf6a364a8eecd1",
+  "branch": "research/concurrency2-confirmation-e2e-v1",
+  "base_contains_required_head": true,
+  "required_capabilities_present": ["two_slots", "persistent_chats", "configurable_concurrency", "queue", "ownership", "dom_baseline", "stale_output_firewall", "restart_persistence", "discord_metrics"],
+  "working_tree_at_audit": "clean",
+  "push": "NO"
+}

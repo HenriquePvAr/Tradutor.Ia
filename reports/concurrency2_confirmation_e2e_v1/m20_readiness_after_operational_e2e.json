@@ -1,0 +1,7 @@
+{
+  "operational_e2e_completed": false,
+  "m20_readiness": "NOT_ASSESSED",
+  "future_holdout_used": false,
+  "deepL_or_yk_run": false,
+  "reason": "The mandatory six-image operational gate was unavailable."
+}

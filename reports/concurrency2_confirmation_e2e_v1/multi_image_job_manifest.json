@@ -1,0 +1,9 @@
+{
+  "executed": false,
+  "required_images": 6,
+  "available_distinct_consumed_images": 3,
+  "local_first_clean_only": "not executed",
+  "deepl_calls": 0,
+  "yk_calls": 0,
+  "reason": "Stopped before operational E2E to avoid fabricating a six-image run or consuming a future holdout."
+}

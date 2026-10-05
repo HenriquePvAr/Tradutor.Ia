@@ -1,0 +1,10 @@
+{
+  "result": "BLOCKED",
+  "c2_confirmation": "NOT_CONFIRMED_BY_THIS_MISSION",
+  "effective_max_concurrency_before": 1,
+  "effective_max_concurrency_after": 1,
+  "two_slot_support": "EXPERIMENTAL",
+  "reason": "Mandatory six-distinct-consumed-image confirmation dataset is unavailable.",
+  "no_architecture_change": true,
+  "no_chat_rotation": true
+}

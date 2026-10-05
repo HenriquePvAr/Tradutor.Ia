@@ -1,0 +1,14 @@
+{
+  "authorized_mask_v2_changed": false,
+  "ocr_changed": false,
+  "clean_changed": false,
+  "safe_compositing_changed": false,
+  "seam_changed": false,
+  "sfx_changed": false,
+  "yk_changed": false,
+  "output_plan_semantics_changed": false,
+  "prompt_changed": false,
+  "push": "NO",
+  "destructive_git_operations": false,
+  "future_holdout_used": false
+}

@@ -1,0 +1,16 @@
+{
+  "mission": "YOMU_CONCURRENCY2_CONFIRMATION_DEFAULT_AND_OPERATIONAL_E2E_V1",
+  "mission_result": "BLOCKED",
+  "latest_product_head": "7c5c40039c56225163b539b2fbdf6a364a8eecd1",
+  "final_head": "7c5c40039c56225163b539b2fbdf6a364a8eecd1",
+  "branch": "research/concurrency2-confirmation-e2e-v1",
+  "dataset_distinct_consumed_images": 3,
+  "dataset_requirement": 6,
+  "c2_default_promoted": false,
+  "production_default": 1,
+  "two_slot_support": "EXPERIMENTAL",
+  "operational_e2e": "NOT_EXECUTED",
+  "future_holdout": false,
+  "new_gemini_calls": 0,
+  "next_single_action": "Reunir ou registrar pelo menos seis imagens distintas já consumidas em jobs Gemini elegíveis; então repetir a confirmação pareada C1/C2 antes de qualquer promoção."
+}
