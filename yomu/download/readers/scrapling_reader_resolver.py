@@ -256,6 +256,17 @@ def discover_system_browser() -> tuple[str, str] | None:
     return None
 
 
+def _discover_cloak_binary() -> str | None:
+    """Return installed CloakBrowser stealth binary path, or None if unavailable."""
+    try:
+        from cloakbrowser import binary_info  # type: ignore[import]
+        info = binary_info() or {}
+        path = info.get("binary_path", "")
+        return str(path) if path and Path(path).is_file() else None
+    except Exception:
+        return None
+
+
 def capabilities() -> DynamicReaderCapabilities:
     if _DynamicFetcher is None:
         return DynamicReaderCapabilities(False, import_error=_DYNAMIC_IMPORT_ERROR)
@@ -2032,7 +2043,9 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         result_holder["final_missing"] = final_missing
 
     browser = discover_system_browser()
-    if browser is None:
+    cloak_binary = _discover_cloak_binary()
+    executable = cloak_binary or (browser[1] if browser else None)
+    if executable is None:
         _append_telemetry("dynamic_resolution_failed", status="error", error_code="browser_executable_not_found")
         raise DynamicReaderError("browser_executable_not_found")
     # Bounded whole-resolution retry for the one proven-transient mode
@@ -2056,8 +2069,13 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             pending_responses.clear()
         try:
             fetch_started = stage_start("dynamic_fetch")
+            # CloakBrowser needs headless=False to pass CF Turnstile; window is
+            # off-screen so the user sees nothing.  System Chrome keeps headless=True.
+            using_cloak = cloak_binary is not None
             fetch_kwargs = dict(
-                real_chrome=True, executable_path=browser[1], headless=True,
+                real_chrome=True, executable_path=executable,
+                headless=not using_cloak,
+                args=["--window-position=-32000,-32000"] if using_cloak else [],
                 timeout=max(1, int(min(float(timeout), remaining) * 1000)), wait=1200,
                 network_idle=False, page_setup=page_setup, page_action=page_action,
                 retries=1, retry_delay=0,
@@ -2463,8 +2481,10 @@ def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None =
 
 def capture_cloudflare_clearance(argv: list[str] | None = None) -> int:
     """Open real Chrome for owner verification and persist only the resulting local clearance."""
+    cloak_bin = _discover_cloak_binary()
     browser = discover_system_browser()
-    if browser is None or not browser[1]:
+    chrome_exe = cloak_bin or (browser[1] if browser else None)
+    if not chrome_exe:
         print("COMIX_CF_CAPTURE unavailable: no system Chrome found", flush=True)
         return 2
     target = (argv[0] if argv else "") or "https://comix.to/"
@@ -2477,7 +2497,7 @@ def capture_cloudflare_clearance(argv: list[str] | None = None) -> int:
     cookie_path = _comix_cf_cookie_path()
     profile.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen([
-        browser[1], f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+        chrome_exe, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
         "--no-first-run", "--no-default-browser-check",
         "--window-position=-32000,-32000", "--new-window", target,
     ])
