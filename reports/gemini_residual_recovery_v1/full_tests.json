@@ -1,0 +1,11 @@
+{
+  "result": "PASS",
+  "passed": 5863,
+  "skipped": 141,
+  "xfailed": 2,
+  "subtests": 732,
+  "failed": 0,
+  "warnings": 1,
+  "duration_seconds": 575.36,
+  "new_failures": 0
+}

@@ -1,0 +1,11 @@
+{
+  "safe_clean_module": "yomu/clean/gemini_fallback",
+  "remote_client": "yomu/clean/gemini_fallback/remote_client.py",
+  "remote_operation": "hard-clean image only",
+  "translation_fallback": "new adapter contract in yomu/translation/gemini_fallback.py",
+  "runtime_flag": "YOMU_ENABLE_GEMINI_SAFE_FALLBACK",
+  "default": "disabled",
+  "real_external_calls_in_this_mission": 0,
+  "credentials_added": 0,
+  "credential_materialization": "none"
+}

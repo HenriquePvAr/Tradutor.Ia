@@ -1,0 +1,14 @@
+{
+  "collection": "read-only preflight inherited from current validation context",
+  "api": "UP",
+  "worker": "UP",
+  "chrome_cdp": "CONNECTED",
+  "gemini_auth": "PRESERVED",
+  "browser_count": 1,
+  "slot_count": 2,
+  "effective_max_concurrency": 1,
+  "queue": 0,
+  "active": 0,
+  "mutation": "none",
+  "secrets_printed": 0
+}

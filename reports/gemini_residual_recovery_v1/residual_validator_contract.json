@@ -1,0 +1,7 @@
+{
+  "entrypoint": "yomu.translation.residual_validator.classify_source_residual",
+  "dialogue_source_residual": "UNTRANSLATED_DIALOGUE",
+  "allowed_non_dialogue": ["SFX", "proper name", "legacy decorative text"],
+  "fail_closed": true,
+  "tests": "tests/test_residual_source_validator.py"
+}

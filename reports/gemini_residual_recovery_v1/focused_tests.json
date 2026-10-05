@@ -1,0 +1,8 @@
+{
+  "command_scope": ["test_translation_fallback_recovery.py", "test_residual_source_validator.py", "test_clean_strategy_gemini_integration.py", "test_gemini_v2_integration.py"],
+  "result": "PASS",
+  "passed": 29,
+  "failed": 0,
+  "duration_seconds": 0.86,
+  "compileall": "PASS"
+}

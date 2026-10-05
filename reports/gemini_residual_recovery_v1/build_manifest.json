@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "pyinstaller": "6.22.2",
+  "venv": "C:/Projetos/Tradutor.Ia/.venv-beta",
+  "exe": "C:/Users/henri/YomuExperimental/gemini-residual-recovery-v1/dist/YomuSekai/YomuSekai.exe",
+  "sha256": "2D39C398765A21935D59E34B630C13E14378CD53857965C180C1810B331FF695",
+  "lifecycle_smoke": "PASS",
+  "lifecycle_smoke_port": 18080,
+  "owner_existing_app_closed": false,
+  "real_external_calls": 0
+}

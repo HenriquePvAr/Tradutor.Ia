@@ -1,0 +1,16 @@
+{
+  "historical_safe_clean": {
+    "commit": "7066cf1",
+    "present_in_head": true,
+    "capability_present": true,
+    "previous_runtime_wiring": "DISCONNECTED",
+    "evidence": "historical module documentation explicitly described the capability as not wired to UI/output modes"
+  },
+  "historical_text_translation_fallback": {
+    "found": false,
+    "evidence_scope": "current tree and historical Gemini worker research commit c75db10",
+    "conclusion": "no historical text Gemini transport was available to reconnect"
+  },
+  "root_cause": "SAFE CLEAN existed behind a provider-agnostic boundary but benchmark pipeline invoked only LOCAL_SAFE without a fallback adapter; translation pipeline had no semantic-recovery adapter.",
+  "preserved": ["Authorized Mask V2", "OCR", "local CLEAN", "safe compositing", "seam", "SFX firewall", "OutputPlan", "YK settlement"]
+}

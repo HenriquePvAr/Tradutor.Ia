@@ -533,6 +533,8 @@ class TextGroup:
     retry_candidate: str = ""
     retry_candidate_class: str = ""
     translation_candidate: str = ""
+    translation_fallback_status: str = ""
+    translation_fallback_reason: str = ""
     translation_final_state: str = ""
     translation_final_reason: str = ""
     translation_quality_impact: str = ""
@@ -15465,6 +15467,12 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                     "selected_version": group.naturalization_selected_version,
                     "context": dict(group.naturalization_context),
                 },
+                "translation_fallback_status": str(
+                    getattr(group, "translation_fallback_status", "")
+                ),
+                "translation_fallback_reason": str(
+                    getattr(group, "translation_fallback_reason", "")
+                ),
                 "translated": group.translation_final_state == "translated",
                 "ignored": group.ignored,
                 "ignore_reason": group.ignore_reason,
@@ -15501,6 +15509,9 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                         "retry_candidate": group.retry_candidate,
                         "selected_candidate": group.translation_candidate,
                         "validation_reason": group.translation_validation_reason,
+                        "fallback_status": str(
+                            getattr(group, "translation_fallback_status", "")
+                        ),
                     }] if group.sent_to_translation else [],
                     "entity": {
                         "detected_proper_names": list(group.detected_proper_names),

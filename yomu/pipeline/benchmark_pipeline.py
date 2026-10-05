@@ -12,6 +12,7 @@ import time
 import traceback
 import threading
 import queue
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -257,6 +258,68 @@ def _plan_pipeline_flags():
     return {"legacy": False, "want_typeset": want_typeset, "want_clean": want_clean,
             "want_pdf": want_pdf, "want_render": want_typeset or want_clean,
             "effective_ops": ops}
+
+
+def _gemini_safe_clean_page(state, *, job_id: str = ""):
+    """Run the historical SAFE clean leg only for a proven hard local case.
+
+    The feature is opt-in at runtime (``YOMU_ENABLE_GEMINI_SAFE_FALLBACK=1``).
+    Translation/typeset rendering remains local; the remote result is accepted
+    only as the CLEAN artifact after the existing authorized-mask composite.
+    """
+    if str(os.getenv("YOMU_ENABLE_GEMINI_SAFE_FALLBACK", "0")).strip().lower() not in {"1", "true", "yes"}:
+        return None
+    hard_reasons = {
+        "flat_reconstruction_patch_on_textured_background",
+        "art_fidelity_uncertain",
+        "seam_suspected",
+        "flat_patch_rejected",
+    }
+    hard_groups = [
+        group for group in state.get("groups", [])
+        if str(getattr(group, "art_reconstruction_reason", "") or "") in hard_reasons
+        or any(bool((getattr(group, "mask_metrics", {}) or {}).get(key)) for key in hard_reasons)
+    ]
+    if not hard_groups:
+        return {"status": "NOT_ELIGIBLE", "reason": "local_clean_not_hard"}
+    from yomu.clean.gemini_fallback.adapter import remote_clean_callback
+    from yomu.clean.gemini_fallback.authorized_mask import generate_authorized_mask_v2
+    from yomu.clean.orchestrator import (
+        CleanRequest,
+        LOCAL_RECONSTRUCTION_HARD,
+        run_clean_strategy,
+    )
+    from yomu.clean.gemini_fallback.remote_client import HardCleanRemoteClient
+
+    with tempfile.TemporaryDirectory(prefix="yomu-gemini-mask-") as temp:
+        mask_path = Path(temp) / "authorized-mask.png"
+        mask_meta = generate_authorized_mask_v2(
+            state["image_path"], mask_path,
+            page_id=str(state.get("index") or ""),
+            region_id=str(getattr(hard_groups[0], "group_id", "") or ""),
+            content_type=str(getattr(hard_groups[0], "classification", "") or ""),
+        )
+        if mask_meta.get("status") != "PASS":
+            return {"status": "REVIEW_REQUIRED", "reason": "authorized_mask_uncertain", "mask": mask_meta}
+        authorized_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        request = CleanRequest(
+            original=state["original_bgr"],
+            authorized_mask=authorized_mask,
+            mask_confidence=float(mask_meta.get("mask_confidence") or 0.0),
+            source_type="gemini_safe_clean",
+            job_id=job_id,
+            page_id=str(state.get("index") or ""),
+            metadata={"mask_generator_version": mask_meta.get("mask_generator_version")},
+        )
+        client = HardCleanRemoteClient(os.getenv("YOMU_GEMINI_REMOTE_URL", "http://127.0.0.1:18777"))
+        result = run_clean_strategy(
+            request,
+            {"status": LOCAL_RECONSTRUCTION_HARD},
+            fallback=lambda req: remote_clean_callback(client, req),
+        )
+        result["mask_metadata"] = mask_meta
+        result["remote_provider"] = "gemini_web_vps"
+        return result
 
 
 def _plan_requested_artifacts(effective_ops):
@@ -2672,6 +2735,29 @@ def run_benchmark(args):
         )
     else:
         translation_retry_records = []
+    # The Gemini translation leg is deliberately separate from CLEAN.  It is an
+    # injected, text-only adapter owned by the provider/runtime; absence of the
+    # adapter is a normal fail-closed outcome and never turns OCR or SFX into a
+    # remote request.  Billing remains attached to the original translation
+    # operation, so this bounded recovery cannot reserve a second YK.
+    translation_fallback_stats = {
+        "eligible": 0, "attempted": 0, "accepted": 0,
+        "rejected": 0, "unavailable": 0, "items": [],
+    }
+    if translation_enabled and translator is not None:
+        fallback_adapter = getattr(translator, "gemini_translation_fallback", None)
+        if callable(fallback_adapter):
+            from yomu.translation.gemini_fallback import apply_translation_fallbacks
+            translation_fallback_stats = apply_translation_fallbacks(
+                translation_targets,
+                fallback_adapter,
+                context_provider=lambda group: getattr(group, "page_context_texts", ()) or (),
+                fidelity_verifier=getattr(translator, "fidelity_verifier", None),
+            )
+            translator_stats["gemini_translation_fallback"] = "injected_text_adapter"
+        else:
+            translator_stats["gemini_translation_fallback"] = "unavailable"
+    translator_stats["translation_fallback_stats"] = translation_fallback_stats
     if session_context is not None:
         session_context.record_translations(translation_targets)
     stage_seconds["translation"] += time.perf_counter() - retry_started
@@ -2859,18 +2945,33 @@ def run_benchmark(args):
                 if cv2.imwrite(str(cleaned_path), cleaned_bgr):
                     state["cleaned_path"] = str(cleaned_path)
             if _pipeline_flags["want_clean"]:
-                # The strategy boundary is deliberately inside Clean, not OutputPlan:
-                # local cleanup is accepted first; only an explicitly eligible hard case
-                # may later provide an adapter for the Gemini safe fallback.
+                # The historical Gemini SAFE fallback is now connected at the
+                # production CLEAN boundary, but remains opt-in. Local CLEAN is
+                # still the default; only a typed hard reconstruction case can
+                # cross the remote boundary.
+                remote_strategy = _gemini_safe_clean_page(
+                    state,
+                    job_id=str(getattr(args, "job_id", "") or ""),
+                )
                 from yomu.clean.orchestrator import CleanRequest, LOCAL_SAFE, run_clean_strategy
                 local_image = cleaned_capture.get("cleaned_bgr")
                 if local_image is None:
                     local_image = state.get("original_bgr")
-                strategy = run_clean_strategy(
-                    CleanRequest(original=state["original_bgr"], job_id=str(getattr(args, "job_id", "") or ""),
-                                 page_id=str(state["index"])),
-                    {"status": LOCAL_SAFE, "image": local_image},
-                )
+                if isinstance(remote_strategy, dict) and remote_strategy.get("status") == "COMPLETED":
+                    remote_image = remote_strategy.get("image")
+                    if isinstance(remote_image, np.ndarray):
+                        local_image = remote_image
+                    remote_clean_path = Path(state["output_path"]).with_name(
+                        Path(state["output_path"]).stem + "_cleaned.png")
+                    if isinstance(local_image, np.ndarray) and cv2.imwrite(str(remote_clean_path), local_image):
+                        state["cleaned_path"] = str(remote_clean_path)
+                    strategy = remote_strategy
+                else:
+                    strategy = run_clean_strategy(
+                        CleanRequest(original=state["original_bgr"], job_id=str(getattr(args, "job_id", "") or ""),
+                                     page_id=str(state["index"])),
+                        {"status": LOCAL_SAFE, "image": local_image},
+                    )
                 state["clean_result"] = {
                     key: value for key, value in strategy.items()
                     if key not in {"image", "raw_image"}
@@ -4876,6 +4977,10 @@ def _physical_residual_accounting(states):
 
     def record_residual(region_id, item):
         """File one retained source region under its class, once."""
+        from yomu.translation.residual_validator import classify_source_residual
+        residual_reason = classify_source_residual(item)
+        if residual_reason:
+            item["residual_reason"] = residual_reason
         residual_class = _physical_residual_class(item)
         residual_class_counts[residual_class] += 1
         residual_class_ids[residual_class].append(region_id)

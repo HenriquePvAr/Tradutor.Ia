@@ -1,0 +1,11 @@
+{
+  "branch_policy": "integration/main-candidate-comix-ui-v1",
+  "main_merge": "NO",
+  "push": "NO",
+  "real_gemini_smoke": "DEFERRED",
+  "real_provider_smoke": "DEFERRED",
+  "real_yk_mutation": "DEFERRED",
+  "vps_mutation": "NO",
+  "production_default": "unchanged",
+  "fallback_flag_default": "disabled"
+}

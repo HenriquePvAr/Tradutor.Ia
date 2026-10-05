@@ -1,0 +1,19 @@
+{
+  "mission": "YOMU_RESTORE_GEMINI_SAFE_FALLBACK_AND_RESIDUAL_TRANSLATION_RECOVERY_V1",
+  "branch": "integration/main-candidate-comix-ui-v1",
+  "head_at_audit": "f87fcb6e2ffe09a814e3eb05f2c4b0167325e089",
+  "worktree": "C:/Users/henri/.codex/worktrees/main-candidate-comix-ui-v1/Tradutor.Ia",
+  "worktree_clean_at_audit": true,
+  "push": "NO",
+  "destructive_git_operations": false,
+  "ancestry": {
+    "7066cf1": true,
+    "b4da199": true,
+    "89b46cb": true,
+    "d099df1": true,
+    "8098b58": true,
+    "1f8adb3": true,
+    "7c5c400": true,
+    "f2d5a03": false
+  }
+}

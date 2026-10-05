@@ -1,0 +1,7 @@
+{
+  "status": "NOT_APPLICABLE",
+  "reason": "No real E2E generation or page-count-changing artifact run was authorized in this offline restoration mission.",
+  "real_gemini_calls": 0,
+  "real_provider_calls": 0,
+  "yk_charges": 0
+}

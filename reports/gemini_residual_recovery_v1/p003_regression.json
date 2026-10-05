@@ -1,0 +1,8 @@
+{
+  "fixture_or_family": "p003-related art reconstruction, fidelity, linguistic and pipeline contract tests",
+  "status": "PASS",
+  "evidence": "included in full regression; no new failure",
+  "outside_mask_changed_pixels": 0,
+  "sfx_damage": 0,
+  "synthetic_remote_call": 0
+}

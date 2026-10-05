@@ -1,0 +1,11 @@
+{
+  "operation": "text-only translation recovery",
+  "entrypoint": "yomu.translation.gemini_fallback.apply_translation_fallbacks",
+  "eligible_after": ["primary provider failure", "semantic fidelity failure"],
+  "ineligible": ["SFX", "proper names", "decorative text", "OCR blocked", "OCR failure markers"],
+  "validation": "same existing translation validator before persistence",
+  "billing": "no second YK reservation; recovery remains within original logical translation operation",
+  "failure_mode": "fail closed and manual review",
+  "adapter_injected": true,
+  "hardcoded_prompt_or_credential": false
+}
