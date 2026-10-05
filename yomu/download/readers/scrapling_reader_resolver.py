@@ -2344,7 +2344,8 @@ def _run_child_command(command: list[str], *, deadline: float,
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, text=True,
             creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                           | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+                           | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                           | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)),
             start_new_session=(os.name != "nt"),
         )
         _assign_child_to_job(job, process)

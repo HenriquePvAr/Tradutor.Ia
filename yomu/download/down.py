@@ -494,8 +494,13 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None,
                 url, cancel_check=cancel_check, on_progress=on_progress,
                 diagnostic_callback=diagnostic_callback, max_images=max_images)
         except Exception as exc:
+            _isolation_codes = {
+                "dynamic_resolver_isolation_unavailable",
+                "dynamic_resolver_child_cleanup_failed",
+            }
             if (not captured_once
                     and str(getattr(exc, "code", "") or "") == "dynamic_source_unavailable"
+                    and str(getattr(exc, "detail", "") or "") not in _isolation_codes
                     and _comix_cf_autocapture_enabled()
                     and _is_comix_url(url)
                     and _run_comix_clearance_capture(url, diagnostic_callback)):
