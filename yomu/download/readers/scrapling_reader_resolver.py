@@ -1487,6 +1487,13 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         try:
             page.wait_for_timeout(1200)
             page.wait_for_timeout(400)
+            if using_cloak:
+                # CloakBrowser launches fresh each attempt; give the reader extra time
+                # to render img.rpage-page__img before we query for them.
+                try:
+                    page.wait_for_selector("img.rpage-page__img", timeout=30000)
+                except Exception:
+                    pass  # _extract_candidates will raise no_reader_images if still empty
             # Read only bounded visible text for classification. Challenge pages are
             # explicitly surfaced; their DOM is never treated as an empty reader.
             from yomu.download.sources.chapter_source import looks_like_challenge
