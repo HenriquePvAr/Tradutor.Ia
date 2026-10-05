@@ -290,6 +290,74 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "artifact_coverage_incomplete")
 
+    def test_modern_requested_artifacts_override_legacy_full_profile_expectations(self):
+        root = self.tmp / "clean-only-output"
+        root.mkdir()
+        manifest = build_artifact_manifest(
+            output_profile=OutputProfile.AUTOMATIC, output_root=root,
+            logical_page_count=2,
+            produced={ArtifactType.CLEAN_IMAGE: True},
+            output_plan="apenas_clean", requested_artifacts=[ArtifactType.CLEAN_IMAGE],
+        )
+        manifest["coverage"] = {ArtifactType.CLEAN_IMAGE: {
+            "produced": [1, 2], "missing": [], "failed": [],
+        }}
+        manifest_path = root / "artifact_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        ok, reason = _artifact_manifest_contract(
+            {"artifact_manifest_path": str(manifest_path)},
+            {"pdf_path": str(root / "missing.pdf")},
+        )
+
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "")
+
+    def test_modern_requested_artifacts_keep_missing_clean_fail_closed(self):
+        root = self.tmp / "clean-only-incomplete"
+        root.mkdir()
+        manifest = build_artifact_manifest(
+            output_profile=OutputProfile.AUTOMATIC, output_root=root,
+            logical_page_count=2,
+            produced={ArtifactType.CLEAN_IMAGE: True},
+            output_plan="apenas_clean", requested_artifacts=[ArtifactType.CLEAN_IMAGE],
+        )
+        manifest["coverage"] = {ArtifactType.CLEAN_IMAGE: {
+            "produced": [1], "missing": [2], "failed": [],
+        }}
+        manifest_path = root / "artifact_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        ok, reason = _artifact_manifest_contract(
+            {"artifact_manifest_path": str(manifest_path)},
+            {"pdf_path": str(root / "missing.pdf")},
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "artifact_coverage_incomplete")
+
+    def test_manifest_without_requested_artifacts_keeps_legacy_profile_fallback(self):
+        root = self.tmp / "legacy-profile-output"
+        root.mkdir()
+        manifest = build_artifact_manifest(
+            output_profile=OutputProfile.AUTOMATIC, output_root=root,
+            logical_page_count=1,
+            produced={ArtifactType.FINAL_PDF: True, ArtifactType.TRANSLATED_IMAGE: True},
+        )
+        manifest.pop("requested_artifacts", None)
+        manifest["coverage"] = {ArtifactType.TRANSLATED_IMAGE: {
+            "produced": [1], "missing": [], "failed": [],
+        }}
+        manifest_path = root / "artifact_manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        ok, reason = _artifact_manifest_contract(
+            {"artifact_manifest_path": str(manifest_path)},
+            {"pdf_path": str(root / "missing.pdf")},
+        )
+
+        self.assertTrue(ok, reason)
+
     def test_v2_professional_manifest_requires_supported_qc_artifacts(self):
         root = self.tmp / "professional-output"
         root.mkdir()

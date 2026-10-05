@@ -297,11 +297,20 @@ def _artifact_manifest_contract(report: dict, artifacts: dict) -> tuple[bool, st
         return (False, "artifact_manifest_invalid") if raw_path else (True, "")
     if not isinstance(manifest, dict) or int(manifest.get("contract_version") or 0) < 2:
         return True, ""
-    profile = str(manifest.get("output_profile") or "")
-    try:
-        requested = profile_artifacts(profile)
-    except ValueError:
-        return False, "artifact_manifest_invalid"
+    # A V2 manifest carries the canonical artifact set derived from the effective
+    # OutputPlan.  It must outrank the historical output profile: a clean-only
+    # run can intentionally use the automatic profile while requesting no PDF or
+    # translated image.  Only manifests from before this field existed fall back
+    # to the profile contract.
+    raw_requested = manifest.get("requested_artifacts")
+    if isinstance(raw_requested, list):
+        requested = tuple(str(kind).strip() for kind in raw_requested if str(kind).strip())
+    else:
+        profile = str(manifest.get("output_profile") or "")
+        try:
+            requested = profile_artifacts(profile)
+        except ValueError:
+            return False, "artifact_manifest_invalid"
     statuses = manifest.get("artifact_status")
     if not isinstance(statuses, dict):
         return False, "artifact_manifest_invalid"

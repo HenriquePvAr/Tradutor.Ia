@@ -1,0 +1,15 @@
+{
+  "job_id": "7927ffd2e147474785d969e6d738733c",
+  "source": "comix",
+  "pages": 43,
+  "download": "43/43",
+  "ocr": "43/43",
+  "clean": "43/43",
+  "requested_artifacts": ["clean_image"],
+  "produced_artifacts": ["clean_image", "quality_report"],
+  "unavailable_artifacts": [],
+  "persisted_status_before_fix": "failed",
+  "persisted_failure": "required_artifact_missing",
+  "read_only": true,
+  "artifacts_deleted": false
+}

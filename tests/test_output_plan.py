@@ -34,6 +34,27 @@ def test_output_plan_resolves_separate_execution_operations():
     })
     assert "translate" not in clean.execution_operations
 
+
+def test_plan_artifact_matrix_is_derived_from_effective_operations():
+    assert op.plan_artifact_types(normalize_output_plan("traducao_pronta").operations) == (
+        "clean_image", "translated_image", "final_pdf",
+    )
+    assert op.plan_artifact_types(normalize_output_plan("apenas_clean").operations) == (
+        "clean_image",
+    )
+    assert op.plan_artifact_types(normalize_output_plan("apenas_traducao").operations) == (
+        "translation_manifest",
+    )
+    assert op.plan_artifact_types(normalize_output_plan("traducao_clean").operations) == (
+        "clean_image",
+    )
+    custom = normalize_output_plan("personalizado", operations={Operation.CLEAN})
+    assert op.plan_artifact_types(custom.operations) == ("clean_image",)
+    assert op.plan_artifact_types(normalize_output_plan("profissional").operations) == (
+        "clean_image", "translated_image", "final_pdf", "editable_psd",
+        "quality_report", "review_manifest",
+    )
+
     ready = normalize_output_plan("traducao_pronta")
     assert ready.execution_operations == frozenset({
         "analyze_metadata", "download_assets", "run_ocr", "translate",

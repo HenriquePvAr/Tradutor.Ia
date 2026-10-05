@@ -1,0 +1,7 @@
+{
+  "command": "pytest tests/test_job_runner_sanitization.py tests/test_output_plan.py tests/test_artifact_contract.py tests/test_translate_only_completion.py -q",
+  "result": "69 passed, 3 subtests passed",
+  "deepL_calls": 0,
+  "yk_calls": 0,
+  "gemini_calls": 0
+}

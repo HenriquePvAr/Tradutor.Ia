@@ -1,0 +1,8 @@
+{
+  "branch": "integration/main-candidate-comix-ui-v1",
+  "head_before": "4099bb8b15b2b0c74e12bb1b48626e2833914a44",
+  "ancestor_9a0e488": true,
+  "ancestor_4099bb8": true,
+  "push": "NO",
+  "destructive_git_commands": false
+}

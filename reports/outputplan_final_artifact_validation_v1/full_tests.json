@@ -1,0 +1,7 @@
+{
+  "command": "python -m pytest -q",
+  "result": "5878 passed, 141 skipped, 2 xfailed, 732 subtests passed",
+  "duration_seconds": 582.66,
+  "new_failures": 0,
+  "warnings": 1
+}

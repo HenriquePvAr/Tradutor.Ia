@@ -1,0 +1,6 @@
+{
+  "fixture": {"plan": "apenas_clean", "legacy_full": true, "requested": ["clean_image"], "produced_pages": 43, "expected_pages": 43, "pdf": false},
+  "expected": "COMPLETED_OR_REVIEW_REQUIRED",
+  "result": "PASS",
+  "false_pdf_requirement": false
+}

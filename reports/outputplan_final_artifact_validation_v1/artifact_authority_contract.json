@@ -1,0 +1,7 @@
+{
+  "authority_order": ["effective_output_plan", "requested_artifacts", "produced_artifacts/artifact_manifest"],
+  "modern_rule": "missing = requested_artifacts - produced_artifacts, with coverage validation",
+  "legacy_rule": "use profile fallback only when requested_artifacts is absent",
+  "legacy_full_can_override_modern_plan": false,
+  "fail_closed_preserved": true
+}

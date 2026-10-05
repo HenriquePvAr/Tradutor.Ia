@@ -1,0 +1,8 @@
+{
+  "traducao_pronta": ["clean_image", "translated_image", "final_pdf"],
+  "apenas_clean": ["clean_image"],
+  "apenas_traducao": ["translation_manifest"],
+  "traducao_clean": ["clean_image"],
+  "completo_profissional_qc": ["clean_image", "translated_image", "final_pdf", "editable_psd", "quality_report", "review_manifest"],
+  "personalizado": "derived from effective selected operations; never from legacy full"
+}

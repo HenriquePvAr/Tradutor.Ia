@@ -1,0 +1,11 @@
+{
+  "pyinstaller": "6.22.2",
+  "venv": "C:/Projetos/Tradutor.Ia/.venv-beta",
+  "build_result": "PASS",
+  "exe": "C:/Users/henri/YomuExperimental/outputplan-final-artifact-validation-v1/dist/YomuSekai/YomuSekai.exe",
+  "sha256": "F2C9D2201F51C5AA6C8EFE40CE41E165B8556F75D9F0634B2E71C6B453438BA9",
+  "window_title": "Yomu Sekai",
+  "responding": true,
+  "old_validation_instances_closed": true,
+  "real_job_started_by_agent": false
+}

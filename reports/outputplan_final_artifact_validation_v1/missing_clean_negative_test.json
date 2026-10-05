@@ -1,0 +1,6 @@
+{
+  "fixture": {"plan": "apenas_clean", "requested": ["clean_image"], "produced_pages": 42, "expected_pages": 43},
+  "expected": "FAIL_REQUIRED_ARTIFACT_OR_COVERAGE",
+  "result": "PASS",
+  "validator_weakened": false
+}

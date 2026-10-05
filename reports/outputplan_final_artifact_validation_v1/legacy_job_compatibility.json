@@ -1,0 +1,6 @@
+{
+  "manifest_without_requested_artifacts": true,
+  "profile_fallback": "preserved",
+  "legacy_validation": "PASS",
+  "modern_plan_override": "PASS"
+}

@@ -1,0 +1,11 @@
+{
+  "observed_job": "7927ffd2e147474785d969e6d738733c",
+  "root_cause": "_artifact_manifest_contract derived required artifacts from output_profile=automatic instead of explicit requested_artifacts from the modern OutputPlan manifest",
+  "legacy_signal": "full=true",
+  "false_requirement": "final_pdf",
+  "actual_plan": "apenas_clean",
+  "actual_clean_produced": 43,
+  "actual_clean_expected": 43,
+  "pdf_required_by_plan": false,
+  "job_mutated": false
+}

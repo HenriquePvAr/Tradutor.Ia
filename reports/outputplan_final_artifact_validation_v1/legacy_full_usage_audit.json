@@ -1,0 +1,7 @@
+{
+  "full_retained": true,
+  "classification": "legacy_compatibility_and_legacy_execution_hint",
+  "modern_artifact_policy": "full cannot override explicit OutputPlan/requested_artifacts",
+  "legacy_fallback": "manifests without requested_artifacts continue to use profile-derived requirements",
+  "known_consumers_audited": ["runtime configuration compatibility", "legacy run_webtoon execution hint", "artifact validator legacy fallback"]
+}
