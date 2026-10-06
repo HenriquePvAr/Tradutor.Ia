@@ -248,7 +248,26 @@ class RequestsTransport:
             self._session.trust_env = False
         # Redirects are followed manually so each hop can be revalidated.
         self._session.max_redirects = self.limits.max_redirects
+        self._comix_user_agent = ""
+        self._load_comix_session()
         self.last_diagnostic_context: dict[str, Any] = {}
+
+    def _load_comix_session(self) -> None:
+        if str(getattr(self._adapter, "name", "")).casefold() != "comix":
+            return
+        try:
+            from yomu.download.comix_session import load_comix_session
+            state = load_comix_session()
+        except Exception:  # pragma: no cover - cache is optional
+            state = None
+        if not state:
+            return
+        cookie, user_agent = state
+        self._comix_user_agent = user_agent
+        try:
+            self._session.cookies.set("cf_clearance", cookie, domain=".comix.to", path="/")
+        except Exception:  # pragma: no cover - requests-compatible test doubles
+            pass
 
     def _mark(
         self,
@@ -268,7 +287,7 @@ class RequestsTransport:
 
     def _headers(self, referer: str) -> dict[str, str]:
         headers = {
-            "User-Agent": DEFAULT_USER_AGENT,
+            "User-Agent": self._comix_user_agent or DEFAULT_USER_AGENT,
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
         }
         safe_referer = _safe_referer(referer)
@@ -527,6 +546,19 @@ def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None
     session = session or requests.Session()
     if own_session and hasattr(session, "trust_env"):
         session.trust_env = False
+    comix_user_agent = ""
+    if str(getattr(adapter, "name", "")).casefold() == "comix":
+        try:
+            from yomu.download.comix_session import load_comix_session
+            state = load_comix_session()
+        except Exception:  # pragma: no cover - optional cache
+            state = None
+        if state:
+            cookie, comix_user_agent = state
+            try:
+                session.cookies.set("cf_clearance", cookie, domain=".comix.to", path="/")
+            except Exception:  # pragma: no cover - requests-compatible test doubles
+                pass
     current = str(url or "")
     started = time.perf_counter()
     redirect_count = 0
@@ -539,7 +571,7 @@ def inspect_source_preflight(adapter, url: str, *, limits: DownloadLimits | None
             # adapters deliberately have no path markers and remain unaffected.
             adapter.validate_path(current)
             request_args = {
-                "headers": {"User-Agent": DEFAULT_USER_AGENT,
+                "headers": {"User-Agent": comix_user_agent or DEFAULT_USER_AGENT,
                             "Accept": "text/html,application/xhtml+xml"},
                 "timeout": limits.timeout,
                 "stream": True,

@@ -277,7 +277,25 @@ class Worker:
         # rendered through canvas/network fallback lose their reader-owned resource payload
         # when rehydrated from this sanitized snapshot.  Reopen the bounded public reader
         # analysis in the worker so the downloader receives the real 105-page manifest.
-        if str(public.get("adapter") or public.get("adapter_name") or "").casefold() == "comix":
+        persisted_adapter = str(
+            public.get("adapter") or public.get("adapter_name")
+            or public.get("provider") or public.get("source_type") or ""
+        ).casefold()
+        # Older UI snapshots did not persist the adapter key reliably.  The source URL is
+        # still authoritative for this safety decision: never rehydrate an opaque candidate
+        # list for Comix because the worker must re-materialize it with the current session.
+        if not persisted_adapter:
+            try:
+                from yomu.download.sources.chapter_source import select_adapter
+                persisted_adapter = str(
+                    getattr(select_adapter(str(job.get("source_url") or "")), "name", "")
+                ).casefold()
+            except Exception:
+                persisted_adapter = ""
+        source_host = str(job.get("source_url") or "").split("/", 3)[2].casefold() \
+            if "://" in str(job.get("source_url") or "") else ""
+        if persisted_adapter == "comix" or source_host == "comix.to" \
+                or source_host.endswith(".comix.to"):
             self._append_job_log(
                 job["id"], "source_validation",
                 "SOURCE_REUSE_SKIPPED reason=dynamic_adapter_requires_materializable_manifest")

@@ -75,8 +75,8 @@ _PAGE_SELECTOR = "img.rpage-page__img"
 
 
 def _comix_cf_cookie_path() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
-    return Path(base) / "YomuSekai" / "comix_cf_cookie.json"
+    from yomu.download.comix_session import session_path
+    return session_path()
 
 
 def _load_comix_cf_override() -> tuple[str, str] | None:
@@ -2589,7 +2589,7 @@ def capture_cloudflare_clearance(argv: list[str] | None = None) -> int:
     if not user_agent:
         print("COMIX_CF_CAPTURE_RESULT reason=capture_no_useragent", flush=True)
         return 1
-    cookie_path.parent.mkdir(parents=True, exist_ok=True)
-    cookie_path.write_text(json.dumps({"cf_clearance": found, "user_agent": user_agent}), encoding="utf-8")
+    from yomu.download.comix_session import save_comix_session
+    save_comix_session(found, user_agent)
     print("COMIX_CF_CAPTURE_RESULT reason=capture_success", flush=True)
     return 0

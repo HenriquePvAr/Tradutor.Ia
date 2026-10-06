@@ -209,7 +209,11 @@ def download_images(
         else:
             # Selenium would otherwise follow the chain before exposing ``current_url``. Resolve
             # and validate every top-level redirect with a bounded, cookie-free request first.
-            navigation_url = preflight_browser_navigation(adapter, url)
+            navigation_url = (
+                _comix_navigation_with_recovery(adapter, url)
+                if str(getattr(adapter, "name", "")).casefold() == "comix"
+                else preflight_browser_navigation(adapter, url)
+            )
             driver = _create_driver()
             ownership = _capture_driver_ownership(driver)
             _set_browser_timeouts(driver)
@@ -471,14 +475,18 @@ def _comix_cf_autocapture_enabled() -> bool:
 def _run_comix_clearance_capture(url, diagnostic_callback=None) -> bool:
     """Ask the owner to solve the visible challenge, then capture it over local CDP."""
     try:
+        from yomu.download.comix_session import human_capture_lock, load_comix_session
         from yomu.download.readers import scrapling_reader_resolver as resolver
-        _emit_source_fallback_event(diagnostic_callback, "COMIX_CF_CAPTURE_START", provider="comix")
-        result = resolver.capture_cloudflare_clearance([str(url or "")])
-        ok = result == 0
-        _emit_source_fallback_event(
-            diagnostic_callback, "COMIX_CF_CAPTURE_END", provider="comix",
-            result="ok" if ok else "failed")
-        return ok
+        with human_capture_lock():
+            if load_comix_session():
+                return True
+            _emit_source_fallback_event(diagnostic_callback, "COMIX_CF_CAPTURE_START", provider="comix")
+            result = resolver.capture_cloudflare_clearance([str(url or "")])
+            ok = result == 0
+            _emit_source_fallback_event(
+                diagnostic_callback, "COMIX_CF_CAPTURE_END", provider="comix",
+                result="ok" if ok else "failed")
+            return ok
     except Exception:
         _emit_source_fallback_event(
             diagnostic_callback, "COMIX_CF_CAPTURE_END", provider="comix", result="failed")
@@ -499,14 +507,22 @@ def discover_chapter_source(url, *, cancel_check=None, on_progress=None,
                 "dynamic_resolver_child_cleanup_failed",
             }
             if (not captured_once
-                    and str(getattr(exc, "code", "") or "") == "dynamic_source_unavailable"
+                    and str(getattr(exc, "code", "") or "") in {
+                        "dynamic_source_unavailable", "challenge_required"
+                    }
                     and str(getattr(exc, "detail", "") or "") not in _isolation_codes
                     and _comix_cf_autocapture_enabled()
                     and _is_comix_url(url)
-                    and _run_comix_clearance_capture(url, diagnostic_callback)):
+                    and _invalidate_and_capture_comix(url, diagnostic_callback)):
                 captured_once = True
                 continue
             raise
+
+
+def _invalidate_and_capture_comix(url, diagnostic_callback=None) -> bool:
+    from yomu.download.comix_session import invalidate_comix_session
+    invalidate_comix_session()
+    return _run_comix_clearance_capture(url, diagnostic_callback)
 
 
 def _discover_chapter_source_once(url, *, cancel_check=None, on_progress=None,
@@ -646,8 +662,11 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
         normalized = adapter.normalize_url(canonical_identity.canonical_url)
         adapter.validate_url(normalized)
         adapter.validate_path(normalized)
-    preflight = inspect_source_preflight(
-        adapter, normalized, cancel_check=cancel_check)
+    preflight = (
+        _comix_preflight_with_recovery(adapter, normalized, cancel_check=cancel_check)
+        if str(getattr(adapter, "name", "")).casefold() == "comix"
+        else inspect_source_preflight(adapter, normalized, cancel_check=cancel_check)
+    )
     # Some offline tests replace this transport seam with an already-validated URL.
     # Production always returns SourcePreflightResult and therefore persists the
     # complete sanitized decision below.
@@ -669,7 +688,29 @@ def analyze_chapter_source(url, *, cancel_check=None, on_progress=None):
             driver = _create_driver()
             ownership = _capture_driver_ownership(driver)
             _set_browser_timeouts(driver)
+            session_state = None
+            if str(getattr(adapter, "name", "")).casefold() == "comix":
+                try:
+                    from yomu.download.comix_session import load_comix_session
+                    session_state = load_comix_session()
+                    if session_state:
+                        _cookie, user_agent = session_state
+                        driver.execute_cdp_cmd(
+                            "Network.setUserAgentOverride", {"userAgent": user_agent})
+                except Exception:  # pragma: no cover - browser-specific capability
+                    session_state = None
             driver.get(navigation_url)
+            if str(getattr(adapter, "name", "")).casefold() == "comix":
+                try:
+                    if session_state:
+                        cookie, _user_agent = session_state
+                        driver.add_cookie({
+                            "name": "cf_clearance", "value": cookie,
+                            "domain": ".comix.to", "path": "/",
+                        })
+                        driver.refresh()
+                except Exception:  # pragma: no cover - browser-specific capability
+                    pass
             if cancel_check and cancel_check():
                 raise SourceError("cancelled", "during_source_analysis")
             final_url = getattr(driver, "current_url", "")
@@ -823,6 +864,35 @@ def _webtoons_lazy_resolver(*, cancel_check=None, on_progress=None,
         return payload
 
     return resolve
+
+
+def _comix_preflight_with_recovery(adapter, url, *, cancel_check=None,
+                                   diagnostic_callback=None):
+    """Inspect navigation, recover one genuine Comix challenge, and inspect once again."""
+    # Keep the narrow compatibility seam used by offline adapter doubles and legacy callers;
+    # real Comix adapters expose the full preflight contract below.
+    if not callable(getattr(adapter, "validate_navigation_url", None)):
+        return preflight_browser_navigation(adapter, url) if cancel_check is None else \
+            preflight_browser_navigation(adapter, url, cancel_check=cancel_check)
+    result = inspect_source_preflight(adapter, url, cancel_check=cancel_check)
+    if (str(getattr(adapter, "name", "")).casefold() != "comix"
+            or str(getattr(result, "reason_code", "") or "") != "challenge_required"):
+        return result
+    from yomu.download.comix_session import invalidate_comix_session
+    invalidate_comix_session()
+    if not _run_comix_clearance_capture(url, diagnostic_callback):
+        return result
+    return inspect_source_preflight(adapter, url, cancel_check=cancel_check)
+
+
+def _comix_navigation_with_recovery(adapter, url, *, cancel_check=None,
+                                    diagnostic_callback=None):
+    result = _comix_preflight_with_recovery(
+        adapter, url, cancel_check=cancel_check,
+        diagnostic_callback=diagnostic_callback)
+    if isinstance(result, str):
+        return result
+    return require_browser_navigation(result)
 
 
 
@@ -2913,6 +2983,7 @@ def _download_url(url, referer, max_retries, transports=None):
     _download_url.last_attempted_transports = []
     last_error = None
     last_attempt = {}
+    challenge_recovered = False
     for transport in transports:
         for _ in range(max(1, max_retries)):
             transport_name = _safe_report_metadata(getattr(transport, "name", ""), "unknown")
@@ -2937,7 +3008,19 @@ def _download_url(url, referer, max_retries, transports=None):
             except LimitExceeded:
                 raise                     # chapter budget is terminal; never retry/fallback
             except ChallengeRequired:
-                raise                     # interactive challenge: stop, never work around
+                if not challenge_recovered and _is_comix_url(url):
+                    from yomu.download.comix_session import invalidate_comix_session
+                    # The old state was rejected by the server; the capture just produced
+                    # the replacement.  Retry this logical page once through fresh transports.
+                    invalidate_comix_session()
+                    if _run_comix_clearance_capture(url):
+                        for refreshed in transports:
+                            reload_session = getattr(refreshed, "_load_comix_session", None)
+                            if callable(reload_session):
+                                reload_session()
+                        challenge_recovered = True
+                        continue
+                raise
             except SourceError as exc:
                 last_error = exc
                 last_attempt = _download_attempt_diagnostics(
