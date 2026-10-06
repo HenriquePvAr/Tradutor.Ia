@@ -21,6 +21,8 @@ class ObservabilityClient:
         self._seen: OrderedDict[str, float] = OrderedDict()
         self._last_progress: dict[str, float] = {}
         self._lock = threading.Lock()
+        self._delivery_failures = 0
+        self._last_http_status: int | None = None
         self._thread = threading.Thread(target=self._run, name="yomu-observability", daemon=True)
         self._thread.start()
 
@@ -51,13 +53,29 @@ class ObservabilityClient:
             pass
         self._thread.join(timeout)
 
+    @property
+    def delivery_status(self) -> dict[str, Any]:
+        """Return bounded transport diagnostics without event or credential data."""
+        with self._lock:
+            return {"delivery_failures": self._delivery_failures,
+                    "last_http_status": self._last_http_status}
+
     def _run(self) -> None:
         while True:
             event = self._queue.get()
             if event is None:
                 return
+            response = None
             try:
-                requests.post(f"{self.base_url}/v1/observability/events", json={"events": [event]}, timeout=self.timeout)
+                response = requests.post(
+                    f"{self.base_url}/v1/observability/events",
+                    json={"events": [event]}, timeout=self.timeout,
+                )
+                response.raise_for_status()
+                with self._lock:
+                    self._last_http_status = int(response.status_code)
             except requests.RequestException:
                 # Observability is strictly best effort and must never stop a job.
-                pass
+                with self._lock:
+                    self._delivery_failures += 1
+                    self._last_http_status = int(response.status_code) if response is not None else None

@@ -72,6 +72,8 @@ def remote_clean_callback(client: HardCleanRemoteClient, request: Any) -> dict[s
         if remote_status not in {"COMPLETED", "PASS", "REVIEW_REQUIRED"}:
             return {"status": str(status.get("status") or "FAILED"), "remote_job_id": job_id}
         echoed = status.get("metadata")
+        remote_output = echoed.get("output") if isinstance(echoed, dict) else None
+        remote_output = remote_output if isinstance(remote_output, dict) else {}
         validation = echoed.get("validation") if isinstance(echoed, dict) else None
         identity = validation.get("identity") if isinstance(validation, dict) else None
         mask_metrics = validation.get("mask") if isinstance(validation, dict) else None
@@ -160,6 +162,9 @@ def remote_clean_callback(client: HardCleanRemoteClient, request: Any) -> dict[s
                 "source_text_observations": semantic.get("source_observations", []),
                 "post_clean_text_observations": semantic.get("post_clean_observations", []),
                 "translation_enabled": False, "translated_text_ptbr": None,
+                "generation_seq": remote_output.get("generation_seq"),
+                "slot_id": remote_output.get("slot_id"),
+                "duration_seconds": remote_output.get("duration_seconds"),
             }
         return {
             "status": "COMPLETED",
@@ -187,6 +192,9 @@ def remote_clean_callback(client: HardCleanRemoteClient, request: Any) -> dict[s
             "sfx_validation": sfx,
             "translation_enabled": False,
             "translated_text_ptbr": None,
+            "generation_seq": remote_output.get("generation_seq"),
+            "slot_id": remote_output.get("slot_id"),
+            "duration_seconds": remote_output.get("duration_seconds"),
         }
 
 

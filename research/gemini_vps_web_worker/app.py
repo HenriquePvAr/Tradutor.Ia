@@ -12,12 +12,14 @@ from typing import Annotated, Any
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from .discord_observability import router as observability_router
 from .models import JobStatus
 from .storage import JobStore
 
 ROOT = Path(os.environ.get("YOMU_WORKER_ROOT", ".runtime/gemini-hard-clean-worker"))
 store = JobStore(ROOT)
 app = FastAPI(title="Yomu Gemini Web Fallback", version="2.0.0-safe-clean-semantic")
+app.include_router(observability_router)
 
 
 def _sha256(data: bytes) -> str:

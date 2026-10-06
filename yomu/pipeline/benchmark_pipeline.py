@@ -97,6 +97,7 @@ _RAPIDOCR_INFERENCE_LOCK = threading.BoundedSemaphore(1)
 _PERF_JOB_ORIGIN_NS = None
 _PERF_EVENTS = []
 _PIPELINE_TELEMETRY = None
+_DISCORD_OBSERVABILITY = None
 
 
 def _perf_offset_ns() -> int | None:
@@ -358,10 +359,23 @@ def _gemini_safe_clean_page(state, *, job_id: str = ""):
                           "mask_coverage": mask_meta.get("mask_coverage"),
                           "translation_enabled": False},
             )
+            remote_started = time.monotonic()
             result = run_clean_strategy(
                 request,
                 {"status": LOCAL_RECONSTRUCTION_HARD},
                 fallback=lambda req: remote_clean_callback(client, req),
+            )
+            _emit_gemini_observability(
+                job_id=job_id, run_id=str(state.get("run_id") or ""),
+                page=str(state.get("index") or ""),
+                region=str(getattr(group, "region_id", "") or group.group_id),
+                request_id=str(result.get("request_id") or ""),
+                slot_id=str(result.get("slot_id") or "UNKNOWN"),
+                generation_seq=result.get("generation_seq"),
+                duration_seconds=float(result.get("duration_seconds") or
+                                       (time.monotonic() - remote_started)),
+                status=str(result.get("status") or "UNKNOWN"),
+                semantic_status=str((result.get("ocr_text_removal") or {}).get("status") or "UNKNOWN"),
             )
             result["mask_metadata"] = mask_meta
             result["remote_provider"] = "gemini_web_vps"
@@ -386,6 +400,36 @@ def _gemini_safe_clean_page(state, *, job_id: str = ""):
         {k: v for k, v in item.items() if k not in {"image", "raw_image", "safe_clean_image"}}
         for item in results
     ], "remote_provider": "gemini_web_vps"}
+
+
+def _emit_gemini_observability(*, job_id: str, run_id: str, page: str, region: str,
+                               request_id: str, slot_id: str, generation_seq: object,
+                               duration_seconds: float, status: str,
+                               semantic_status: str) -> None:
+    """Best-effort SAFE CLEAN event; only bounded identifiers and validation state leave Yomu."""
+    global _DISCORD_OBSERVABILITY
+    base_url = str(os.getenv("YOMU_DISCORD_OBSERVABILITY_URL") or
+                   os.getenv("YOMU_GEMINI_REMOTE_URL") or "").strip()
+    if not base_url:
+        return
+    try:
+        if _DISCORD_OBSERVABILITY is None:
+            from yomu.observability.client import ObservabilityClient
+            _DISCORD_OBSERVABILITY = ObservabilityClient(
+                base_url, timeout=3.0, progress_interval=0.0)
+        import hashlib
+        fingerprint = hashlib.sha256(str(request_id or f"{job_id}:{page}:{region}").encode()).hexdigest()[:12]
+        _DISCORD_OBSERVABILITY.emit(
+            "REMOTE_FALLBACK_STARTED", job_id=job_id, run_id=run_id,
+            request_id=fingerprint, page=str(page)[:24], region=str(region)[:80],
+            request_fingerprint=fingerprint, slot_id=str(slot_id)[:24],
+            generation_seq=int(generation_seq) if str(generation_seq or "").isdigit() else "UNKNOWN",
+            duration_seconds=round(max(0.0, float(duration_seconds)), 2),
+            result=str(status)[:48], semantic_status=str(semantic_status)[:32],
+        )
+    except Exception:
+        # Discord is best-effort and cannot change a page's clean result.
+        return
 
 
 def _plan_requested_artifacts(effective_ops):

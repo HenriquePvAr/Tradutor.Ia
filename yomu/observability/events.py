@@ -12,7 +12,7 @@ EVENTS = frozenset({
     "WORKER_READY", "JOB_CREATED", "JOB_STARTED", "JOB_ANALYZED",
     "REMOTE_FALLBACK_QUEUED", "REMOTE_FALLBACK_STARTED", "REMOTE_PROGRESS",
     "REVIEW_REQUIRED", "JOB_COMPLETED", "JOB_FAILED", "REMOTE_AUTH_REQUIRED",
-    "WORKER_DEGRADED",
+    "WORKER_DEGRADED", "DATASET_SUMMARY",
 })
 _FORBIDDEN = re.compile(r"(token|secret|cookie|password|authorization|webhook|prompt|email|ssh|credential|payload|raw_text|translated_text)", re.I)
 _SAFE = re.compile(r"^[A-Za-z0-9._:/-]{1,180}$")

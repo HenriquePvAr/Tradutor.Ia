@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yomu.runtime.process_tree as process_tree
 from yomu.runtime.job_store import JobStatus, JobStore, TransitionError
@@ -51,6 +52,114 @@ _PROVENANCE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 # Set when the runner is signalled to stop (by the worker or the OS); the poll loop
 # observes it, stops the pipeline tree and interrupts the job instead of finishing.
 _STOP_REQUESTED = False
+
+
+def _observability_client(configuration: object):
+    """Create a privacy-safe notifier only for the configured loopback VPS tunnel."""
+    config = configuration if isinstance(configuration, dict) else {}
+    url = str(config.get("gemini_safe_clean_remote_url") or
+              os.environ.get("YOMU_DISCORD_OBSERVABILITY_URL") or "").strip()
+    if not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+            return None
+        from yomu.observability.client import ObservabilityClient
+        return ObservabilityClient(url, timeout=3.0, progress_interval=0.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _job_event_fields(job: dict) -> dict:
+    config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+    source = str(job.get("source_url") or "")
+    try:
+        host = urlsplit(source).hostname or "UNKNOWN"
+    except ValueError:
+        host = "UNKNOWN"
+    operations = config.get("effective_operations") or config.get("requested_operations") or []
+    preset = str(config.get("output_plan") or "CUSTOM")
+    chapter = str(config.get("chapter_slug") or config.get("chapter_name") or
+                  job.get("episode_number") or "UNKNOWN")[:100]
+    return {
+        "series": str(job.get("series_slug") or job.get("series_title") or "UNKNOWN")[:100],
+        "chapter": chapter,
+        "source_host": host[:100],
+        "preset": preset[:60],
+        "operations": ",".join(str(item)[:24] for item in operations)[:120]
+        if isinstance(operations, (list, tuple)) else "UNKNOWN",
+        "translation_enabled": config.get("translation_enabled") is True,
+        "pages": int(job.get("logical_pages") or job.get("progress_total") or 0),
+    }
+
+
+def _analysis_event_fields(job: dict) -> dict:
+    """Expose only persisted, scalar analysis counts; unknown metrics stay explicit."""
+    analysis = job.get("source_analysis") if isinstance(job.get("source_analysis"), dict) else {}
+    fields = {
+        "pages": int(job.get("logical_pages") or job.get("candidate_count") or 0),
+        "detected_groups": "UNKNOWN",
+        "story_groups": "UNKNOWN",
+        "sfx_groups": "UNKNOWN",
+        "review_groups": "UNKNOWN",
+        "local_candidates": "UNKNOWN",
+        "remote_candidates": "UNKNOWN",
+    }
+    for target, keys in {
+        "pages": ("accepted_page_count", "accepted_candidate_count", "candidate_count"),
+        "detected_groups": ("detected_groups", "group_count"),
+        "story_groups": ("story_groups",),
+        "sfx_groups": ("sfx_groups",),
+        "review_groups": ("review_groups",),
+        "local_candidates": ("local_candidates",),
+        "remote_candidates": ("remote_candidates",),
+    }.items():
+        for key in keys:
+            value = analysis.get(key, job.get(key))
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                fields[target] = int(value)
+                break
+    return fields
+
+
+def _emit_terminal_observability(client, job: dict, started_monotonic: float | None) -> None:
+    if client is None or not isinstance(job, dict):
+        return
+    status = str(job.get("status") or "unknown")
+    job_id, run_id = str(job.get("id") or ""), str(job.get("run_id") or "")
+    config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
+    fields = _job_event_fields(job)
+    fields.update({
+        "status": status,
+        "duration_seconds": round(max(0.0, time.monotonic() - started_monotonic), 1)
+        if started_monotonic is not None else 0.0,
+        "pages": int(job.get("progress_total") or job.get("logical_pages") or 0),
+        "processed_pages": int(job.get("progress_current") or 0),
+        "gemini": "UNKNOWN",
+        "local": "UNKNOWN",
+        "review": "UNKNOWN",
+        "errors": 0 if status in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED} else 1,
+        "training_eligible": "UNKNOWN",
+        "training_running": False,
+        "artifacts": "local output; see Yomu history",
+    })
+    if status == JobStatus.FAILED:
+        client.emit("JOB_FAILED", job_id=job_id, run_id=run_id,
+                    stage=str(job.get("stage") or "unknown")[:80],
+                    error_code=str(job.get("reason_code") or "job_failed")[:80],
+                    duration_seconds=fields["duration_seconds"])
+    elif status == JobStatus.REVIEW_REQUIRED:
+        client.emit("REVIEW_REQUIRED", job_id=job_id, run_id=run_id,
+                    pages=fields["pages"], review=fields["processed_pages"])
+        client.emit("JOB_COMPLETED", job_id=job_id, run_id=run_id, **fields)
+    elif status == JobStatus.FINISHED:
+        client.emit("JOB_COMPLETED", job_id=job_id, run_id=run_id, **fields)
+    if status in {JobStatus.FINISHED, JobStatus.REVIEW_REQUIRED, JobStatus.FAILED}:
+        client.emit("DATASET_SUMMARY", job_id=job_id, run_id=run_id,
+                    samples_observed="UNKNOWN", samples_eligible="UNKNOWN",
+                    samples_rejected="UNKNOWN", training_running=False,
+                    rejection_reason="not computed by runtime reporter")
 
 
 def _set_output_profile_environment(env: dict[str, str], configuration: object) -> None:
@@ -661,6 +770,8 @@ def _terminate(proc: subprocess.Popen) -> None:
 def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
     _install_stop_handlers()
     store = JobStore(db_path)
+    telemetry = None
+    job_started_monotonic = None
     try:
         job = store.get_job(job_id)
         _append_pipeline_trace(job or {"id": job_id}, "JOB_LOAD_STARTED")
@@ -668,6 +779,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         _append_pipeline_trace(job or {"id": job_id}, "JOB_LOAD_RESULT", found=job is not None)
         if job is None:
             return 2
+        telemetry = _observability_client(job.get("configuration"))
         _append_pipeline_trace(job, "CHILD_BOOT", frozen=bool(getattr(sys, "frozen", False)))
         _append_pipeline_trace(
             job, "CHILD_POST_BOOT_BEGIN",
@@ -739,6 +851,12 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
             job_id, JobStatus.RUNNING, expected_worker=job.get("worker_id"),
             log_path=log_path, stage="created",
         )
+        job_started_monotonic = time.monotonic()
+        if telemetry is not None:
+            telemetry.emit("JOB_STARTED", job_id=job_id, run_id=str(job.get("run_id") or ""),
+                            started_at=time.time(), **_job_event_fields(job))
+            telemetry.emit("JOB_ANALYZED", job_id=job_id, run_id=str(job.get("run_id") or ""),
+                            **_analysis_event_fields(job))
         _write_manifest(output_dir, job)
 
         log_file = Path(log_path)
@@ -834,6 +952,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
 
             cancelled = False
             interrupted = False
+            progress_milestone = 0
             while proc.poll() is None:
                 time.sleep(min(HEARTBEAT_SECONDS, 1.0))
                 snap = pump.drain_progress()
@@ -843,6 +962,17 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                         total=int(snap.total or 0), message=snap.last_message,
                         counter_stage=snap.counter_stage,
                     )
+                    total = int(snap.total or 0)
+                    current = int(snap.current or 0)
+                    percent = min(100, max(0, int(current * 100 / total))) if total > 0 else 0
+                    next_milestone = (percent // 25) * 25
+                    if telemetry is not None and next_milestone >= 25 and next_milestone > progress_milestone:
+                        progress_milestone = next_milestone
+                        telemetry.emit(
+                            "REMOTE_PROGRESS", job_id=job_id,
+                            run_id=str(job.get("run_id") or ""), percent=progress_milestone,
+                            processed_pages=current, total_pages=total,
+                        )
                 else:
                     store.heartbeat(job_id)
                 if not cancelled and store.cancel_requested(job_id):
@@ -886,6 +1016,14 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                 pass
         return result_code
     finally:
+        try:
+            latest = store.get_job(job_id)
+            if latest is not None:
+                _emit_terminal_observability(telemetry, latest, job_started_monotonic)
+        except Exception:
+            pass
+        if telemetry is not None:
+            telemetry.close(timeout=5.0)
         store.close()
 
 
