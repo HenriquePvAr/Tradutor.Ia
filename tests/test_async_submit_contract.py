@@ -143,6 +143,71 @@ class DuplicateGuardTests(SubmitEnqueuesOnlyTests):
         self.assertNotEqual(second["job_id"], first["job_id"])
         self.assertFalse(second.get("duplicate"))
 
+    def test_failed_job_allows_new_attempt_and_exposes_terminal_match(self):
+        first = self.submit()
+        self.bridge.store.update_fields(
+            first["job_id"], status=JobStatus.FAILED, stage="download",
+            reason_code="pipeline_failed", finished_at=1.0,
+        )
+        second = self.submit()
+        self.assertTrue(second["job_id"])
+        self.assertNotEqual(second["job_id"], first["job_id"])
+        self.assertNotEqual(second["run_id"], self.bridge.store.get_job(first["job_id"])["run_id"])
+        self.assertFalse(second["duplicate"])
+        self.assertEqual(second["dedupe_reason"], "terminal_job")
+        self.assertEqual(second["previous_terminal_job_id"], first["job_id"])
+        self.assertEqual(second["previous_terminal_status"], JobStatus.FAILED)
+        self.assertFalse(second["reuse_allowed"])
+        self.assertEqual(self.bridge.store.get_job(first["job_id"])["status"], JobStatus.FAILED)
+
+    def test_all_terminal_states_allow_a_fresh_attempt(self):
+        for status in (JobStatus.CANCELLED, JobStatus.FAILED, JobStatus.FINISHED,
+                       JobStatus.REVIEW_REQUIRED):
+            with self.subTest(status=status):
+                first = self.submit(slug=f"terminal_{status}")
+                self.bridge.store.update_fields(
+                    first["job_id"], status=status, stage="finished",
+                    reason_code="terminal_fixture", finished_at=1.0,
+                )
+                second = self.submit(slug=f"terminal_{status}")
+                self.assertFalse(second.get("duplicate"))
+                self.assertNotEqual(second["job_id"], first["job_id"])
+                self.assertEqual(second["previous_terminal_status"], status)
+
+    def test_active_statuses_are_the_only_dedupe_blockers(self):
+        active = {
+            JobStatus.STAGING, JobStatus.QUEUED, JobStatus.CLAIMING,
+            JobStatus.STARTING, JobStatus.RUNNING, JobStatus.CANCELLING,
+            JobStatus.AWAITING_SOURCE_REVIEW,
+            JobStatus.WAITING_SOURCE_VERIFICATION,
+            JobStatus.SOURCE_ANALYSIS_READY,
+        }
+        for status in JobStatus.ALL:
+            self.assertEqual(JobStatus.is_active_for_dedupe(status), status in active, status)
+        for status in JobStatus.TERMINAL:
+            self.assertFalse(JobStatus.is_active_for_dedupe(status), status)
+
+    def test_queued_job_with_unavailable_runtime_is_retired_and_new_job_dispatches(self):
+        first = self.submit()
+        old = self.bridge.store.get_job(first["job_id"])
+        self.bridge.store.update_fields(
+            first["job_id"], worker_contract="worker-contract-v2:old-build:old-runtime"
+        )
+        second = self.submit()
+        current = self.bridge.store.get_job(second["job_id"])
+        retired = self.bridge.store.get_job(first["job_id"])
+
+        self.assertFalse(second.get("duplicate"))
+        self.assertNotEqual(second["job_id"], first["job_id"])
+        self.assertNotEqual(second["run_id"], old["run_id"])
+        self.assertEqual(second["dedupe_reason"], "incompatible_queued_job_replaced")
+        self.assertEqual(second["replaced_incompatible_job_id"], first["job_id"])
+        self.assertEqual(retired["status"], JobStatus.CANCELLED)
+        self.assertEqual(retired["reason_code"], "worker_contract_mismatch")
+        self.assertEqual(current["status"], JobStatus.QUEUED)
+        self.assertEqual(current["worker_contract"], old["worker_contract"])
+        self.assertEqual(self.bridge.worker_calls, 2)
+
 
 class StageLabelTests(unittest.TestCase):
     def test_every_worker_stage_the_ui_can_receive_has_a_label(self):

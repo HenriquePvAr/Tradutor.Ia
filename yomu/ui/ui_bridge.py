@@ -29,7 +29,7 @@ import hashlib
 from PIL import Image
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import quote
 
 from yomu.community.community_auth import RequestPrincipal, bind_is_loopback, peer_is_loopback
@@ -5328,9 +5328,43 @@ class UiBridge:
             return stale_resolution
         # A double click (or a retried request) must not queue the same chapter twice.
         duplicate = self._pending_duplicate(payload)
+        replaced_incompatible_job = None
+        if (
+            duplicate
+            and duplicate.get("status") == JobStatus.QUEUED
+            and not self._queued_job_has_compatible_worker(duplicate)
+        ):
+            # A queued row pinned to an old frozen runtime cannot be claimed by
+            # this worker (claim_next_job enforces worker_contract). Retire that
+            # impossible queue entry before creating the owner's fresh attempt;
+            # the unique active-chapter index otherwise prevents insertion.
+            try:
+                replaced_incompatible_job = self.store.transition(
+                    str(duplicate["id"]), JobStatus.CANCELLED,
+                    reason_code="worker_contract_mismatch",
+                    stage="queue_runtime_reconciliation",
+                    error_type="worker_contract_mismatch",
+                    error_message="No live worker can claim this queued runtime contract.",
+                    writer_component="ui_bridge.dedupe_runtime_reconciliation",
+                )
+                duplicate = None
+            except TransitionError:
+                # A worker may have claimed the row between the read and CAS.
+                # Reuse it if it is now active; never cancel a claimed job.
+                duplicate = self.store.get_job(str(duplicate.get("id") or ""))
+                if duplicate and not JobStatus.is_active_for_dedupe(duplicate.get("status")):
+                    duplicate = None
+        # Terminal history rows are deliberately ignored for blocking, but are
+        # returned as evidence so the route can explain why a fresh attempt was
+        # allowed.
+        terminal_match = self._terminal_duplicate_match(payload)
         if duplicate:
             result = {"ok": True, "duplicate": True, "run_id": duplicate.get("run_id") or "",
-                      "job_id": duplicate["id"]}
+                      "job_id": duplicate["id"], "dedupe_reason": "active_job",
+                      "matched_job_id": duplicate["id"],
+                      "matched_run_id": duplicate.get("run_id") or "",
+                      "matched_status": duplicate.get("status") or "",
+                      "reuse_allowed": True}
             if duplicate.get("status") == JobStatus.AWAITING_SOURCE_REVIEW:
                 result["awaiting_source_review"] = True
                 result["analysis"] = duplicate.get("source_analysis") or {}
@@ -5362,7 +5396,11 @@ class UiBridge:
                 raise
             return {"ok": True, "duplicate": True, "created_new_job": False,
                     "reused_existing_job": True, "run_id": duplicate.get("run_id") or "",
-                    "job_id": duplicate["id"], "status": duplicate.get("status")}
+                    "job_id": duplicate["id"], "status": duplicate.get("status"),
+                    "dedupe_reason": "active_job", "matched_job_id": duplicate["id"],
+                    "matched_run_id": duplicate.get("run_id") or "",
+                    "matched_status": duplicate.get("status") or "",
+                    "reuse_allowed": True}
         self.store.update_fields(
             job["id"], source_type="url", stage="queued", reason_code="",
             heartbeat_at=time.time(),
@@ -5379,8 +5417,24 @@ class UiBridge:
         # Only after the payload is durably persisted: a worker that claimed earlier could
         # otherwise analyse a row that is still missing fields it needs.
         worker = self.ensure_worker()
-        return {"ok": True, "run_id": job["run_id"], "job_id": job["id"],
-                "status": JobStatus.QUEUED, "stage": "queued", "worker": worker}
+        result = {"ok": True, "run_id": job["run_id"], "job_id": job["id"],
+                  "status": JobStatus.QUEUED, "stage": "queued", "worker": worker,
+                  "duplicate": False, "reuse_allowed": False}
+        if terminal_match:
+            result.update({
+                "dedupe_reason": (
+                    "incompatible_queued_job_replaced"
+                    if replaced_incompatible_job else "terminal_job"
+                ),
+                "previous_terminal_job_id": terminal_match.get("id") or "",
+                "previous_terminal_run_id": terminal_match.get("run_id") or "",
+                "previous_terminal_status": terminal_match.get("status") or "",
+            })
+        if replaced_incompatible_job:
+            result["replaced_incompatible_job_id"] = str(
+                replaced_incompatible_job.get("id") or ""
+            )
+        return result
 
     @staticmethod
     def _translation_configuration_snapshot(
@@ -6085,15 +6139,38 @@ class UiBridge:
 
     def _pending_duplicate(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """An identical chapter already queued or in flight, if any."""
+        return self._duplicate_match(payload, statuses=JobStatus.DEDUPE_ACTIVE)
+
+    def _terminal_duplicate_match(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Find the newest matching terminal row for retry observability only."""
+        return self._duplicate_match(payload, statuses=JobStatus.TERMINAL)
+
+    def _queued_job_has_compatible_worker(self, job: dict[str, Any]) -> bool:
+        """Whether a live/current runtime can claim this queued row."""
+        contract = str(job.get("worker_contract") or "")
+        if not contract:
+            return True  # legacy rows are explicitly claimable by any contract
+        from yomu.runtime.runtime_contract import current_runtime_contract
+
+        if contract == current_runtime_contract():
+            return True
+        live_worker = self.store.healthy_worker(stale_seconds=15)
+        return bool(live_worker and str(live_worker.get("worker_contract") or "") == contract)
+
+    def _duplicate_match(
+        self, payload: dict[str, Any], *, statuses: Iterable[str]
+    ) -> dict[str, Any] | None:
+        """Find one matching job using an explicit status policy."""
         idempotency_key = self._idempotency_key(payload)
         if idempotency_key:
             pending = self.store.list_jobs(
-                statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
-                          JobStatus.WAITING_SOURCE_VERIFICATION, JobStatus.SOURCE_ANALYSIS_READY,
-                          *JobStatus.IN_FLIGHT], limit=None)
+                statuses=tuple(statuses), limit=None)
             for job in pending:
                 if str((job.get("configuration") or {}).get("idempotency_key") or "") == idempotency_key:
-                    if self._retire_stale_source_analysis_job(job):
+                    if (
+                        JobStatus.is_active_for_dedupe(job.get("status"))
+                        and self._retire_stale_source_analysis_job(job)
+                    ):
                         continue
                     return job
         try:
@@ -6104,16 +6181,17 @@ class UiBridge:
         if not url:
             return None
         pending = self.store.list_jobs(
-            statuses=[JobStatus.STAGING, JobStatus.QUEUED, JobStatus.AWAITING_SOURCE_REVIEW,
-                      JobStatus.WAITING_SOURCE_VERIFICATION, JobStatus.SOURCE_ANALYSIS_READY,
-                      *JobStatus.IN_FLIGHT], limit=None)
+            statuses=tuple(statuses), limit=None)
         for job in pending:
             if not self._is_translation_job(job):
                 continue
             same_slug = bool(slug and self._chapter_slug_from_job(job) == slug)
             same_url = job.get("source_url") == url
             if same_slug or (same_url and not slug):
-                if self._retire_stale_source_analysis_job(job):
+                if (
+                    JobStatus.is_active_for_dedupe(job.get("status"))
+                    and self._retire_stale_source_analysis_job(job)
+                ):
                     continue
                 return job
         return None

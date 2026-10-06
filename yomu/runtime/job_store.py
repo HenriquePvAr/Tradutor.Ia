@@ -80,6 +80,19 @@ class JobStatus:
     TERMINAL = frozenset({CANCELLED, FAILED, FINISHED, REVIEW_REQUIRED})
     # A job the worker considers "in flight" and must heartbeat.
     IN_FLIGHT = frozenset({CLAIMING, STARTING, RUNNING, CANCELLING})
+    # Only these states represent an execution that can still collide with a new
+    # submit for the same chapter.  Keep this separate from TERMINAL: a finished
+    # or failed historical row must remain visible, but must never block an
+    # explicit retry requested by the owner.
+    DEDUPE_ACTIVE = frozenset({
+        STAGING, QUEUED, CLAIMING, STARTING, RUNNING, CANCELLING,
+        AWAITING_SOURCE_REVIEW, WAITING_SOURCE_VERIFICATION, SOURCE_ANALYSIS_READY,
+    })
+
+    @classmethod
+    def is_active_for_dedupe(cls, status: str | None) -> bool:
+        """Return whether *status* can represent a live duplicate execution."""
+        return str(status or "") in cls.DEDUPE_ACTIVE
 
 
 def worker_lease_process_alive(lease: dict[str, Any] | None) -> bool:

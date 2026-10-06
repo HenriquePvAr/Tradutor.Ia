@@ -1480,17 +1480,50 @@ async def api_run(
             route="/api/ui/run", status="ok", reason_code=str(result.get("reason_code") or "")[:80],
         )
         created_new_job = bool(result.get("job_id") and not result.get("duplicate"))
+        matched_job_id = str(
+            result.get("matched_job_id") or result.get("previous_terminal_job_id") or ""
+        )[:80]
+        matched_run_id = str(
+            result.get("matched_run_id") or result.get("previous_terminal_run_id") or ""
+        )[:120]
+        matched_status = str(
+            result.get("matched_status") or result.get("previous_terminal_status") or ""
+        )[:80]
+        dedupe_reason = str(result.get("dedupe_reason") or "")[:80]
+        if matched_job_id:
+            _append_diagnostic_log(
+                "app_current.jsonl", "JOB_DUPLICATE_MATCH", trace_id=trace_id,
+                matched_job_id=matched_job_id,
+                matched_run_id=matched_run_id,
+                matched_status=matched_status,
+                reuse_allowed=bool(result.get("reuse_allowed")),
+                reason=dedupe_reason or (
+                    "active_job" if result.get("duplicate") else "terminal_job"
+                ),
+            )
         _append_diagnostic_log(
             "app_current.jsonl", "JOB_CREATE_RESULT", trace_id=trace_id,
             status="success" if result.get("job_id") else "not_created",
             job_created=created_new_job,
             duplicate_reused=bool(result.get("duplicate")),
+            previous_terminal_job_id=str(result.get("previous_terminal_job_id") or "")[:80],
+            replaced_incompatible_job_id=str(
+                result.get("replaced_incompatible_job_id") or ""
+            )[:80],
+            reuse_allowed=bool(result.get("reuse_allowed")),
+            reason=dedupe_reason,
         )
         if result.get("job_id"):
             _append_diagnostic_log(
                 "app_current.jsonl", "QUEUE_INSERT_RESULT", trace_id=trace_id,
                 status="success", job_created=created_new_job,
                 duplicate_reused=bool(result.get("duplicate")),
+                previous_terminal_job_id=str(result.get("previous_terminal_job_id") or "")[:80],
+                replaced_incompatible_job_id=str(
+                    result.get("replaced_incompatible_job_id") or ""
+                )[:80],
+                reuse_allowed=bool(result.get("reuse_allowed")),
+                reason=dedupe_reason,
             )
         return result
     except SourceError as exc:
