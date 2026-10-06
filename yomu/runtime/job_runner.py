@@ -36,6 +36,7 @@ from yomu.runtime.runner_start_gate import wait_for_start_gate
 from yomu.runtime.runtime_paths import resolve_runtime_root_for_job, runtime_root
 from yomu.ui.ui_helpers import (
     ProgressSnapshot,
+    classify_quality_validation,
     derive_final_run_status,
     find_output_artifacts,
     load_json,
@@ -130,12 +131,23 @@ def _emit_terminal_observability(client, job: dict, started_monotonic: float | N
     job_id, run_id = str(job.get("id") or ""), str(job.get("run_id") or "")
     config = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
     fields = _job_event_fields(job)
+    quality_doc = load_json(Path(str(job.get("quality_report_path") or ""))) if job.get("quality_report_path") else {}
+    quality_summary = quality_doc.get("summary") if isinstance(quality_doc, dict) else {}
+    quality = quality_summary.get("quality_validation") if isinstance(quality_summary, dict) else {}
+    quality = quality if isinstance(quality, dict) else {}
+    review_classification = classify_quality_validation(quality)
+    review_page_ids = review_classification.get("review_required_page_ids", [])
+    physical = quality.get("physical_quality") if isinstance(quality.get("physical_quality"), dict) else {}
+    population = physical.get("physical_population") if isinstance(physical.get("physical_population"), dict) else {}
     fields.update({
         "status": status,
         "duration_seconds": round(max(0.0, time.monotonic() - started_monotonic), 1)
         if started_monotonic is not None else 0.0,
         "pages": int(job.get("progress_total") or job.get("logical_pages") or 0),
         "processed_pages": int(job.get("progress_current") or 0),
+        "pages_verified": int(population.get("pages_text_analyzed") or 0),
+        "review_required_count": len(review_page_ids),
+        "review_required_pages": ",".join(page.removeprefix("p") for page in review_page_ids) or "none",
         "gemini": "UNKNOWN",
         "local": "UNKNOWN",
         "review": "UNKNOWN",
@@ -151,7 +163,9 @@ def _emit_terminal_observability(client, job: dict, started_monotonic: float | N
                     duration_seconds=fields["duration_seconds"])
     elif status == JobStatus.REVIEW_REQUIRED:
         client.emit("REVIEW_REQUIRED", job_id=job_id, run_id=run_id,
-                    pages=fields["pages"], review=fields["processed_pages"])
+                    pages=fields["pages"], pages_verified=fields["pages_verified"],
+                    review_required_count=fields["review_required_count"],
+                    review_required_pages=fields["review_required_pages"])
         client.emit("JOB_COMPLETED", job_id=job_id, run_id=run_id, **fields)
     elif status == JobStatus.FINISHED:
         client.emit("JOB_COMPLETED", job_id=job_id, run_id=run_id, **fields)
@@ -1201,6 +1215,11 @@ def _finalize(store, job_id, job, output_dir, return_code, cancelled, log_path,
         else "interrupted"
     )
     manifest_updates["review_required"] = target == JobStatus.REVIEW_REQUIRED
+    quality_classification = classify_quality_validation(quality)
+    if target == JobStatus.REVIEW_REQUIRED:
+        review_page_ids = quality_classification.get("review_required_page_ids", [])
+        manifest_updates["review_required_pages"] = [page.removeprefix("p") for page in review_page_ids]
+        manifest_updates["review_required_count"] = len(review_page_ids)
     if commit_mismatch:
         manifest_updates["runtime_commit_mismatch"] = {
             "expected_commit_hash": commit_mismatch["expected"],

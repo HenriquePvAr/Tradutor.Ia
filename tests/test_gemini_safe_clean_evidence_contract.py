@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -197,3 +198,58 @@ def test_gemini_clean_environment_is_default_off_and_requires_complete_attestati
     assert env["YOMU_ENABLE_GEMINI_SAFE_FALLBACK"] == "1"
     assert env["YOMU_GEMINI_SAFE_CLEAN_SCHEMA_VERIFIED"] == "1"
     assert env["YOMU_GEMINI_REMOTE_URL"] == "http://127.0.0.1:18777"
+
+
+def test_enabled_clean_only_routes_every_eligible_hard_group_sequentially(monkeypatch, tmp_path):
+    from yomu.pipeline import benchmark_pipeline
+    from yomu.clean.gemini_fallback import authorized_mask, adapter, remote_client
+
+    monkeypatch.setenv("YOMU_ENABLE_GEMINI_SAFE_FALLBACK", "1")
+    monkeypatch.setenv("YOMU_GEMINI_SAFE_CLEAN_SCHEMA_VERIFIED", "1")
+    image_path = tmp_path / "source.png"
+    source = np.zeros((20, 20, 3), dtype=np.uint8)
+    assert cv2.imwrite(str(image_path), source)
+    groups = [SimpleNamespace(
+        group_id=f"g-{index}", region_id=f"REGION_{index}", classification="dialogue",
+        canonical_source_text=f"story {index}", text=f"story {index}", quality_score=0.95,
+        ocr_provenance_engines=("rapidocr",), source_engine="rapidocr",
+        clean_disposition="LOCAL_HARD", clean_local_attempted=True,
+        clean_artifact_validation={"clean_validation_passed": False},
+        manual_review_required=False,
+    ) for index in (1, 2, 3)]
+    state = {
+        "groups": groups, "image_path": str(image_path), "original_bgr": source,
+        "clean_local_base": source.copy(), "output_path": str(tmp_path / "out"),
+        "source_language": "en", "index": 53, "run_id": "run-test",
+    }
+    requests = []
+
+    class FakeClient:
+        def __init__(self, _base_url):
+            pass
+
+    def fake_mask(_image_path, destination, **kwargs):
+        assert cv2.imwrite(str(destination), np.ones((20, 20), dtype=np.uint8) * 255)
+        return {"status": "PASS", "mask_confidence": 0.99,
+                "mask_generator_version": "test", "mask_coverage": {"status": "PASS"}}
+
+    def fake_remote(_client, request):
+        requests.append(request)
+        return {"status": "COMPLETED", "safe_clean_image": request.base_image.copy(),
+                "outside_mask_changed_pixels": 0, "request_id": f"req-{request.region_ids[0]}",
+                "ocr_text_removal": {"status": "PASS"},
+                "alignment_validation": {"status": "PASS"},
+                "sfx_validation": {"status": "PASS"},
+                "residual_validation": {"status": "PASS"}, "seam_score": 0.1}
+
+    monkeypatch.setattr(remote_client, "HardCleanRemoteClient", FakeClient)
+    monkeypatch.setattr(authorized_mask, "generate_authorized_mask_v2", fake_mask)
+    monkeypatch.setattr(adapter, "remote_clean_callback", fake_remote)
+    monkeypatch.setattr("yomu.ocr.ocr_balloon._group_has_story_translation_authority", lambda _group: True)
+
+    result = benchmark_pipeline._gemini_safe_clean_page(state, job_id="job-test")
+
+    assert result["status"] == "COMPLETED"
+    assert [request.region_ids[0] for request in requests] == ["REGION_1", "REGION_2", "REGION_3"]
+    assert all(request.metadata["translation_enabled"] is False for request in requests)
+    assert all(group.clean_remote_attempted for group in groups)

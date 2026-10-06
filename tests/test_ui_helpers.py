@@ -367,6 +367,75 @@ class UIHelpersTests(unittest.TestCase):
                     "error",
                 )
 
+    def test_closed_ocr_insufficiency_findings_become_review_not_structural_failure(self):
+        findings = [
+            {"code": "page_analysis_error", "page": page, "page_id": f"p{page:03}",
+             "stage": "ocr", "status": "completed_with_error",
+             "error_code": "ocr_insufficient:zero_lines_on_story_like_page",
+             "story_content_verified": False, "quality": "review_required"}
+            for page in (22, 59)
+        ]
+        quality = {
+            "passed": False,
+            "severity": "ERROR",
+            "structural_failure_reasons": [
+                "page_processing_error", "physical_page_population_incomplete",
+                "source_page_coverage_incomplete",
+            ],
+            "source_page_gate_passed": False,
+            "source_pages_unverified": 2,
+            "zero_processing_errors": False,
+            "classification_version": 1,
+            "source_page_accounting": {
+                "source_pages_expected": 183, "source_pages_analyzed": 181,
+                "source_pages_completed_with_error": 2, "source_pages_missing": 0,
+                "source_pages_unverified": 2, "source_pages_unverified_ids": ["p022", "p059"],
+                "findings": findings, "accounting_closed": True,
+                "page_gate_passed": False,
+            },
+            "physical_quality": {
+                "physical_population_status": "incomplete",
+                "physical_population": {"pages_total": 183, "pages_text_analyzed": 181,
+                                         "pages_upstream_failed": 2, "pages_unresolved": 0},
+            },
+        }
+        result = classify_quality_validation(quality)
+        self.assertEqual(result["severity"], "REVIEW")
+        self.assertEqual(result["review_required_page_ids"], ["p022", "p059"])
+        self.assertEqual(derive_final_run_status(technical_success=True, quality_validation=quality),
+                         "review_required")
+        self.assertEqual(pipeline_report_exit_code({
+            "pdf_path": "full-chapter.pdf", "quality_validation": quality,
+        }), 0)
+
+        quality["structural_failure_reasons"].append("invalid_or_blank_pages")
+        self.assertEqual(classify_quality_validation(quality)["severity"], "ERROR")
+
+    def test_ocr_insufficiency_review_exception_fails_closed_for_missing_or_unresolved_pages(self):
+        finding = {"code": "page_analysis_error", "page_id": "p022", "stage": "ocr",
+                   "status": "completed_with_error", "error_code": "ocr_insufficient:zero_lines",
+                   "story_content_verified": False, "quality": "review_required"}
+        quality = {
+            "passed": False, "classification_version": 1, "zero_processing_errors": False,
+            "source_pages_unverified": 1,
+            "source_page_accounting": {
+                "source_pages_expected": 2, "source_pages_analyzed": 1,
+                "source_pages_completed_with_error": 1, "source_pages_missing": 0,
+                "source_pages_unverified": 1, "source_pages_unverified_ids": ["p022"],
+                "findings": [finding], "accounting_closed": True,
+            },
+            "physical_quality": {"physical_population": {
+                "pages_total": 2, "pages_text_analyzed": 1, "pages_upstream_failed": 1,
+                "pages_unresolved": 0,
+            }},
+        }
+        self.assertEqual(classify_quality_validation(quality)["severity"], "REVIEW")
+        quality["source_page_accounting"]["source_pages_missing"] = 1
+        self.assertEqual(classify_quality_validation(quality)["severity"], "ERROR")
+        quality["source_page_accounting"]["source_pages_missing"] = 0
+        quality["physical_quality"]["physical_population"]["pages_unresolved"] = 1
+        self.assertEqual(classify_quality_validation(quality)["severity"], "ERROR")
+
     def test_quality_review_bool_coercion_is_conservative(self):
         clean_values = [True, 1, "true", "True", "1", "yes"]
         for value in clean_values:

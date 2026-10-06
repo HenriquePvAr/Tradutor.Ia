@@ -481,6 +481,7 @@ def classify_quality_validation(
     physical = physical if isinstance(physical, dict) else {}
     source_pages = quality.get("source_page_accounting")
     source_pages = source_pages if isinstance(source_pages, dict) else {}
+    reviewable_ocr_page_ids = _reviewable_ocr_insufficiency_pages(quality, source_pages)
     structural: list[str] = []
     reviewable: list[str] = []
 
@@ -500,19 +501,21 @@ def classify_quality_validation(
         structural.append("invalid_translated_page")
     if quality.get("smart_split_safe") is False:
         structural.append("unsafe_page_structure")
-    if quality.get("source_page_gate_passed") is False:
+    ocr_review_accounts_for_source_gate = bool(reviewable_ocr_page_ids)
+    if quality.get("source_page_gate_passed") is False and not ocr_review_accounts_for_source_gate:
         structural.append("source_page_coverage_incomplete")
-    if count(quality.get("source_pages_unverified")):
+    if count(quality.get("source_pages_unverified")) and not ocr_review_accounts_for_source_gate:
         structural.append("source_page_coverage_incomplete")
     if source_pages and (
-        source_pages.get("page_gate_passed") is False
-        or count(source_pages.get("source_pages_unverified"))
+        (source_pages.get("page_gate_passed") is False and not ocr_review_accounts_for_source_gate)
+        or (count(source_pages.get("source_pages_unverified")) and not ocr_review_accounts_for_source_gate)
         or count(source_pages.get("source_pages_missing"))
     ):
         structural.append("source_page_coverage_incomplete")
     if quality.get("translation_batches_succeeded") is False:
         structural.append("provider_batch_failed")
-    if quality.get("zero_processing_errors") is False or count(quality.get("pages_with_error")):
+    if ((quality.get("zero_processing_errors") is False or count(quality.get("pages_with_error")))
+            and not ocr_review_accounts_for_source_gate):
         structural.append("page_processing_error")
     if quality.get("sfx_policy_valid") is False or quality.get("translate_sfx_disabled") is False:
         structural.append("translation_policy_violation")
@@ -524,13 +527,22 @@ def classify_quality_validation(
     if physical and isinstance(physical.get("physical_population"), dict):
         population = physical["physical_population"]
         if (
-            count(population.get("pages_upstream_failed"))
+            (count(population.get("pages_upstream_failed")) and not ocr_review_accounts_for_source_gate)
             or count(population.get("pages_unresolved"))
-            or physical.get("physical_population_status") == "incomplete"
+            or (physical.get("physical_population_status") == "incomplete" and not ocr_review_accounts_for_source_gate)
         ):
             structural.append("physical_page_population_incomplete")
     if quality.get("severity") == "ERROR":
-        structural.extend(str(v) for v in quality.get("structural_failure_reasons", []) if v)
+        reported = [str(v) for v in quality.get("structural_failure_reasons", []) if v]
+        if ocr_review_accounts_for_source_gate:
+            review_explained = {
+                "page_processing_error",
+                "physical_page_population_incomplete",
+                "source_page_coverage_incomplete",
+            }
+            structural.extend(reason for reason in reported if reason not in review_explained)
+        else:
+            structural.extend(reported)
 
     if structural:
         reasons = sorted(set(structural))
@@ -541,6 +553,8 @@ def classify_quality_validation(
         manual_review_count = quality.get("manual_review_required_groups", 0)
     if count(manual_review_count):
         reviewable.append("manual_review_items")
+    if reviewable_ocr_page_ids:
+        reviewable.append("source_page_ocr_insufficient")
     for key, reason in (
         ("visual_validation_failures", "visual_validation_warning"),
         ("text_overflow_groups", "text_overflow_warning"),
@@ -587,8 +601,69 @@ def classify_quality_validation(
         return {
             "severity": "REVIEW", "outcome": "success_review_recommended",
             "reason_codes": sorted(set(reviewable)),
+            "review_required_page_ids": reviewable_ocr_page_ids,
         }
     return {"severity": "INFO", "outcome": "success", "reason_codes": []}
+
+
+def _reviewable_ocr_insufficiency_pages(quality: dict[str, Any], accounting: dict[str, Any]) -> list[str]:
+    """Return page IDs only when closed source accounting proves review-only OCR gaps.
+
+    This exception never forgives missing pages, unresolved work, unrelated page errors,
+    or any finding that is not the explicit OCR-insufficient review classification.
+    """
+    if not quality or not accounting or accounting.get("accounting_closed") is not True:
+        return []
+    expected = accounting.get("source_pages_expected")
+    analyzed = accounting.get("source_pages_analyzed")
+    failed = accounting.get("source_pages_completed_with_error")
+    missing = accounting.get("source_pages_missing")
+    unverified = accounting.get("source_pages_unverified")
+    try:
+        expected, analyzed, failed, missing, unverified = map(int, (expected, analyzed, failed, missing, unverified))
+    except (TypeError, ValueError):
+        return []
+    if expected < 1 or failed < 1 or missing != 0 or unverified != failed or analyzed + failed != expected:
+        return []
+    if quality.get("zero_processing_errors") is not False:
+        return []
+    try:
+        reported_page_errors = quality.get("pages_with_error")
+        if reported_page_errors is not None and int(reported_page_errors) != failed:
+            return []
+    except (TypeError, ValueError):
+        return []
+    ids = accounting.get("source_pages_unverified_ids")
+    findings = accounting.get("findings")
+    if not isinstance(ids, list) or not isinstance(findings, list) or len(ids) != failed or len(set(map(str, ids))) != failed:
+        return []
+    normalized_ids = {str(value) for value in ids}
+    matched = []
+    for finding in findings:
+        if not isinstance(finding, dict) or str(finding.get("page_id") or "") not in normalized_ids:
+            return []
+        if (finding.get("code") != "page_analysis_error"
+                or finding.get("stage") != "ocr"
+                or finding.get("status") != "completed_with_error"
+                or finding.get("quality") != "review_required"
+                or finding.get("story_content_verified") is not False
+                or not str(finding.get("error_code") or "").startswith("ocr_insufficient:")):
+            return []
+        matched.append(str(finding["page_id"]))
+    if len(matched) != failed or set(matched) != normalized_ids:
+        return []
+    population = (quality.get("physical_quality") or {}).get("physical_population")
+    if not isinstance(population, dict):
+        return []
+    try:
+        if (int(population.get("pages_total")) != expected
+                or int(population.get("pages_text_analyzed")) != analyzed
+                or int(population.get("pages_upstream_failed")) != failed
+                or int(population.get("pages_unresolved")) != 0):
+            return []
+    except (TypeError, ValueError):
+        return []
+    return sorted(matched)
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:

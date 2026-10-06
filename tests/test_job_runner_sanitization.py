@@ -219,6 +219,48 @@ class JobRunnerSanitizationTests(unittest.TestCase):
         self.assertEqual(manifest["outcome"], "success_review_recommended")
         self.assertIs(manifest["review_required"], True)
 
+    def test_closed_ocr_insufficiency_pages_finalize_as_review_and_are_listed(self):
+        job, output = self._running_job()
+        pdf = self._write_success_artifacts(output)
+        findings = [
+            {"code": "page_analysis_error", "page": page, "page_id": f"p{page:03}",
+             "stage": "ocr", "status": "completed_with_error",
+             "error_code": "ocr_insufficient:zero_lines_on_story_like_page",
+             "story_content_verified": False, "quality": "review_required"}
+            for page in (22, 59)
+        ]
+        quality = {
+            "passed": False, "severity": "ERROR", "classification_version": 1,
+            "structural_failure_reasons": ["page_processing_error",
+                "physical_page_population_incomplete", "source_page_coverage_incomplete"],
+            "source_page_gate_passed": False, "source_pages_unverified": 2,
+            "zero_processing_errors": False,
+            "source_page_accounting": {
+                "source_pages_expected": 183, "source_pages_analyzed": 181,
+                "source_pages_completed_with_error": 2, "source_pages_missing": 0,
+                "source_pages_unverified": 2, "source_pages_unverified_ids": ["p022", "p059"],
+                "findings": findings, "accounting_closed": True,
+            },
+            "physical_quality": {
+                "physical_population_status": "incomplete",
+                "physical_population": {"pages_total": 183, "pages_text_analyzed": 181,
+                    "pages_upstream_failed": 2, "pages_unresolved": 0},
+            },
+        }
+        (output / "timing_report.json").write_text(json.dumps({
+            "pdf_path": str(pdf), "quality_validation": quality,
+        }), encoding="utf-8")
+
+        rc = _finalize(self.store, job["id"], job, output, 0, False, str(self.tmp / "log"))
+
+        terminal = self.store.get_job(job["id"])
+        manifest = json.loads((output / "job_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(terminal["status"], JobStatus.REVIEW_REQUIRED)
+        self.assertEqual(terminal["exit_code"], 0)
+        self.assertEqual(manifest["review_required_pages"], ["022", "059"])
+        self.assertEqual(manifest["review_required_count"], 2)
+
     def test_structural_quality_failure_remains_failed(self):
         job, output = self._running_job()
         pdf = self._write_success_artifacts(output)
