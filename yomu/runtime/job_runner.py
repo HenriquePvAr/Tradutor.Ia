@@ -74,6 +74,23 @@ def _set_output_profile_environment(env: dict[str, str], configuration: object) 
         env["YOMU_EFFECTIVE_OPS"] = ",".join(str(o) for o in eff)
 
 
+def _set_gemini_safe_clean_environment(env: dict[str, str], configuration: object) -> None:
+    """Keep remote CLEAN disabled unless persisted config proves the full opt-in."""
+    config = configuration if isinstance(configuration, dict) else {}
+    enabled = (
+        config.get("gemini_safe_clean_enabled") is True
+        and config.get("gemini_safe_clean_schema") == "safe-clean.v2"
+        and config.get("gemini_safe_clean_worker_verified") is True
+    )
+    env["YOMU_ENABLE_GEMINI_SAFE_FALLBACK"] = "1" if enabled else "0"
+    env["YOMU_GEMINI_SAFE_CLEAN_SCHEMA_VERIFIED"] = "1" if enabled else "0"
+    remote_url = str(config.get("gemini_safe_clean_remote_url") or "").strip()
+    if enabled and remote_url:
+        env["YOMU_GEMINI_REMOTE_URL"] = remote_url
+    else:
+        env.pop("YOMU_GEMINI_REMOTE_URL", None)
+
+
 def _append_pipeline_trace(job: dict, event: str, **fields: object) -> None:
     """Write bounded, secret-free runner lifecycle evidence for diagnostics export."""
     try:
@@ -733,6 +750,11 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
         env["TRADUTOR_JOB_OUTPUT_DIR"] = str(output_dir.resolve())
         configuration = job.get("configuration") if isinstance(job.get("configuration"), dict) else {}
         _set_output_profile_environment(env, configuration)
+        # SAFE CLEAN is unavailable by default in user jobs. Enabling it requires
+        # an explicit persisted runtime opt-in and an independently verified
+        # worker schema; an ambient machine environment variable cannot turn it
+        # on for an ordinary translation/Clean request.
+        _set_gemini_safe_clean_environment(env, configuration)
         # The runtime root owns auth/, jobs.sqlite3, logs/ and the secure auth
         # envelope.  It is the process's explicit TRADUTOR_RUNTIME_ROOT (or the DB
         # parent), NEVER derived from output_dir -- an output directory on a

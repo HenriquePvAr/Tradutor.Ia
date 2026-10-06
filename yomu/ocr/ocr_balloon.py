@@ -576,6 +576,13 @@ class TextGroup:
     page_context_texts: tuple = ()
     art_reconstruction_status: str = ""
     art_reconstruction_reason: str = ""
+    clean_disposition: str = ""
+    clean_disposition_reason: str = ""
+    clean_disposition_confidence: float = 0.0
+    clean_local_attempted: bool = False
+    clean_remote_attempted: bool = False
+    clean_remote_result: str = ""
+    clean_remote_text_observations: list = field(default_factory=list)
 
     @property
     def confidence(self):
@@ -769,13 +776,29 @@ def get_cleanable_translatable_groups(groups):
     eligible = []
     for group in groups:
         if group.ignored or group.preserve_as_name:
+            from yomu.clean.disposition import classify_group_disposition
+            group.clean_disposition, group.clean_disposition_reason = map(
+                str, classify_group_disposition(group)
+            )
             continue
         if group.classification == "sfx" and not config.TRANSLATE_SFX:
+            from yomu.clean.disposition import RegionDisposition
+            group.clean_disposition = RegionDisposition.PRESERVE_SFX.value
+            group.clean_disposition_reason = "sfx_policy_preserve"
             continue
         if group.ocr_quality_blocked or _ocr_unintelligible_source_text(group.text):
+            from yomu.clean.disposition import RegionDisposition
+            group.clean_disposition = RegionDisposition.REVIEW_OCR.value
+            group.clean_disposition_reason = "ocr_not_reliable"
+            group.manual_review_required = True
             continue
         if not _group_has_story_translation_authority(group):
+            from yomu.clean.disposition import RegionDisposition
+            group.clean_disposition = RegionDisposition.REVIEW_SEMANTIC.value
+            group.clean_disposition_reason = "story_ownership_not_established"
+            group.manual_review_required = True
             continue
+        group.clean_disposition = "PENDING_LOCAL"
         eligible.append(group)
     return eligible
 
@@ -2035,6 +2058,7 @@ def _clean_source_for_clean_artifact(current_bgr, original_bgr, group):
     """
 
     attempts = []
+    group.clean_local_attempted = True
     for strategy in (
         "primary",
         "conservative",
@@ -2079,6 +2103,10 @@ def _clean_source_for_clean_artifact(current_bgr, original_bgr, group):
                 "source_text_removal": removal,
                 "attempts": attempts,
             }
+            from yomu.clean.disposition import RegionDisposition
+            group.clean_disposition = RegionDisposition.LOCAL_SAFE.value
+            group.clean_disposition_reason = "owned_source_text_removed_and_validated"
+            group.clean_disposition_confidence = float(getattr(group, "quality_score", 0.0) or 0.0)
             return cleaned, cleanup_mask, strategy, True
 
     group.clean_artifact_validation = {
@@ -2086,6 +2114,33 @@ def _clean_source_for_clean_artifact(current_bgr, original_bgr, group):
         "reason": "clean_source_removal_unresolved",
         "attempts": attempts,
     }
+    from yomu.clean.disposition import RegionDisposition
+    hard_signals = {
+        "flat_reconstruction_patch_on_textured_background",
+        "art_fidelity_uncertain",
+        "seam_suspected",
+        "flat_patch_rejected",
+        "visible_reconstruction_seam_at_mask_boundary",
+    }
+    owned_story = _group_has_story_translation_authority(group)
+    attempts_have_hard_signal = any(
+        any(attempt.get(key) is True for key in ("art_fidelity_uncertain", "seam_suspected", "flat_patch_rejected"))
+        or str(attempt.get("reason") or "") in hard_signals
+        for attempt in attempts
+    )
+    if owned_story and attempts_have_hard_signal:
+        group.clean_disposition = RegionDisposition.LOCAL_HARD.value
+        group.clean_disposition_reason = "owned_text_local_reconstruction_rejected"
+        group.clean_disposition_confidence = float(getattr(group, "quality_score", 0.0) or 0.0)
+    elif owned_story:
+        group.clean_disposition = RegionDisposition.LOCAL_HARD.value
+        group.clean_disposition_reason = "owned_text_local_reconstruction_unresolved"
+        group.clean_disposition_confidence = float(getattr(group, "quality_score", 0.0) or 0.0)
+    else:
+        group.clean_disposition = RegionDisposition.REVIEW_SEMANTIC.value
+        group.clean_disposition_reason = "local_clean_failed_without_proven_story_ownership"
+        group.manual_review_required = True
+    group.manual_review_required = True
     return current_bgr, None, "", False
 
 
@@ -10393,8 +10448,9 @@ def _source_scoped_speech_reason(group):
     """Empty when the group is proven ordinary speech we may clean narrowly.
 
     The narrow fallback is only allowed where the source itself is the evidence:
-    an ordinary speech group whose translation candidate is usable, whose source
-    ownership is complete, and whose lines are individually traceable.  Anything
+    an ordinary story group whose ownership is complete and whose lines are
+    individually traceable. A target-language translation is not needed to erase
+    source text in a CLEAN-only plan. Anything
     unproven - a stylized title, an SFX, a preserved entity, an unreadable OCR
     result, an incomplete source - keeps the legacy behaviour and fails closed.
     """
@@ -10411,9 +10467,6 @@ def _source_scoped_speech_reason(group):
         return "source_scoped_excludes_preserved_entity"
     if not _group_has_story_translation_authority(group):
         return "source_scoped_requires_story_translation_authority"
-    candidate = str(group.translation or group.translation_candidate or "").strip()
-    if not candidate:
-        return "source_scoped_requires_translation_candidate"
     if group.ocr_quality_blocked or _ocr_unintelligible_source_text(group.text):
         return "source_scoped_requires_intelligible_source"
     status = str((getattr(group, "source_completeness", None) or {}).get("status") or "")
@@ -15448,6 +15501,13 @@ def _debug_payload(image_path, raw_lines, candidates, groups):
                 "clean_artifact_validation": dict(
                     getattr(group, "clean_artifact_validation", {}) or {}
                 ),
+                "clean_disposition": str(getattr(group, "clean_disposition", "") or ""),
+                "clean_disposition_reason": str(getattr(group, "clean_disposition_reason", "") or ""),
+                "clean_disposition_confidence": round(float(getattr(group, "clean_disposition_confidence", 0.0) or 0.0), 6),
+                "clean_local_attempted": bool(getattr(group, "clean_local_attempted", False)),
+                "clean_remote_attempted": bool(getattr(group, "clean_remote_attempted", False)),
+                "clean_remote_result": str(getattr(group, "clean_remote_result", "") or ""),
+                "clean_remote_text_observations": list(getattr(group, "clean_remote_text_observations", []) or [])[:20],
                 "manual_review_required": bool(group.manual_review_required),
                 "semantic_review_reason": str(group.semantic_review_reason),
                 "art_reconstruction_status": str(group.art_reconstruction_status),

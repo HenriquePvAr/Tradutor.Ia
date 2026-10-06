@@ -604,14 +604,14 @@ class TexturedSpeechMaskAcceptance(unittest.TestCase):
             "source_scoped_requires_intelligible_source",
         )
 
-    # 42 - no candidate means no physical success claim.
-    def test_missing_candidate_fails_closed(self):
+    # CLEAN-only must be independent of target translation availability.
+    def test_missing_candidate_does_not_block_source_cleanup(self):
         _image, group = self._p002_shaped_case()
         group.translation = ""
         group.translation_candidate = ""
         self.assertEqual(
             _source_scoped_speech_reason(group),
-            "source_scoped_requires_translation_candidate",
+            "",
         )
 
     # 38 - the fallback is the last strategy, so an earlier accept still wins.

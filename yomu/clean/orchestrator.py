@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
+import math
+import uuid
 
 SEAM_PASS_THRESHOLD = 0.80
 MASK_CONFIDENCE_THRESHOLD = 0.80
@@ -26,6 +28,11 @@ class CleanRequest:
     job_id: str = ""
     page_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    base_image: np.ndarray | None = None
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    run_id: str = ""
+    region_ids: tuple[str, ...] = ()
+    evidence_dir: str = ""
 
 def _review(request: CleanRequest, *, reason: str, local_status: str, **extra: Any) -> dict[str, Any]:
     return {"status": "REVIEW_REQUIRED", "strategy_requested": "clean", "strategy_used": "none",
@@ -81,15 +88,34 @@ def run_clean_strategy(request: CleanRequest, local_result: dict[str, Any], *,
     if str(remote.get("status") or "").upper() not in {"COMPLETED", "PASS"}:
         return _review(request, reason="fallback_not_completed", local_status=local_status,
                        fallback_invoked=True, fallback_status=str(remote.get("status") or "FAILED"))
-    if int(remote.get("outside_mask_changed_pixels") or 0) != 0:
+    outside_metric = remote.get("outside_mask_changed_pixels")
+    if isinstance(outside_metric, bool) or not isinstance(outside_metric, int):
+        return _review(request, reason="outside_mask_metric_missing", local_status=local_status,
+                       fallback_invoked=True, fallback_status="VALIDATION_EVIDENCE_MISSING")
+    if outside_metric != 0:
         return _review(request, reason="outside_mask_violation", local_status=local_status,
                        fallback_invoked=True, fallback_status="SAFETY_FAIL",
-                       outside_mask_changed_pixels=int(remote["outside_mask_changed_pixels"]))
-    composite, outside_changed = _masked_composite(request.original, remote.get("raw_image"), request.authorized_mask)
+                       outside_mask_changed_pixels=outside_metric)
+    semantic = remote.get("ocr_text_removal")
+    semantic_status = semantic.get("status") if isinstance(semantic, dict) else None
+    if semantic_status != "PASS":
+        return _review(request, reason="semantic_text_removal_unverified", local_status=local_status,
+                       fallback_invoked=True, fallback_status="VALIDATION_EVIDENCE_MISSING")
+    if any(not isinstance(remote.get(key), dict) or remote[key].get("status") != "PASS"
+           for key in ("alignment_validation", "sfx_validation", "residual_validation")):
+        return _review(request, reason="remote_validation_gate_missing", local_status=local_status,
+                       fallback_invoked=True, fallback_status="VALIDATION_EVIDENCE_MISSING")
+    composite_base = request.base_image if isinstance(request.base_image, np.ndarray) else request.original
+    remote_image = remote.get("safe_clean_image")
+    composite, outside_changed = _masked_composite(composite_base, remote_image, request.authorized_mask)
     if composite is None:
         return _review(request, reason="alignment_failed", local_status=local_status,
                        fallback_invoked=True, fallback_status="ALIGNMENT_FAIL")
-    seam_score = float(remote.get("seam_score") or 0.0)
+    seam_value = remote.get("seam_score")
+    if isinstance(seam_value, bool) or not isinstance(seam_value, (int, float)) or not math.isfinite(float(seam_value)):
+        return _review(request, reason="seam_metric_missing", local_status=local_status,
+                       fallback_invoked=True, fallback_status="VALIDATION_EVIDENCE_MISSING")
+    seam_score = float(seam_value)
     # The worker's seam score is a discontinuity/error metric: lower is safer.
     if seam_score > SEAM_PASS_THRESHOLD:
         return _review(request, reason="seam_failed", local_status=local_status,
@@ -102,6 +128,12 @@ def run_clean_strategy(request: CleanRequest, local_result: dict[str, Any], *,
             "local_status": local_status, "fallback_invoked": True,
             "fallback_reason": "local_reconstruction_hard", "fallback_status": "COMPLETED",
             "safety_status": "PASS", "review_required": False, "image": composite,
-            "raw_image": remote.get("raw_image"), "mask_generator_version": "AUTHORIZED_MASK_GENERATOR_V2",
+            "safe_clean_image": remote_image,
+            "raw_image": remote.get("raw_image"),
+            "mask_generator_version": "AUTHORIZED_MASK_GENERATOR_V2",
             "outside_mask_changed_pixels": 0, "seam_threshold": SEAM_PASS_THRESHOLD,
-            "seam_score": seam_score, "job_id": request.job_id, "page_id": request.page_id}
+            "seam_score": seam_score, "ocr_text_removal": semantic,
+            "alignment_validation": remote["alignment_validation"],
+            "sfx_validation": remote["sfx_validation"],
+            "residual_validation": remote["residual_validation"],
+            "job_id": request.job_id, "page_id": request.page_id}

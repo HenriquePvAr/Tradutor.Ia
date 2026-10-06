@@ -16,7 +16,12 @@ def _request():
 
 
 def _remote(**overrides):
-    payload = {"status": "COMPLETED", "raw_image": np.full((4, 4, 3), 200, dtype=np.uint8), "seam_score": 0.1}
+    payload = {"status": "COMPLETED", "safe_clean_image": np.full((4, 4, 3), 200, dtype=np.uint8),
+               "outside_mask_changed_pixels": 0, "seam_score": 0.1,
+               "ocr_text_removal": {"status": "PASS", "residual_matches": []},
+               "alignment_validation": {"status": "PASS"},
+               "sfx_validation": {"status": "PASS"},
+               "residual_validation": {"status": "PASS"}}
     payload.update(overrides)
     return lambda _request: payload
 
@@ -63,7 +68,7 @@ def test_timeout_alignment_seam_and_outside_fail_closed():
     assert timeout["status"] == "REVIEW_REQUIRED"
     assert timeout["fallback_status"] == "TimeoutError"
     bad_shape = run_clean_strategy(request, {"status": LOCAL_RECONSTRUCTION_HARD},
-                                   fallback=_remote(raw_image=np.zeros((3, 3, 3), dtype=np.uint8)))
+                                   fallback=_remote(safe_clean_image=np.zeros((3, 3, 3), dtype=np.uint8)))
     assert bad_shape["fallback_status"] == "ALIGNMENT_FAIL"
     seam = run_clean_strategy(request, {"status": LOCAL_RECONSTRUCTION_HARD}, fallback=_remote(seam_score=0.81))
     assert seam["fallback_status"] == "SEAM_FAIL"
@@ -71,6 +76,14 @@ def test_timeout_alignment_seam_and_outside_fail_closed():
     outside = run_clean_strategy(request, {"status": LOCAL_RECONSTRUCTION_HARD},
                                  fallback=_remote(raw_image=violating, outside_mask_changed_pixels=1))
     assert outside["fallback_status"] == "SAFETY_FAIL"
+
+
+def test_remote_safe_composite_without_residual_text_validation_is_review():
+    response = _remote(ocr_text_removal=None)
+    result = run_clean_strategy(_request(), {"status": LOCAL_RECONSTRUCTION_HARD}, fallback=response)
+    assert result["status"] == "REVIEW_REQUIRED"
+    assert result["fallback_status"] == "VALIDATION_EVIDENCE_MISSING"
+    assert result["fallback_reason"] == "semantic_text_removal_unverified"
 
 
 def test_output_plan_matrix_does_not_expose_provider():

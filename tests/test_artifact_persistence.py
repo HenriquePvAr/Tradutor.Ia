@@ -197,6 +197,23 @@ class ArtifactPersistenceTests(unittest.TestCase):
         self.assertEqual(rep["provenance"][1]["source"], text_page["image_path"])
         self.assertTrue(rep["provenance"][1]["translated"])
 
+    def test_clean_verification_never_promotes_source_fallback(self):
+        locally_verified = self._state(1, cleaned=True)
+        locally_verified["clean_verified"] = True
+        locally_verified["debug_data"] = {"items": [{
+            "id": "BALAO_1", "region_id": "REGION_001", "clean_disposition": "LOCAL_SAFE",
+            "clean_disposition_reason": "owned_source_text_removed_and_validated",
+            "clean_local_attempted": True, "clean_artifact_validation": {"passed": True},
+            "manual_review_required": False,
+        }]}
+        preserved_source = self._state(2, cleaned=False)
+        rep = bp._persist_canonical_artifacts(
+            self.root, [locally_verified, preserved_source], 2, ac.OutputProfile.PROFESSIONAL_QC)
+        self.assertTrue(rep["provenance"][1]["clean_verified"])
+        self.assertFalse(rep["provenance"][2]["clean_verified"])
+        self.assertEqual(rep["provenance"][2]["clean_source"], "source_fallback")
+        self.assertEqual(rep["provenance"][2]["residual_validation"]["status"], "NOT_RUN")
+
     # --- L) profile resolver: default AUTOMATIC, env + args override, junk falls back -----
     def test_profile_resolution(self):
         self.assertEqual(bp._resolve_output_profile(None), ac.OutputProfile.AUTOMATIC)

@@ -269,16 +269,11 @@ def _gemini_safe_clean_page(state, *, job_id: str = ""):
     """
     if str(os.getenv("YOMU_ENABLE_GEMINI_SAFE_FALLBACK", "0")).strip().lower() not in {"1", "true", "yes"}:
         return None
-    hard_reasons = {
-        "flat_reconstruction_patch_on_textured_background",
-        "art_fidelity_uncertain",
-        "seam_suspected",
-        "flat_patch_rejected",
-    }
+    if str(os.getenv("YOMU_GEMINI_SAFE_CLEAN_SCHEMA_VERIFIED", "0")).strip().lower() not in {"1", "true", "yes"}:
+        return {"status": "NOT_ELIGIBLE", "reason": "remote_schema_not_verified"}
     hard_groups = [
         group for group in state.get("groups", [])
-        if str(getattr(group, "art_reconstruction_reason", "") or "") in hard_reasons
-        or any(bool((getattr(group, "mask_metrics", {}) or {}).get(key)) for key in hard_reasons)
+        if str(getattr(group, "clean_disposition", "") or "") == "LOCAL_HARD"
     ]
     if not hard_groups:
         return {"status": "NOT_ELIGIBLE", "reason": "local_clean_not_hard"}
@@ -291,35 +286,106 @@ def _gemini_safe_clean_page(state, *, job_id: str = ""):
     )
     from yomu.clean.gemini_fallback.remote_client import HardCleanRemoteClient
 
-    with tempfile.TemporaryDirectory(prefix="yomu-gemini-mask-") as temp:
-        mask_path = Path(temp) / "authorized-mask.png"
-        mask_meta = generate_authorized_mask_v2(
-            state["image_path"], mask_path,
-            page_id=str(state.get("index") or ""),
-            region_id=str(getattr(hard_groups[0], "group_id", "") or ""),
-            content_type=str(getattr(hard_groups[0], "classification", "") or ""),
-        )
-        if mask_meta.get("status") != "PASS":
-            return {"status": "REVIEW_REQUIRED", "reason": "authorized_mask_uncertain", "mask": mask_meta}
-        authorized_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        request = CleanRequest(
-            original=state["original_bgr"],
-            authorized_mask=authorized_mask,
-            mask_confidence=float(mask_meta.get("mask_confidence") or 0.0),
-            source_type="gemini_safe_clean",
-            job_id=job_id,
-            page_id=str(state.get("index") or ""),
-            metadata={"mask_generator_version": mask_meta.get("mask_generator_version")},
-        )
-        client = HardCleanRemoteClient(os.getenv("YOMU_GEMINI_REMOTE_URL", "http://127.0.0.1:18777"))
-        result = run_clean_strategy(
-            request,
-            {"status": LOCAL_RECONSTRUCTION_HARD},
-            fallback=lambda req: remote_clean_callback(client, req),
-        )
-        result["mask_metadata"] = mask_meta
-        result["remote_provider"] = "gemini_web_vps"
-        return result
+    local_base = state.get("clean_local_base")
+    if not isinstance(local_base, np.ndarray) or local_base.shape != state["original_bgr"].shape:
+        local_base = state["original_bgr"].copy()
+    results = []
+    client = HardCleanRemoteClient(os.getenv("YOMU_GEMINI_REMOTE_URL", "http://127.0.0.1:18777"))
+    for group in hard_groups:
+        group.clean_remote_attempted = True
+        from yomu.ocr.ocr_balloon import _group_has_story_translation_authority
+        ownership_confirmed = bool(_group_has_story_translation_authority(group))
+        source_text = str(getattr(group, "canonical_source_text", "") or getattr(group, "text", "") or "").strip()
+        local_validation = dict(getattr(group, "clean_artifact_validation", {}) or {})
+        source_provenance = "+".join(getattr(group, "ocr_provenance_engines", ()) or ())
+        source_provenance = source_provenance or str(getattr(group, "source_engine", "") or "")
+        source_language = str(state.get("source_language") or state.get("ocr_lang") or "").strip()
+        if (not ownership_confirmed
+                or not getattr(group, "clean_local_attempted", False)
+                or local_validation.get("clean_validation_passed") is not False
+                or not source_text or float(getattr(group, "quality_score", 0.0) or 0.0) < 0.60
+                or not source_provenance or not source_language
+                or str(getattr(group, "classification", "")).lower() in {"sfx", "unknown", "art", "decorative"}):
+            group.clean_disposition = "REVIEW_UNOWNED"
+            group.clean_disposition_reason = "remote_eligibility_evidence_incomplete"
+            group.manual_review_required = True
+            results.append({"status": "REVIEW_REQUIRED", "reason": "remote_eligibility_evidence_incomplete",
+                            "group_id": str(group.group_id)})
+            continue
+        with tempfile.TemporaryDirectory(prefix="yomu-gemini-mask-") as temp:
+            mask_path = Path(temp) / "authorized-mask.png"
+            mask_meta = generate_authorized_mask_v2(
+                state["image_path"], mask_path,
+                page_id=str(state.get("index") or ""),
+                region_id=str(getattr(group, "region_id", "") or ""),
+                target_group_id=str(getattr(group, "group_id", "") or ""),
+                content_type=str(getattr(group, "classification", "") or ""),
+            )
+            if mask_meta.get("status") != "PASS":
+                group.clean_remote_result = "REVIEW_REQUIRED_MASK_UNCERTAIN"
+                group.clean_disposition = "REVIEW_UNOWNED"
+                group.clean_disposition_reason = "authorized_mask_target_uncertain"
+                group.manual_review_required = True
+                results.append({"status": "REVIEW_REQUIRED", "reason": "authorized_mask_uncertain",
+                                "group_id": str(group.group_id), "mask": mask_meta})
+                continue
+            authorized_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            output_root = Path(os.getenv("YOMU_GEMINI_EVIDENCE_ROOT") or
+                               (Path(state["output_path"]).resolve().parents[1] / "evidence" / "gemini_safe_clean"))
+            request = CleanRequest(
+                original=state["original_bgr"],
+                base_image=local_base,
+                authorized_mask=authorized_mask,
+                mask_confidence=float(mask_meta.get("mask_confidence") or 0.0),
+                source_type=str(getattr(group, "classification", "")),
+                job_id=job_id,
+                page_id=str(state.get("index") or ""),
+                region_ids=(str(getattr(group, "region_id", "") or group.group_id),),
+                evidence_dir=str(output_root),
+                run_id=str(state.get("run_id") or ""),
+                metadata={"mask_generator_version": mask_meta.get("mask_generator_version"),
+                          "group_id": str(group.group_id),
+                          "classification": str(getattr(group, "classification", "unknown") or "unknown"),
+                          "ownership_confirmed": ownership_confirmed,
+                          "disposition": group.clean_disposition,
+                          "local_clean_attempted": bool(getattr(group, "clean_local_attempted", False)),
+                          "local_validation": local_validation,
+                          "source_text": source_text,
+                          "source_text_confidence": float(getattr(group, "quality_score", 0.0) or 0.0),
+                          "source_text_provenance": source_provenance,
+                          "source_language": source_language,
+                          "source_language_provenance": "configured_ocr_language",
+                          "mask_coverage": mask_meta.get("mask_coverage"),
+                          "translation_enabled": False},
+            )
+            result = run_clean_strategy(
+                request,
+                {"status": LOCAL_RECONSTRUCTION_HARD},
+                fallback=lambda req: remote_clean_callback(client, req),
+            )
+            result["mask_metadata"] = mask_meta
+            result["remote_provider"] = "gemini_web_vps"
+            result["group_id"] = str(group.group_id)
+            if result.get("status") == "COMPLETED" and isinstance(result.get("image"), np.ndarray):
+                local_base = result["image"]
+                group.clean_disposition = "REMOTE_SAFE"
+                group.clean_disposition_reason = "remote_safe_composite_validated"
+                group.clean_remote_result = "PASS"
+                observations = result.get("source_text_observations")
+                group.clean_remote_text_observations = observations[:20] if isinstance(observations, list) else []
+            else:
+                group.clean_disposition = "REMOTE_REJECTED"
+                group.clean_disposition_reason = str(result.get("fallback_reason") or result.get("reason") or "remote_not_accepted")
+                group.clean_remote_result = str(result.get("fallback_status") or result.get("status") or "FAILED")
+                group.manual_review_required = True
+            results.append(result)
+    if not results or any(item.get("status") != "COMPLETED" for item in results):
+        return {"status": "REVIEW_REQUIRED", "reason": "one_or_more_hard_regions_not_safely_resolved",
+                "image": local_base, "regions": [{k: v for k, v in item.items() if k not in {"image", "raw_image", "safe_clean_image"}} for item in results]}
+    return {"status": "COMPLETED", "image": local_base, "regions": [
+        {k: v for k, v in item.items() if k not in {"image", "raw_image", "safe_clean_image"}}
+        for item in results
+    ], "remote_provider": "gemini_web_vps"}
 
 
 def _plan_requested_artifacts(effective_ops):
@@ -460,6 +526,61 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
                 clean_bytes += cn
                 chain["clean"] = str(cdst)
                 chain["clean_from"] = clean_from
+            debug_items = ((state.get("debug_data") or {}).get("items") or [])
+            region_dispositions = [
+                {
+                    "group_id": item.get("id"),
+                    "region_id": item.get("region_id"),
+                    "disposition": item.get("clean_disposition") or "REVIEW_UNOWNED",
+                    "reason": item.get("clean_disposition_reason") or "disposition_not_persisted",
+                    "local_attempted": bool(item.get("clean_local_attempted")),
+                    "local_validation": item.get("clean_artifact_validation") or {},
+                    "remote_attempted": bool(item.get("clean_remote_attempted")),
+                    "remote_result": item.get("clean_remote_result") or "",
+                    "source_text_observations": item.get("clean_remote_text_observations") or [],
+                    "review_required": bool(item.get("manual_review_required"))
+                        or str(item.get("clean_disposition") or "").startswith("REVIEW_")
+                        or item.get("clean_disposition") in {"LOCAL_HARD", "REMOTE_REJECTED"},
+                }
+                for item in debug_items if isinstance(item, dict)
+            ]
+            dispositions = {item["disposition"] for item in region_dispositions}
+            if not region_dispositions and state.get("cache_source") == "fresh":
+                ocr_meta = state.get("ocr_metadata") or {}
+                if str(ocr_meta.get("ocr_sufficiency") or "") in {"OCR_INSUFFICIENT", "OCR_REVIEW"}:
+                    region_dispositions.append({
+                        "group_id": None, "region_id": None, "disposition": "REVIEW_UNOWNED",
+                        "reason": "page_ocr_not_sufficient_for_clean_verification",
+                        "local_attempted": False, "local_validation": {},
+                        "remote_attempted": False, "remote_result": "", "review_required": True,
+                    })
+                    dispositions.add("REVIEW_UNOWNED")
+            review_codes = sorted({
+                str(item.get("disposition")) + ":" + str(item.get("reason") or "")
+                for item in region_dispositions if item.get("review_required")
+            })
+            clean_verified = bool(
+                cn is not None and state.get("clean_verified") is True
+                and clean_from == "cleaned_buffer" and not review_codes
+            )
+            if clean_from == "source_fallback":
+                clean_source = "source_fallback"
+            elif "REMOTE_SAFE" in dispositions and any(value == "LOCAL_SAFE" for value in dispositions):
+                clean_source = "mixed"
+            elif "REMOTE_SAFE" in dispositions:
+                clean_source = "remote"
+            elif clean_from == "cleaned_buffer":
+                clean_source = "local" if clean_verified else "preserved_review"
+            else:
+                clean_source = "preserved_review"
+            chain.update({
+                "clean_produced": cn is not None,
+                "clean_verified": clean_verified,
+                "clean_source": clean_source,
+                "region_dispositions": region_dispositions,
+                "residual_validation": {"status": "NOT_RUN", "reason": "post_clean_target_ocr_not_yet_implemented"},
+                "review_reasons": review_codes,
+            })
         provenance[idx] = chain
     io_seconds = time.perf_counter() - started
     all_pages = set(range(1, int(total_pages) + 1))
@@ -2289,6 +2410,7 @@ def run_benchmark(args):
         output_path = pages_folder / f"page_{index:03}.png"
         state = {
             "index": index,
+            "run_id": str(getattr(args, "job_run_id", "") or run_signature),
             "sequence_index": int(entry.get("sequence_index", index)),
             "original_index": int(entry.get("original_index", index)),
             "image_path": str(image_path),
@@ -2957,6 +3079,7 @@ def run_benchmark(args):
                 local_image = cleaned_capture.get("cleaned_bgr")
                 if local_image is None:
                     local_image = state.get("original_bgr")
+                state["clean_local_base"] = local_image
                 if isinstance(remote_strategy, dict) and remote_strategy.get("status") == "COMPLETED":
                     remote_image = remote_strategy.get("image")
                     if isinstance(remote_image, np.ndarray):
@@ -2967,15 +3090,71 @@ def run_benchmark(args):
                         state["cleaned_path"] = str(remote_clean_path)
                     strategy = remote_strategy
                 else:
-                    strategy = run_clean_strategy(
-                        CleanRequest(original=state["original_bgr"], job_id=str(getattr(args, "job_id", "") or ""),
-                                     page_id=str(state["index"])),
-                        {"status": LOCAL_SAFE, "image": local_image},
-                    )
+                    unresolved = [
+                        group for group in state.get("groups", [])
+                        if str(getattr(group, "clean_disposition", "") or "") in {
+                            "LOCAL_HARD", "REVIEW_UNOWNED", "REVIEW_OCR", "REVIEW_SEMANTIC",
+                            "REMOTE_REJECTED",
+                        }
+                    ]
+                    page_ocr_state = str((state.get("ocr_metadata") or {}).get("ocr_sufficiency") or "")
+                    if page_ocr_state in {"OCR_INSUFFICIENT", "OCR_REVIEW"}:
+                        state["clean_page_review"] = "page_ocr_not_sufficient_for_clean_verification"
+                    if remote_strategy is None and unresolved:
+                        for group in unresolved:
+                            if group.clean_disposition == "LOCAL_HARD":
+                                group.clean_disposition_reason = "remote_fallback_disabled_or_not_configured"
+                            group.manual_review_required = True
+                        strategy = {
+                            "status": "REVIEW_REQUIRED",
+                            "strategy_requested": "clean",
+                            "strategy_used": "local_with_unresolved_regions",
+                            "fallback_invoked": False,
+                            "fallback_reason": "unresolved_clean_regions",
+                            "review_required": True,
+                            "image": local_image,
+                        }
+                    elif isinstance(remote_strategy, dict) and remote_strategy.get("status") == "REVIEW_REQUIRED":
+                        strategy = {**remote_strategy, "image": remote_strategy.get("image", local_image)}
+                    else:
+                        strategy = run_clean_strategy(
+                            CleanRequest(original=state["original_bgr"], job_id=str(getattr(args, "job_id", "") or ""),
+                                         page_id=str(state["index"])),
+                            {"status": LOCAL_SAFE, "image": local_image},
+                        )
+                    if state.get("clean_page_review"):
+                        strategy = {**strategy, "status": "REVIEW_REQUIRED", "review_required": True,
+                                    "page_review_reason": state["clean_page_review"]}
+                if isinstance(strategy.get("image"), np.ndarray):
+                    clean_result_path = Path(state["output_path"]).with_name(
+                        Path(state["output_path"]).stem + "_cleaned.png")
+                    if cv2.imwrite(str(clean_result_path), strategy["image"]):
+                        state["cleaned_path"] = str(clean_result_path)
+                for group in state.get("groups", []):
+                    if not getattr(group, "clean_disposition", ""):
+                        from yomu.clean.disposition import classify_group_disposition
+                        group.clean_disposition, group.clean_disposition_reason = map(
+                            str, classify_group_disposition(group)
+                        )
+                state["clean_verified"] = bool(
+                    strategy.get("status") == "COMPLETED"
+                    and not state.get("clean_page_review")
+                    and not any(getattr(group, "manual_review_required", False)
+                                or str(getattr(group, "clean_disposition", "")) in {
+                                    "LOCAL_HARD", "REVIEW_UNOWNED", "REVIEW_OCR",
+                                    "REVIEW_SEMANTIC", "REMOTE_REJECTED",
+                                } for group in state.get("groups", []))
+                )
                 state["clean_result"] = {
                     key: value for key, value in strategy.items()
-                    if key not in {"image", "raw_image"}
+                    if key not in {"image", "raw_image", "safe_clean_image"}
                 }
+                state["clean_result"]["clean_produced"] = bool(state.get("cleaned_path"))
+                state["clean_result"]["clean_verified"] = state["clean_verified"]
+                state["clean_result"]["clean_source"] = (
+                    "remote" if any(getattr(g, "clean_disposition", "") == "REMOTE_SAFE" for g in state.get("groups", []))
+                    else "local" if state["clean_verified"] else "preserved_review"
+                )
             save_elapsed = time.perf_counter() - save_started
             state["timings"]["image_save"] = save_elapsed
             stage_seconds["image_save"] += save_elapsed

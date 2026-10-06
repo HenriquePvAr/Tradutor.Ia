@@ -110,7 +110,8 @@ def generate_authorized_mask(image_path: str | Path, mask_path: str | Path, *, p
 
 
 def generate_authorized_mask_v2(image_path: str | Path, mask_path: str | Path, *, page_id: str = "1",
-                                region_id: str | None = None, content_type: str | None = None) -> dict[str, Any]:
+                                region_id: str | None = None, content_type: str | None = None,
+                                target_group_id: str | None = None) -> dict[str, Any]:
     """V2 conservative promotion for a narrow class of UNKNOWN regions.
 
     V1 remains unchanged. V2 only promotes an UNKNOWN group when OCR support,
@@ -129,8 +130,18 @@ def generate_authorized_mask_v2(image_path: str | Path, mask_path: str | Path, *
     sfx_mask = np.zeros_like(page_mask)
     sources: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
+    target_seen = target_group_id is None
 
     for group in groups:
+        if target_group_id is not None and str(getattr(group, "group_id", "")) != str(target_group_id):
+            blocked.append({
+                "group_id": str(getattr(group, "group_id", "") or ""),
+                "region_id": str(getattr(group, "region_id", "") or ""),
+                "reason_codes": ["NON_TARGET_REGION_EXCLUDED"],
+            })
+            continue
+        if target_group_id is not None:
+            target_seen = True
         classification = str(getattr(group, "classification", "unknown") or "unknown").lower()
         lines_for_group = list(getattr(group, "lines", []) or [])
         ocr_support = min((float(getattr(line, "confidence", 0.0) or 0.0) for line in lines_for_group), default=0.0)
@@ -223,7 +234,7 @@ def generate_authorized_mask_v2(image_path: str | Path, mask_path: str | Path, *
                            min(1.0, component_count / 20.0) * 0.1 + 0.15, 6)
     else:
         confidence = 0.0
-    status = "PASS" if sources and pixels and coverage <= 0.12 and confidence >= 0.75 else "REVIEW_REQUIRED_MASK_UNCERTAIN"
+    status = "PASS" if target_seen and sources and pixels and coverage <= 0.12 and confidence >= 0.75 else "REVIEW_REQUIRED_MASK_UNCERTAIN"
     mask_path = Path(mask_path)
     mask_path.parent.mkdir(parents=True, exist_ok=True)
     if status == "PASS":

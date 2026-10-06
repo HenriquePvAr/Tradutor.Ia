@@ -48,3 +48,10 @@ class HardCleanRemoteClient:
         response.raise_for_status()
         Path(destination).write_bytes(response.content)
         return destination
+
+    def download_raw_result(self, job_id: str, destination: str | Path):
+        """Fetch raw generation for audit evidence; never use it as clean output."""
+        response = requests.get(f"{self.base_url}/v1/hard-clean/jobs/{job_id}/raw", timeout=60)
+        response.raise_for_status()
+        Path(destination).write_bytes(response.content)
+        return destination
