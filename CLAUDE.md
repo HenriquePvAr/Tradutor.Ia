@@ -116,18 +116,14 @@ WHY: <motivo — ex.: refatoração interna sem mudança de comportamento, API, 
   confiança e expiração/revogação/dispositivo; o guia do usuário ganha login, status,
   expiração e mensagem de renovação. Nenhum segredo administrativo em nenhum dos dois.
 
-### Estado atual que você não pode contradizer
+### Estado do produto e evidência
 
-| Recurso | Estado no commit base |
-| --- | --- |
-| Provider de tradução padrão | **DeepL** (`ui_helpers.DEFAULT_TRANSLATION_PROVIDER`) |
-| Provider de auth padrão | **supabase** (`community_auth.build_auth_provider`) |
-| Supervisão do worker | implementada: 2s/5s/15s, 3 tentativas, `degraded`, reset em 120s |
-| Retomada de job interrompido na UI | **implementada** (TDD #56) — painel `#interruptedJobsPanel` + botão `Retomar` em `static/tradutor_ui.js`, exibido só quando o backend marca `can_resume` |
-| Instalador para usuário final | **não existe** — nenhum spec de build, `Setup.exe` ou builder no repositório |
-| Updater | **parcial** — `update_manifest.py` (Ed25519 + SHA-256), `update_transport.py` (HTTPS), `update_installer.py` (staging/ativação atômica/rollback) e `update_bootstrap.py` (chamado por `start_tradutor.py all`) existem e estão conectados. Faltam: chave pública de release (`TRUSTED_PUBLIC_KEYS` vazio de propósito), canal/hospedagem (`DEFAULT_MANIFEST_URL = ""`) e superfície de UI |
-| Licença de tester Beta | **parcial** — `beta_license.py` (estados, expiração, revogação, limite de dispositivo, RPC Supabase) existe; o gate é aplicado em `UiBridge.start()`/`resume()` e reforçado em `job_runner`. Mas `ui_bridge.py` instancia `LocalDevelopmentBetaAuthorizer()` fixo: `build_beta_license_authorizer` não tem chamador de produção, e nenhum entitlement real de tester foi concedido |
-| Instalação limpa em Windows | **não provada** (`CLEAN-INSTALL-NOT-YET-PROVEN`) |
+O texto de estado abaixo era específico de um commit antigo e foi removido para não contradizer
+o runtime modular. Consulte o [snapshot atual da reconciliação](docs/consolidation/YOMU_CURRENT_PRODUCT_STATE.md),
+a [matriz de proveniência](docs/consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md) e o
+[board operacional](docs/status/board/index.html). Esses documentos distinguem código integrado,
+testes offline/frozen, verificação física, gates externos e itens deferred. A branch de
+reconciliação é local e não constitui publicação ou aceitação beta.
 
-Detalhes e dívida técnica completa:
+Detalhes técnicos e dívida histórica:
 [Documentação Técnica §29](docs/technical/DOCUMENTACAO_TECNICA.md#29-dívida-técnica-conhecida).

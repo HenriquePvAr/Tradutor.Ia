@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YomuSekai — board de reconciliação</title>
+  <style>
+    :root{color-scheme:dark;--bg:#111318;--card:#1b1e26;--line:#343947;--muted:#aeb6c7;--text:#f2f4f8;--blue:#8ab4ff;--green:#81c995;--amber:#f2c66d;--red:#ff9292}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}
+    main{max-width:1180px;margin:auto;padding:32px 20px 56px}h1{margin:0 0 8px;font-size:28px}#snapshot{color:var(--muted);margin:0 0 24px;overflow-wrap:anywhere}
+    #board{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}.card h2{font-size:17px;margin:0 94px 12px 0}.status{position:absolute;right:14px;top:16px;border:1px solid currentColor;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:700}.status-integrated{color:var(--blue)}.status-deferred{color:var(--amber)}.status-blocked{color:var(--red)}dl{margin:0}dt{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:10px}dd{margin:2px 0 0;overflow-wrap:anywhere}footer{margin-top:24px;color:var(--muted);font-size:13px}
+  </style>
+</head>
+<body><main>
+  <h1>YomuSekai — reconciliação para main</h1>
+  <p id="snapshot"></p>
+  <section id="board" aria-label="Status por domínio"></section>
+  <footer>Estados: BACKLOG · IN_PROGRESS · INTEGRATED · VALIDATED · BLOCKED · DEFERRED. INTEGRATED descreve código presente, não aceitação física; VALIDATED exige evidência do snapshot exato. Consulte <a href="../../consolidation/YOMU_CURRENT_PRODUCT_STATE.md">estado e gates</a>, <a href="../../consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md">matriz de proveniência</a> e <a href="../../consolidation/YOMU_CONSOLIDATION_PLAN.md">plano</a>.</footer>
+  <script src="board.js" defer></script>
+</main></body>
+</html>

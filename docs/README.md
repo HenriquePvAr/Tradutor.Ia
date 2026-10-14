@@ -1,8 +1,10 @@
 # Documentação do Tradutor IA
 
-> **Base verificada:** `27c1450` (branch `main`) · **Revisado em:** 2026-09-30
+> **Base publicada observada:** `121d6285` (`origin/main`) · **Snapshot de reconciliação local:** `integration/yomu-main-consolidation-v1` · **Revisado em:** 2026-10-14
 >
 > O comportamento de produção está sob **[Quality Freeze](QUALITY_FREEZE.md)**.
+
+> A branch de reconciliação é trabalho local, não release nem atualização remota. Veja [estado atual e limites de evidência](consolidation/YOMU_CURRENT_PRODUCT_STATE.md), [matriz de proveniência](consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md), [plano](consolidation/YOMU_CONSOLIDATION_PLAN.md) e [board por domínio](status/board/index.html).
 
 Esta é a página inicial da documentação. Comece pelo documento certo para o seu papel.
 
@@ -29,6 +31,7 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 | [Política de Documentação](DOCUMENTATION_POLICY.md) | Quando e como a documentação deve ser atualizada junto com o código. |
 | [Auditoria de Documentação](DOCUMENTATION_AUDIT.md) | O que foi verificado, o que estava desatualizado e o que continua em aberto. |
 | [README do projeto](../README.md) | Visão geral curta e início rápido. |
+| [Estado consolidado e board](consolidation/YOMU_CURRENT_PRODUCT_STATE.md) · [Board operacional](status/board/index.html) | Fonte do estado por evidência; a branch local não é publicação. |
 
 ---
 
@@ -55,11 +58,6 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 - [Adaptador universal de capítulos](UNIVERSAL_CHAPTER_ADAPTER.md) — fallback controlado, limites e restrições
 - [Entrada por pasta local](LOCAL_FOLDER_INPUT.md) — processar imagens já presentes no computador
 - [Transportes de download](DOWNLOAD_TRANSPORTS.md) — abstração de transporte e validação por bytes
-
-### PSD e saídas profissionais
-
-- [M15 — matriz de compatibilidade PSD](PSD_COMPATIBILITY_MATRIX.md) — evidência física Photoshop/Photopea; cross-editor round-trip ainda não executado
-- [M17 — performance e tamanho PSD](PSD_PERFORMANCE_REPORT.md) — medições do job existente e estimativas separadas
 
 ### PSD e saídas profissionais
 
