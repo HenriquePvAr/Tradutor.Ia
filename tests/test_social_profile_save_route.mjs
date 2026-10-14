@@ -19,8 +19,8 @@ const app = fs.readFileSync(path.join(ROOT, 'static', 'tradutor_ui.js'), 'utf8')
 const community = fs.readFileSync(path.join(ROOT, 'static', 'social_community.js'), 'utf8');
 const api = fs.readFileSync(path.join(ROOT, 'static', 'social_api.js'), 'utf8');
 const authUi = fs.readFileSync(path.join(ROOT, 'static', 'auth_ui.js'), 'utf8');
-const backend = fs.readFileSync(path.join(ROOT, 'app_ui.py'), 'utf8');
-const bridge = fs.readFileSync(path.join(ROOT, 'ui_bridge.py'), 'utf8');
+const backend = fs.readFileSync(path.join(ROOT, 'yomu', 'ui', 'app.py'), 'utf8');
+const bridge = fs.readFileSync(path.join(ROOT, 'yomu', 'ui', 'ui_bridge.py'), 'utf8');
 
 await test('main shell has no profile view, navigation, edit action, or media upload controls', async () => {
   assert.doesNotMatch(shell, /view-profile|data-tab="profile"|Editar perfil|profile-(?:avatar|banner)-input/i);
