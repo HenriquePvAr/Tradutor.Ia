@@ -138,6 +138,15 @@ def test_official_branding_assets_are_preserved_and_ready_for_packaging():
     assert ico.stat().st_size > 10_000
 
 
+def test_login_background_assets_are_versioned_and_packaged_with_static_files():
+    assets = (Path("static/assets/auth-background.jpg"), Path("static/assets/auth-background-hd.png"))
+    spec = Path("packaging/tradutor_ia.spec").read_text(encoding="utf-8")
+    for asset in assets:
+        assert asset.is_file()
+        assert asset.stat().st_size > 10_000
+    assert '(str(ROOT / "static"), "static")' in spec
+
+
 def test_desktop_uses_stable_windows_app_user_model_id():
     source = Path("yomu/desktop/app.py").read_text(encoding="utf-8")
     assert "YomuSekai.Desktop" in source
