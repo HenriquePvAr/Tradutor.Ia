@@ -6,7 +6,7 @@ const decode = (s: string) => {
   return Uint8Array.from(atob(x), c => c.charCodeAt(0));
 };
 
-Deno.serve(async (req) => {
+export async function handleRequest(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return preflight();
   const denied = requireAuth(req);
   if (denied) return denied;
@@ -20,6 +20,12 @@ Deno.serve(async (req) => {
     });
     const c: any = await q.json().catch(() => null);
     if (!q.ok || !c) return json({ code: 'device_challenge_not_found' }, 404);
+    if (c.device_status !== 'active') return json({ code: 'device_revoked' }, 403);
+    if (c.license_status !== 'active') return json({ code: 'license_not_active' }, 403);
+    if (c.license_expires_at != null) {
+      const expiresAt = typeof c.license_expires_at === 'string' ? Date.parse(c.license_expires_at) : Number.NaN;
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return json({ code: 'license_not_active' }, 403);
+    }
     if (c.consumed_at) return json({ code: 'device_challenge_consumed' }, 409);
     if (new Date(c.expires_at).getTime() <= Date.now()) return json({ code: 'device_challenge_expired' }, 410);
     const nonce = String(b?.nonce || '');
@@ -51,4 +57,6 @@ Deno.serve(async (req) => {
   } catch {
     return json({ code: 'device_verify_unavailable' }, 503);
   }
-});
+}
+
+if (import.meta.main) Deno.serve(handleRequest);
