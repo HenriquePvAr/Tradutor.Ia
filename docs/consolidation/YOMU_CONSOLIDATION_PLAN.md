@@ -2,7 +2,7 @@
 
 **Plan source:** read-only delta review by GPT-6.1 Sol, medium, returned 2026-10-14.
 **Base:** `origin/main` `121d6285a487a3e2b1a43bc5b504f79e696a75ed`.
-**Plan status:** ready for Luna execution; the plan is not evidence of integration or validation.
+**Plan status:** executed as a local consolidation candidate with documented open gates; it is not evidence of main-update readiness.
 
 ## Authoritative decisions
 
@@ -40,3 +40,7 @@ Rollback before publication is to leave the original worktrees untouched and swi
 ## External and physical gates
 
 No paid providers, YK, Supabase production mutation, VPS change, full chapter, or physical customer acceptance is part of this consolidation. A real Gemini generation and authenticated licensed-user smoke are `EXTERNAL_GATE` unless separately authorized. `origin/main` update is explicitly owner-approved only.
+
+## Current closeout boundary (2026-10-14)
+
+The candidate is `integration/yomu-main-consolidation-v1`, local HEAD `63e8bcf` before the documentation closeout commit, 94 commits ahead and 0 behind the fetched `origin/main` (`121d6285...`). The live inventory is 109 worktrees/256 local branch refs; 66 tips are not ancestors of the candidate and are classified by domain in the reconciliation matrix. Eight source worktrees are dirty and remain untouched. The initial backup is integrity-verified but has post-snapshot local generated-file deltas; its scope is explicitly not overstated. The focused device-revocation guard is tested locally but not deployed. Therefore this candidate remains `PARTIAL`, not `READY_FOR_MAIN_UPDATE`, until the dirty overlays are reconciled, backup delta is captured, and the owner reviews the proposed main update.

@@ -125,5 +125,12 @@ a [matriz de proveniência](docs/consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX
 testes offline/frozen, verificação física, gates externos e itens deferred. A branch de
 reconciliação é local e não constitui publicação ou aceitação beta.
 
+### Main-first e preservação
+
+- `main` é a fonte canônica de código concluído. Baseie novas tarefas na `main` atual; use branch temporária para trabalho arriscado e, após testes/documentação/board, prepare integração normal de volta à `main`.
+- Não mantenha linhas paralelas permanentes nem descarte worktrees, arquivos não rastreados, evidências ou trabalho de outro agente sem uma decisão explícita e registrada.
+- Uma branch de integração local não é merge remoto, beta ou release. Push, merge remoto, instalador e publicação exigem autorização própria.
+- Para Supabase, versionar migrations e testes; não alterar produção sem autorização. Preservar fail-closed e não incluir segredos administrativos no cliente.
+
 Detalhes técnicos e dívida histórica:
 [Documentação Técnica §29](docs/technical/DOCUMENTACAO_TECNICA.md#29-dívida-técnica-conhecida).
