@@ -186,6 +186,15 @@ class EditablePsdWriterTests(unittest.TestCase):
         leftovers = list((self.root / "psd").glob("*.tmp")) if (self.root / "psd").exists() else []
         self.assertEqual(leftovers, [])
 
+    def test_dimension_mismatch_fails_without_overwriting_prior_psd(self):
+        dest = self.root / "psd" / "001.psd"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"previous validated output")
+        with self.assertRaisesRegex(EditablePsdError, "image_dimension_mismatch"):
+            ew.write_editable_psd(dest, _img(64, 48), _img(32, 24), [], (64, 48))
+        self.assertEqual(dest.read_bytes(), b"previous validated output")
+        self.assertEqual(list(dest.parent.glob("*.tmp")), [])
+
     # X) editable PSD path is the contract's psd/<page>.psd; distinct from legacy raster type
     def test_canonical_path_and_type_distinct(self):
         p = ac.artifact_relative_path(ac.ArtifactType.EDITABLE_PSD, page=1, total_pages=208)

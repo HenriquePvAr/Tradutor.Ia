@@ -28,6 +28,8 @@ from typing import Any, Callable, Iterable, Sequence
 import numpy as np
 from PIL import Image
 
+from yomu.export.psd_tools_compat import pixel_layer_from_pil
+
 # Any channel delta above this (out of 255) counts as "the translation drew here". Small,
 # to tolerate RLE/anti-alias noise without swallowing faint glyph edges.
 _REGION_ALPHA_THRESHOLD = 6
@@ -139,7 +141,6 @@ def write_professional_page_psd(
     """
     try:
         from psd_tools import PSDImage
-        from psd_tools.api.layers import PixelLayer
     except ImportError as exc:
         raise ProfessionalPsdError("psd_library_unavailable") from exc
 
@@ -161,13 +162,13 @@ def write_professional_page_psd(
 
     # Bottom -> top. psd-tools appends the first layer at the bottom.
     original_pil = _bgr_to_rgba_pil(original_bgr)
-    original_layer = PixelLayer.frompil(original_pil, psd, layer_name="Original")
+    original_layer = pixel_layer_from_pil(original_pil, psd, "Original")
     original_layer.visible = False  # reference only, hidden by default
     add(original_layer, "Original", "original")
     original_pil.close()
 
     cleaned_pil = _bgr_to_rgba_pil(cleaned_bgr)
-    cleaned_layer = PixelLayer.frompil(cleaned_pil, psd, layer_name="Cleaned")
+    cleaned_layer = pixel_layer_from_pil(cleaned_pil, psd, "Cleaned")
     cleaned_layer.visible = True
     add(cleaned_layer, "Cleaned", "cleaned")
     cleaned_pil.close()
@@ -187,7 +188,7 @@ def write_professional_page_psd(
             layer_number += 1
             name = f"Text/Region {layer_number:03d}"
             x, y, _, _ = box
-            region_layer = PixelLayer.frompil(layer_img, psd, layer_name=name, top=y, left=x)
+            region_layer = pixel_layer_from_pil(layer_img, psd, name, top=y, left=x)
             region_layer.visible = True
             add(region_layer, name, "translated_region",
                 region_id=str(region.get("region_id") or ""), page_index=page_index,
@@ -199,7 +200,7 @@ def write_professional_page_psd(
     include_preview = mode == "on"
     if include_preview:
         preview_pil = _bgr_to_rgba_pil(translated_bgr)
-        preview_layer = PixelLayer.frompil(preview_pil, psd, layer_name="Translated Preview")
+        preview_layer = pixel_layer_from_pil(preview_pil, psd, "Translated Preview")
         preview_layer.visible = False  # hidden reference; avoids double-compositing region text
         add(preview_layer, "Translated Preview", "translated_preview")
         preview_pil.close()

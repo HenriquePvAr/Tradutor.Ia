@@ -28,8 +28,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageCms, ImageDraw, ImageFont
 
+from yomu.export.psd_tools_compat import pixel_layer_from_pil
 from psd_tools import PSDImage
-from psd_tools.api.layers import Group, PixelLayer
+from psd_tools.api.layers import Group
 from psd_tools.constants import Resource, Tag
 from psd_tools.psd.engine_data import (
     Bool as EBool, Dict as EDict, EngineData, Float as EFloat,
@@ -359,10 +360,10 @@ def write_editable_psd(output_path, original_image, clean_image, text_regions,
     W, H = canvas_size
     original_pil = _bgr_or_path_to_rgba(original_image)
     clean_pil = _bgr_or_path_to_rgba(clean_image)
-    if original_pil.size != (W, H):
-        original_pil = original_pil.resize((W, H))
-    if clean_pil.size != (W, H):
-        clean_pil = clean_pil.resize((W, H))
+    if original_pil.size != (W, H) or clean_pil.size != (W, H):
+        original_pil.close()
+        clean_pil.close()
+        raise EditablePsdError("image_dimension_mismatch")
 
     psd = PSDImage.new("RGBA", (W, H))
 
@@ -375,11 +376,11 @@ def write_editable_psd(output_path, original_image, clean_image, text_regions,
             icc_mode = "SRGB"
 
     g_original = Group.new("ORIGINAL", parent=psd)
-    PixelLayer.frompil(original_pil, psd, layer_name="ORIGINAL_ART").move_to_group(g_original)
+    pixel_layer_from_pil(original_pil, psd, "ORIGINAL_ART").move_to_group(g_original)
     g_original.visible = bool(original_visible)
 
     g_clean = Group.new("CLEAN", parent=psd)
-    PixelLayer.frompil(clean_pil, psd, layer_name="CLEAN_ARTWORK").move_to_group(g_clean)
+    pixel_layer_from_pil(clean_pil, psd, "CLEAN_ARTWORK").move_to_group(g_clean)
     g_clean.visible = True
 
     g_text = Group.new("TEXT", parent=psd)
@@ -388,7 +389,7 @@ def write_editable_psd(output_path, original_image, clean_image, text_regions,
     written_layers = []
     for region, name in zip(text_regions, names):
         appearance = _text_appearance((W, H), region, font_path)
-        layer = PixelLayer.frompil(appearance, psd, layer_name=name)
+        layer = pixel_layer_from_pil(appearance, psd, name)
         layer._record.tagged_blocks[Tag.TYPE_TOOL_OBJECT_SETTING] = TaggedBlock(
             key=Tag.TYPE_TOOL_OBJECT_SETTING, data=_build_tysh(region))
         layer.move_to_group(g_text)
