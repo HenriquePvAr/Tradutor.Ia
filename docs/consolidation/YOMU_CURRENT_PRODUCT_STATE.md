@@ -1,7 +1,9 @@
 # YomuSekai — estado do snapshot de consolidação
 
-**Snapshot de trabalho:** `integration/yomu-main-consolidation-v1` (local, não publicado).
-**Base publicada observada em 2026-10-15:** `origin/main` `121d6285`.
+> **Estado atual — fechamento pós-publicação (2026-10-15):** a `main` local e `origin/main` estão sincronizadas em `f32974761e5658e5c3f43f7610078dbda1983adc`. Foram publicados 120 commits desde a base registrada `121d6285`; o histórico anterior, branches/worktrees de origem e backups verificados foram preservados. Código e documentação estão sincronizados. Isso não é publicação de beta/release: a beta não foi publicada e os gates físicos continuam pendentes. A CI `38810737911` concluiu com **failure** (10 testes); portanto CI não está aprovada. O detalhamento atual está no adendo ao plano de consolidação; os snapshots abaixo preservam corretamente o estado histórico em que foram escritos.
+
+**Snapshot histórico pré-publicação:** `integration/yomu-main-consolidation-v1` (estado local registrado abaixo).
+**Base histórica da consolidação:** `origin/main` `121d6285`.
 **HEAD de referência no início do delta original:** `f5265134b9f527a9e244da40539466deb0c7a463` (`fix(psd): guard layer API and image dimensions`); veja o snapshot vivo atualizado abaixo.
 **Não é uma release nem prova de aceitação física.**
 

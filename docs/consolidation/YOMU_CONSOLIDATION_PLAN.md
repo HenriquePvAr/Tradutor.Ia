@@ -1,8 +1,16 @@
 # Yomu consolidation plan
 
+## Fechamento pós-publicação — 2026-10-15
+
+Este estado atual supersede as anotações de planejamento anteriores que diziam “No push/merge” ou que a atualização da `main` ainda aguardava aprovação. A publicação autorizada foi concluída: `main` e `origin/main` estão em `f32974761e5658e5c3f43f7610078dbda1983adc`, 120 commits acima da base `121d6285`; histórico, refs e worktrees anteriores permanecem preservados. Código e documentação estão sincronizados. A beta/release não foi publicada e os gates físicos continuam pendentes.
+
+CI `38810737911` terminou em `failure`, não está pendente: 10 testes falharam entre 6.011 aprovados, 141 skipped e 2 xfailed. Oito falhas são igualdade de `Path` usando caminhos equivalentes com nome longo (`runneradmin`) e alias 8.3 (`RUNNER~1`) no Windows runner (uma em download-only e sete em runtime-root resolution). Uma falha de containment (`test_all_default_mutable_paths_stay_inside_test_root`) não expõe no resumo o caminho que escapou e requer inspeção individual, portanto não é classificada como mero alias. A falha restante ocorre no subprocesso de descoberta de testes, que não recebeu `SUPABASE_URL` e `SUPABASE_PUBLISHABLE_KEY` e abortou ao montar a API social; corrigir a configuração pública hermética do teste ou verificar o comportamento esperado de fail-closed, sem introduzir credenciais privilegiadas. A correção objetiva para as oito comparações é canonicalizar/normalizar os caminhos nos testes antes de comparar, mantendo assertions de containment e sem alterar resolução de runtime apenas para acomodar a representação do runner. Até as 10 falhas serem resolvidas e CI reexecutada, CI permanece vermelha.
+
+Os snapshots abaixo são registros históricos da etapa anterior à publicação; suas declarações de base remota e “sem push/merge” não descrevem o estado corrente.
+
 **Plan source:** read-only delta review by GPT-6.1 Sol, medium, returned 2026-10-14.
 **Base:** `origin/main` `121d6285a487a3e2b1a43bc5b504f79e696a75ed`.
-**Plan status:** local reconciliation and validation are closed for owner review of a normal main update; this is not Beta, release, or physical-product acceptance. External gates remain explicitly open below.
+**Plan status atual:** a consolidação foi publicada na `main` (`f3297476`); a CI `38810737911` está falhando em 10 testes e precisa de correção. Beta/release e aceitação física continuam separados e pendentes. Os snapshots abaixo registram a sequência histórica da consolidação.
 
 ## Authoritative decisions
 
