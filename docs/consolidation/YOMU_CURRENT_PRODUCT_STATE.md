@@ -170,5 +170,12 @@ O estado da árvore do candidato contém 12 modificações rastreadas e dois tes
 
 - `9e8bdfa` — `fix: unify parallel clean and supervise Comix child` (código e regressões; deriva do snapshot testado `b563923`).
 - `d28fde5` — `docs: reconcile current Yomu refs and validation` (estado, matriz, plano, índice e board).
+- `38328c3` — `docs: record local reconciliation commits` (registro do fechamento e decisões).
 
-Ambos são commits locais na branch de integração, sem push/merge. Os testes completos e build correspondem ao conteúdo de código de `9e8bdfa`; o segundo commit altera somente documentação/board. A cópia `.basinfy/agent-context.json` permanece fora do Git.
+São commits locais na branch de integração, sem push/merge. Os testes completos e build correspondem ao conteúdo de código de `9e8bdfa`; os dois commits seguintes alteram somente documentação/board. A cópia `.basinfy/agent-context.json` permanece fora do Git.
+
+### Preservação atual dos worktrees sujos — 2026-10-15
+
+Revarredura read-only encontrou 8 worktrees de origem sujos, além do candidato (somente `.basinfy/agent-context.json` untracked): checkout original `C:\Projetos\Tradutor.Ia` (6 tracked changes/29 untracked paths), full-ui-community (2 untracked), glyph-segmenter (1 untracked com 2 arquivos de checkpoint), history-bulk-delete (5 tracked/2 untracked), SAFE CLEAN evidence (11 tracked/3 untracked), SAFE CLEAN validated integration (123 tracked/57 untracked), Gemini VPS worker (7 tracked/3 untracked) e main-candidate-comix-ui (2 tracked). Nenhum desses worktrees foi editado por esta missão.
+
+Snapshot atualizado de todos os oito: `C:\Users\henri\YomuMainReconciliationBackups\source-overlays-final-20261015` — patches staged/unstaged, conteúdo untracked e manifesto CSV; 4.848 arquivos/896.084.557 bytes, 4.848 hashes revalidados, zero divergências. SHA-256 do manifesto: `831A73BC6B8CD83F504D4F28A9C96E678518BC26808119EBCEDB039448C2E09B`. Bundle Git atualizado com os commits locais de reconciliação: `C:\Users\henri\YomuMainReconciliationBackups\candidate-reconciliation-final-20261015\all-refs.bundle`, verificado como história completa, SHA-256 `55C8C8E12904E4042CDC2AABC58D0C72FBFB1DE32EEF68195D8D7E679EB14B0B`.
