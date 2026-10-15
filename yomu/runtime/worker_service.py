@@ -534,6 +534,26 @@ class Worker:
                     job_id, "runner",
                     f"POST_VALIDATION_RESOLUTION_FAILED reason_code="
                     f"{str(resolution.get('reason_code') or 'workspace_pipeline_resolution_failed')}")
+                failed_code = str(
+                    resolution.get("reason_code") or "workspace_pipeline_resolution_failed")
+                permanent_policy_failures = {
+                    "workspace_policy_operation_denied",
+                    "workspace_policy_hash_mismatch",
+                    "pipeline_intent_required",
+                    "invalid_requested_mode",
+                    "invalid_requested_scope",
+                }
+                if failed_code in permanent_policy_failures:
+                    current = self.store.get_job(job_id)
+                    if current and current.get("status") == JobStatus.SOURCE_ANALYSIS_READY:
+                        self.store.transition(
+                            job_id, JobStatus.FAILED,
+                            stage="source_analysis_ready",
+                            reason_code=failed_code,
+                            error_type="workspace_policy",
+                            error_message=failed_code,
+                            writer_component="worker_source_readiness",
+                        )
                 return None
             if not result.should_spawn_runner:
                 return None

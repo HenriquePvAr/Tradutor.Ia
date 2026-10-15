@@ -7,6 +7,16 @@ from typing import Any
 
 import requests
 
+from yomu.runtime.transport_errors import classify_transport_error
+
+
+class RemoteTransportError(RuntimeError):
+    """A remote failure with a safe, stable code and no provider detail."""
+
+    def __init__(self, safe_error_code: str):
+        self.safe_error_code = safe_error_code
+        super().__init__(safe_error_code)
+
 
 class HardCleanRemoteClient:
     def __init__(self, base_url: str = "http://127.0.0.1:18777"):
@@ -19,8 +29,8 @@ class HardCleanRemoteClient:
             if authorized_mask is not None:
                 mask_handle = open(authorized_mask, "rb")
                 files["authorized_mask"] = (Path(authorized_mask).name, mask_handle, "image/png")
-            response = requests.post(f"{self.base_url}/v1/hard-clean/jobs", files=files, data=fields, timeout=30)
-            response.raise_for_status()
+            response = self._request("post", f"{self.base_url}/v1/hard-clean/jobs",
+                                     files=files, data=fields, timeout=30)
             return response.json()
         finally:
             for item in files.values():
@@ -30,8 +40,7 @@ class HardCleanRemoteClient:
                 mask_handle.close()
 
     def status(self, job_id: str):
-        response = requests.get(f"{self.base_url}/v1/hard-clean/jobs/{job_id}", timeout=30)
-        response.raise_for_status()
+        response = self._request("get", f"{self.base_url}/v1/hard-clean/jobs/{job_id}", timeout=30)
         return response.json()
 
     def wait(self, job_id: str, timeout: float = 600, poll: float = 2):
@@ -44,14 +53,21 @@ class HardCleanRemoteClient:
         raise TimeoutError(job_id)
 
     def download_result(self, job_id: str, destination: str | Path):
-        response = requests.get(f"{self.base_url}/v1/hard-clean/jobs/{job_id}/result", timeout=60)
-        response.raise_for_status()
+        response = self._request("get", f"{self.base_url}/v1/hard-clean/jobs/{job_id}/result", timeout=60)
         Path(destination).write_bytes(response.content)
         return destination
 
     def download_raw_result(self, job_id: str, destination: str | Path):
         """Fetch raw generation for audit evidence; never use it as clean output."""
-        response = requests.get(f"{self.base_url}/v1/hard-clean/jobs/{job_id}/raw", timeout=60)
-        response.raise_for_status()
+        response = self._request("get", f"{self.base_url}/v1/hard-clean/jobs/{job_id}/raw", timeout=60)
         Path(destination).write_bytes(response.content)
         return destination
+
+    @staticmethod
+    def _request(method: str, url: str, **kwargs):
+        try:
+            response = getattr(requests, method)(url, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            raise RemoteTransportError(classify_transport_error(exc)) from None

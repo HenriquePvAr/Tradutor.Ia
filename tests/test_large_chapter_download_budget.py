@@ -21,6 +21,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from PIL import Image
+import requests
 
 import yomu.download.down as down
 from yomu.download.download_transport import DownloadLimits, LimitExceeded, RequestsTransport, _BudgetTracker
@@ -34,17 +35,21 @@ def _png(seed: int, w: int = 800, h: int = 1200) -> bytes:
     return buf.getvalue()
 
 
-class _ExplodingSession:
+class _ExplodingSession(requests.Session):
     """Any HTTP use is a defect here: inline-canvas pages must never be fetched."""
 
     trust_env = False
     max_redirects = 3
 
+    def __init__(self):
+        super().__init__()
+        self.trust_env = False
+
     def get(self, *args, **kwargs):  # noqa: D401 - test double
         raise AssertionError("network fetch attempted for an inline-canvas page")
 
     def close(self):
-        pass
+        super().close()
 
 
 class _FakeAdapter:

@@ -56,6 +56,7 @@ import yomu.translation.refinement_selection_decisions as refinement_selection_d
 import yomu.runtime.update_manifest as update_manifest
 import yomu.runtime.update_transport as update_transport
 import yomu.runtime.installer_update as installer_update
+from yomu.runtime.remote_readiness import probe_remote_clean_readiness
 try:
     import psutil
 except ImportError:  # pragma: no cover - packaged builds include psutil
@@ -1119,6 +1120,13 @@ def api_health() -> dict[str, str]:
     """
 
     return {"status": "ok"}
+
+
+@app.get("/api/remote-clean/readiness")
+def api_remote_clean_readiness() -> dict[str, object]:
+    """Read-only loopback readiness; this does not authenticate or submit work."""
+
+    return probe_remote_clean_readiness()
 
 
 @app.get("/api/ui/bootstrap")

@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 import requests
 
 from yomu.download.sources.chapter_source import SourceError, host_of
+from yomu.download.pinned_requests import PinnedRequestError, install_pinned_requests, pinned_request
 
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 MAX_METADATA_REDIRECTS = 3
@@ -98,6 +99,13 @@ class RequestsMetadataTransport:
         self.session = session or requests.Session()
         self.own_session = session is None
         self.timeout = timeout
+        if self.own_session and hasattr(self.session, "trust_env"):
+            self.session.trust_env = False
+        try:
+            install_pinned_requests(self.session)
+        except PinnedRequestError as exc:
+            raise CanonicalSourceError(
+                "canonical_metadata_invalid", exc.reason) from None
 
     def close(self) -> None:
         if self.own_session:
@@ -107,16 +115,21 @@ class RequestsMetadataTransport:
         current = url
         for _ in range(MAX_METADATA_REDIRECTS + 1):
             self.adapter.validate_navigation_url(current)
-            response = self.session.get(
-                current,
-                headers={
-                    "User-Agent": "Tradutor.Ia-source-metadata/1.0",
-                    "Accept": "text/html,application/xhtml+xml",
-                },
-                timeout=self.timeout,
-                stream=True,
-                allow_redirects=False,
-            )
+            try:
+                with pinned_request(self.session, current):
+                    response = self.session.get(
+                        current,
+                        headers={
+                            "User-Agent": "Tradutor.Ia-source-metadata/1.0",
+                            "Accept": "text/html,application/xhtml+xml",
+                        },
+                        timeout=self.timeout,
+                        stream=True,
+                        allow_redirects=False,
+                    )
+            except PinnedRequestError as exc:
+                raise CanonicalSourceError(
+                    "canonical_metadata_invalid", exc.reason) from None
             try:
                 status = int(response.status_code)
                 if status in (301, 302, 303, 307, 308):

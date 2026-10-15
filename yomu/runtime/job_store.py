@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import re
 import sqlite3
 import threading
@@ -21,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 17
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
@@ -186,6 +187,14 @@ class TransitionError(RuntimeError):
     """Raised when a status change is not a permitted transition."""
 
 
+class ProgressEventRejected(ValueError):
+    """A progress event failed the authoritative job/run/order contract."""
+
+    def __init__(self, reason: str, *, sequence_consumed: bool = False):
+        super().__init__(reason)
+        self.sequence_consumed = sequence_consumed
+
+
 # Columns that make up a job row. Kept explicit so the schema and the row->dict mapping
 # never drift. Timestamps are epoch seconds (REAL); NULL means "not yet".
 _JOB_COLUMNS = (
@@ -193,6 +202,13 @@ _JOB_COLUMNS = (
     "series_title", "series_slug", "episode_number",
     "output_dir", "configuration_json", "command_json", "status", "stage",
     "progress_current", "progress_total", "progress_message", "progress_counter_stage",
+    "progress_version", "progress_last_event_seq", "progress_trace_id",
+    "progress_display_stage", "progress_received_seq", "progress_rejected_event_id",
+    "progress_rejected_reason", "progress_phase", "progress_status",
+    "progress_completed_page_ids_json", "progress_completed_page_count",
+    "progress_current_page", "progress_operation", "progress_error_code",
+    "progress_retryable", "progress_terminal", "progress_emitted_at",
+    "progress_event_id", "progress_stage_counters_json",
     "source_type", "adapter_name", "adapter_version", "transport_name", "source_score",
     "candidate_count", "input_root_fingerprint",
     "snapshot_ref", "logical_pages", "input_count", "accepted_count",
@@ -292,6 +308,8 @@ class JobStore:
             self._migrate_v13()
         if version < 14:
             self._migrate_v14()
+        if version < 15:
+            self._migrate_v15()
         self._backfill_additive_columns()
         # Idempotent: record the current version.
         self._conn.execute(
@@ -322,6 +340,53 @@ class JobStore:
         self._migrate_v12()
         self._migrate_v13()
         self._migrate_v14()
+        self._migrate_v15()
+        self._migrate_v16()
+        self._migrate_v17()
+
+    def _migrate_v15(self) -> None:
+        """Add idempotent, run-scoped progress snapshot fields to existing jobs."""
+        columns = {
+            "progress_version": "INTEGER NOT NULL DEFAULT 0",
+            "progress_last_event_seq": "INTEGER NOT NULL DEFAULT 0",
+            "progress_trace_id": "TEXT NOT NULL DEFAULT ''",
+            "progress_phase": "TEXT NOT NULL DEFAULT ''",
+            "progress_status": "TEXT NOT NULL DEFAULT ''",
+            "progress_completed_page_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+            "progress_completed_page_count": "INTEGER NOT NULL DEFAULT 0",
+            "progress_current_page": "INTEGER",
+            "progress_operation": "TEXT NOT NULL DEFAULT ''",
+            "progress_error_code": "TEXT NOT NULL DEFAULT ''",
+            "progress_retryable": "INTEGER NOT NULL DEFAULT 0",
+            "progress_terminal": "INTEGER NOT NULL DEFAULT 0",
+            "progress_emitted_at": "REAL",
+            "progress_event_id": "TEXT NOT NULL DEFAULT ''",
+            "progress_stage_counters_json": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        for name, declaration in columns.items():
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
+
+    def _migrate_v16(self) -> None:
+        """Track consumed/rejected host sequences so one bad counter cannot poison a run."""
+        columns = {
+            "progress_received_seq": "INTEGER NOT NULL DEFAULT 0",
+            "progress_rejected_event_id": "TEXT NOT NULL DEFAULT ''",
+            "progress_rejected_reason": "TEXT NOT NULL DEFAULT ''",
+        }
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        for name, declaration in columns.items():
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
+
+    def _migrate_v17(self) -> None:
+        """Retain monotonic visible stage independently of terminal job status."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+        if "progress_display_stage" not in existing:
+            self._conn.execute(
+                "ALTER TABLE jobs ADD COLUMN progress_display_stage TEXT NOT NULL DEFAULT ''"
+            )
 
     def _migrate_v14(self) -> None:
         """Store durable, versioned human region overrides and manual regions."""
@@ -695,6 +760,14 @@ class JobStore:
                     data[key] = {}
             else:
                 data[key] = {}
+        for column, key, fallback in (
+            ("progress_completed_page_ids_json", "progress_completed_page_ids", []),
+            ("progress_stage_counters_json", "progress_stage_counters", {}),
+        ):
+            try:
+                data[key] = json.loads(data.get(column) or json.dumps(fallback))
+            except (ValueError, TypeError):
+                data[key] = fallback
         return data
 
     # ---- job CRUD -----------------------------------------------------------
@@ -1092,6 +1165,12 @@ class JobStore:
             assignments["stage_started_at"] = time.time()
         if target in JobStatus.TERMINAL:
             assignments["finished_at"] = time.time()
+            assignments.update({
+                "progress_version": 1,
+                "progress_terminal": 1,
+                "progress_status": str(target),
+                "progress_emitted_at": time.time(),
+            })
         if target == JobStatus.CANCELLED:
             assignments["cancellation_completed_at"] = time.time()
         if target in _DEFAULT_TERMINAL_REASONS and "reason_code" not in fields:
@@ -1201,6 +1280,151 @@ class JobStore:
     def heartbeat(self, job_id: str, **fields: Any) -> None:
         self.update_fields(job_id, heartbeat_at=time.time(), **fields)
 
+    def apply_progress_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Atomically accept one host-bound progress.v1 event for the current run."""
+        if not isinstance(event, dict) or len(json.dumps(event, ensure_ascii=True)) > 16_384:
+            raise ProgressEventRejected("invalid_progress_event")
+        required = {
+            "schema_version", "job_id", "run_id", "trace_id", "event_id", "event_seq",
+            "emitted_at", "stage_id", "phase", "status", "stage_current", "stage_total",
+            "completed_page_ids", "current_page", "operation", "error_code", "retryable",
+            "terminal",
+        }
+        if (set(event) != required or isinstance(event.get("schema_version"), bool)
+                or event.get("schema_version") != 1):
+            raise ProgressEventRejected("invalid_progress_event_shape")
+        safe_id = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+        job_id, run_id = str(event.get("job_id") or ""), str(event.get("run_id") or "")
+        trace_id, event_id = str(event.get("trace_id") or ""), str(event.get("event_id") or "")
+        if not all(safe_id.fullmatch(value) for value in (job_id, run_id, trace_id, event_id)):
+            raise ProgressEventRejected("invalid_progress_identity")
+        seq = event.get("event_seq")
+        if isinstance(seq, bool) or not isinstance(seq, int) or seq < 1:
+            raise ProgressEventRejected("invalid_progress_sequence")
+        emitted_at = event.get("emitted_at")
+        if (isinstance(emitted_at, bool) or not isinstance(emitted_at, (int, float))
+                or not math.isfinite(float(emitted_at)) or emitted_at <= 0):
+            raise ProgressEventRejected("invalid_progress_timestamp")
+        stage, phase, status = (str(event.get(key) or "") for key in ("stage_id", "phase", "status"))
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", stage):
+            raise ProgressEventRejected("invalid_progress_stage")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", phase):
+            raise ProgressEventRejected("invalid_progress_phase")
+        if status not in {"running", "completed", "failed", "cancelled", "waiting"}:
+            raise ProgressEventRejected("invalid_progress_status")
+        current, total = event.get("stage_current"), event.get("stage_total")
+        if (isinstance(current, bool) or not isinstance(current, int) or current < 0
+                or isinstance(total, bool) or not isinstance(total, int) or total < 0
+                or (total > 0 and current > total)):
+            raise ProgressEventRejected("invalid_progress_counter")
+        completed = event.get("completed_page_ids")
+        if (not isinstance(completed, list) or len(completed) > 4096
+                or any(not isinstance(item, str) or not item or len(item) > 120 for item in completed)
+                or len(set(completed)) != len(completed)):
+            raise ProgressEventRejected("invalid_completed_page_ids")
+        operation, error_code = event.get("operation"), event.get("error_code")
+        page = event.get("current_page")
+        if completed and (stage != "rendering" or operation != "render_page"):
+            raise ProgressEventRejected("page_completion_requires_final_render")
+        if page is not None and (isinstance(page, bool) or not isinstance(page, int) or page < 1):
+            raise ProgressEventRejected("invalid_current_page")
+        if not isinstance(operation, str) or len(operation) > 80:
+            raise ProgressEventRejected("invalid_progress_operation")
+        if not isinstance(error_code, str) or (error_code and not _REASON_CODE_RE.fullmatch(error_code)):
+            raise ProgressEventRejected("invalid_progress_error")
+        if not isinstance(event.get("retryable"), bool) or event.get("terminal") is not False:
+            raise ProgressEventRejected("invalid_progress_terminal_claim")
+
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise ProgressEventRejected("progress_job_not_found")
+            if str(row["run_id"] or "") != run_id:
+                raise ProgressEventRejected("progress_wrong_run")
+            if row["status"] in JobStatus.TERMINAL or bool(row["progress_terminal"]):
+                raise ProgressEventRejected("progress_after_terminal")
+            config = self._row_to_dict(row).get("configuration") or {}
+            expected_trace = str(config.get("trace_id") or config.get("translation_request_id") or job_id)
+            if trace_id != expected_trace:
+                raise ProgressEventRejected("progress_wrong_trace")
+            previous_seq = int(row["progress_received_seq"] or 0)
+            if seq <= previous_seq:
+                raise ProgressEventRejected("progress_duplicate_or_out_of_order")
+            if seq != previous_seq + 1:
+                raise ProgressEventRejected("progress_sequence_gap")
+            if event_id == str(row["progress_event_id"] or ""):
+                raise ProgressEventRejected("progress_duplicate_event_id")
+            prior_ids = json.loads(row["progress_completed_page_ids_json"] or "[]")
+            counters = json.loads(row["progress_stage_counters_json"] or "{}")
+            if not isinstance(prior_ids, list) or not isinstance(counters, dict):
+                raise ProgressEventRejected("corrupt_progress_snapshot")
+            previous = counters.get(stage) or {}
+            previous_current = int(previous.get("current") or 0)
+            previous_total = int(previous.get("total") or 0)
+            if current < previous_current or (previous_total and total and total < previous_total):
+                self._conn.execute(
+                    "UPDATE jobs SET progress_received_seq=?,progress_rejected_event_id=?,"
+                    "progress_rejected_reason=?,updated_at=? WHERE id=?",
+                    (seq, event_id, "progress_counter_regression", time.time(), job_id),
+                )
+                self._conn.execute("COMMIT")
+                raise ProgressEventRejected("progress_counter_regression", sequence_consumed=True)
+            if previous.get("status") in {"completed", "failed", "cancelled"} and status == "running":
+                self._conn.execute(
+                    "UPDATE jobs SET progress_received_seq=?,progress_rejected_event_id=?,"
+                    "progress_rejected_reason=?,updated_at=? WHERE id=?",
+                    (seq, event_id, "progress_stage_resurrected", time.time(), job_id),
+                )
+                self._conn.execute("COMMIT")
+                raise ProgressEventRejected("progress_stage_resurrected", sequence_consumed=True)
+            page_ids = list(dict.fromkeys([*prior_ids, *completed]))
+            timestamp = float(emitted_at)
+            counters[stage] = {
+                "current": current, "total": total, "status": status,
+                "updated_at": timestamp, "error_code": error_code, "event_seq": seq,
+            }
+            ranks = {
+                "created": 0, "downloading": 10, "download": 10, "validating": 20,
+                "validation": 20, "smart_split": 30, "ocr": 40, "classification": 50,
+                "translation": 60, "rendering": 70, "render": 70, "pdf": 80,
+                "reports": 90, "final": 100,
+            }
+            visible = str(row["stage"] or "created")
+            update_visible = ranks.get(stage, 1) >= ranks.get(visible, 1)
+            visible_stage = stage if update_visible else visible
+            visible_current = current if update_visible else int(row["progress_current"] or 0)
+            visible_total = total if update_visible else int(row["progress_total"] or 0)
+            visible_phase = phase if update_visible else str(row["progress_phase"] or "")
+            visible_status = status if update_visible else str(row["progress_status"] or "")
+            visible_page = page if update_visible else row["progress_current_page"]
+            visible_operation = operation if update_visible else str(row["progress_operation"] or "")
+            visible_error = error_code if update_visible else str(row["progress_error_code"] or "")
+            visible_retryable = int(event["retryable"]) if update_visible else int(row["progress_retryable"] or 0)
+            message = (error_code or (f"{stage} {current}/{total}" if total else stage)) if update_visible \
+                else str(row["progress_message"] or "")
+            stage_started = timestamp if row["stage"] != visible_stage else (row["stage_started_at"] or timestamp)
+            self._conn.execute(
+                "UPDATE jobs SET stage=?,progress_current=?,progress_total=?,progress_counter_stage=?,"
+                "progress_version=1,progress_last_event_seq=?,progress_received_seq=?,progress_trace_id=?,"
+                "progress_phase=?,progress_status=?,progress_completed_page_ids_json=?,"
+                "progress_completed_page_count=?,progress_current_page=?,progress_operation=?,"
+                "progress_error_code=?,progress_retryable=?,progress_terminal=0,progress_emitted_at=?,"
+                "progress_event_id=?,progress_stage_counters_json=?,progress_display_stage=?,"
+                "progress_message=?,stage_started_at=?,heartbeat_at=?,updated_at=? WHERE id=?",
+                (visible_stage, visible_current, visible_total, stage, seq, seq, trace_id, visible_phase,
+                 visible_status, json.dumps(page_ids, ensure_ascii=True), len(page_ids), visible_page,
+                 visible_operation, visible_error, visible_retryable, timestamp, event_id,
+                 json.dumps(counters, ensure_ascii=True), visible_stage, message, stage_started,
+                 timestamp, timestamp, job_id),
+            )
+            self._conn.execute("COMMIT")
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.execute("ROLLBACK")
+            raise
+        return self.get_job(job_id) or {}
+
     def update_progress(
         self,
         job_id: str,
@@ -1210,28 +1434,43 @@ class JobStore:
         total: int | None = None,
         message: str | None = None,
         counter_stage: str | None = None,
-    ) -> None:
+        run_id: str | None = None,
+    ) -> bool:
         now = time.time()
-        fields: dict[str, Any] = {"heartbeat_at": now}
+        assignments: dict[str, Any] = {"heartbeat_at": now}
         if stage is not None:
-            current_row = self._conn.execute(
-                "SELECT stage, stage_started_at FROM jobs WHERE id=?", (job_id,)
-            ).fetchone()
-            if current_row is not None and current_row["stage"] != stage:
-                fields["stage_started_at"] = now
-            elif current_row is not None and current_row["stage_started_at"] is None:
-                fields["stage_started_at"] = now
-        if stage is not None:
-            fields["stage"] = stage
+            assignments["stage"] = stage
+            assignments["stage_started_at"] = (
+                "CASE WHEN stage<>? OR stage_started_at IS NULL THEN ? ELSE stage_started_at END"
+            )
         if current is not None:
-            fields["progress_current"] = int(current)
+            assignments["progress_current"] = int(current)
         if total is not None:
-            fields["progress_total"] = int(total)
+            assignments["progress_total"] = int(total)
         if message is not None:
-            fields["progress_message"] = message
+            assignments["progress_message"] = message
         if counter_stage is not None:
-            fields["progress_counter_stage"] = counter_stage
-        self.update_fields(job_id, **fields)
+            assignments["progress_counter_stage"] = counter_stage
+        set_sql: list[str] = []
+        values: list[Any] = []
+        for key, value in assignments.items():
+            if key == "stage_started_at" and isinstance(value, str):
+                set_sql.append(f"{key}={value}")
+                values.extend((stage, now))
+            else:
+                set_sql.append(f"{key}=?")
+                values.append(value)
+        terminal_marks = ",".join("?" for _ in JobStatus.TERMINAL)
+        where = f"id=? AND status NOT IN ({terminal_marks}) AND progress_received_seq=0"
+        where_values: list[Any] = [job_id, *JobStatus.TERMINAL]
+        if run_id is not None:
+            where += " AND run_id=?"
+            where_values.append(str(run_id))
+        cur = self._conn.execute(
+            f"UPDATE jobs SET {','.join(set_sql)},updated_at=? WHERE {where}",
+            (*values, now, *where_values),
+        )
+        return cur.rowcount == 1
 
     def request_cancel(self, job_id: str) -> bool:
         row = self._conn.execute(
@@ -1503,6 +1742,10 @@ class JobStore:
                 "runner_pid": None,
                 "runner_create_time": None,
                 "cancel_requested": 0,
+                "progress_version": 1,
+                "progress_terminal": 1,
+                "progress_status": JobStatus.FINISHED,
+                "progress_emitted_at": now,
                 "updated_at": now,
             }
             columns = ", ".join(f"{key}=?" for key in fields)
@@ -1651,12 +1894,15 @@ class JobStore:
         now = time.time()
         cur = self._conn.execute(
             "UPDATE jobs SET status=?,stage=?,exit_code=?,finished_at=?,updated_at=?,"
+            "progress_version=1,progress_terminal=1,progress_status=?,progress_emitted_at=?,"
             "error_type=?,error_message=? WHERE id=? AND status=?",
             (
                 target,
                 "finished" if target == JobStatus.FINISHED else "failed",
                 0 if target == JobStatus.FINISHED else 1,
                 now,
+                now,
+                target,
                 now,
                 "" if target == JobStatus.FINISHED else "community_publish",
                 "" if target == JobStatus.FINISHED else "publish_failed",
@@ -1694,12 +1940,15 @@ class JobStore:
         now = time.time()
         cur = self._conn.execute(
             "UPDATE jobs SET status=?,stage=?,exit_code=?,finished_at=?,updated_at=?,"
+            "progress_version=1,progress_terminal=1,progress_status=?,progress_emitted_at=?,"
             "reason_code=?,recoverable=? WHERE id=? AND status=?",
             (
                 JobStatus.FINISHED,
                 "artifact_reconstruction_completed",
                 0,
                 now,
+                now,
+                JobStatus.FINISHED,
                 now,
                 "quality_passed",
                 0,

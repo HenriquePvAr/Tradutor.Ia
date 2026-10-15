@@ -27,6 +27,27 @@ def test_http_failure_is_recorded_and_does_not_escape(monkeypatch):
         deadline = time.monotonic() + 1.0
         while client.delivery_status["delivery_failures"] == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert client.delivery_status == {"delivery_failures": 1, "last_http_status": 404}
+        assert client.delivery_status == {
+            "delivery_failures": 1,
+            "last_http_status": 404,
+            "last_error_code": "HTTP_ERROR_404",
+        }
+    finally:
+        client.close()
+
+
+def test_connection_failure_is_classified_without_stopping_job(monkeypatch):
+    def failed_post(*args, **kwargs):
+        raise requests.ConnectionError("[WinError 10061] refused")
+
+    monkeypatch.setattr("yomu.observability.client.requests.post", failed_post)
+    client = ObservabilityClient("http://127.0.0.1:18778", timeout=0.1)
+    try:
+        assert client.emit("JOB_STARTED", job_id="job") is True
+        deadline = time.monotonic() + 1.0
+        while client.delivery_status["delivery_failures"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.delivery_status["last_error_code"] == "CONNECTION_REFUSED"
+        assert client.delivery_status["last_http_status"] is None
     finally:
         client.close()

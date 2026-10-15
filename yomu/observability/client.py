@@ -10,6 +10,7 @@ from typing import Any
 import requests
 
 from .events import build_event
+from yomu.runtime.transport_errors import classify_transport_error
 
 
 class ObservabilityClient:
@@ -23,6 +24,7 @@ class ObservabilityClient:
         self._lock = threading.Lock()
         self._delivery_failures = 0
         self._last_http_status: int | None = None
+        self._last_error_code: str | None = None
         self._thread = threading.Thread(target=self._run, name="yomu-observability", daemon=True)
         self._thread.start()
 
@@ -58,7 +60,8 @@ class ObservabilityClient:
         """Return bounded transport diagnostics without event or credential data."""
         with self._lock:
             return {"delivery_failures": self._delivery_failures,
-                    "last_http_status": self._last_http_status}
+                    "last_http_status": self._last_http_status,
+                    "last_error_code": self._last_error_code}
 
     def _run(self) -> None:
         while True:
@@ -74,8 +77,9 @@ class ObservabilityClient:
                 response.raise_for_status()
                 with self._lock:
                     self._last_http_status = int(response.status_code)
-            except requests.RequestException:
+            except requests.RequestException as exc:
                 # Observability is strictly best effort and must never stop a job.
                 with self._lock:
                     self._delivery_failures += 1
                     self._last_http_status = int(response.status_code) if response is not None else None
+                    self._last_error_code = classify_transport_error(exc)

@@ -253,6 +253,7 @@
     clip-path:inset(0 0 0 0);
   }
   .mh-control-badge{display:inline-flex;align-items:center;min-height:24px;padding:3px 8px;border:1px solid rgba(239,231,216,.16);border-radius:999px;color:var(--paper-dim);font-size:10px;letter-spacing:.04em;white-space:nowrap;background:rgba(12,12,15,.52)}
+  #updateAvailableBadge[hidden],#updaterAvailableRow[hidden],#updaterReleaseDateRow[hidden],#updaterReleaseNotes[hidden],#updaterInstallBtn[hidden],#updaterCancelBtn[hidden],#updaterError[hidden]{display:none!important}
   .mh-control-badge[data-state="active"]{border-color:rgba(47,122,107,.5);color:#b8e2d7}
   .mh-control-badge[data-state="revoked"],.mh-control-badge[data-state="expired"],.mh-control-badge[data-state="error"]{border-color:rgba(197,55,44,.6);color:#ffaaa0}
   .panel-view.leaving{display:block; position:absolute; inset:30px 42px auto; pointer-events:none; animation:panelOut .2s ease both;}

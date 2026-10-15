@@ -24,11 +24,15 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import yomu.runtime.process_tree as process_tree
-from yomu.runtime.job_store import JobStatus, JobStore, TransitionError
+from yomu.runtime.job_store import (
+    JobStatus, JobStore, ProgressEventRejected, TransitionError,
+)
+from yomu.runtime.progress_contract import PROGRESS_V1_PREFIX, parse_progress_v1_line
 from yomu.runtime.process_options import build_background_process_options
 from yomu.export.output_manifest import sanitize_source_url
 from yomu.auth.beta_license import LicenseState
@@ -717,33 +721,97 @@ def _profile_creation_is_authorized(
 class _OutputPump(threading.Thread):
     """Read the pipeline's output on a thread so cancellation never waits on it."""
 
-    def __init__(self, stream, log_handle, store: JobStore, job_id: str):
+    MAX_PENDING_PROGRESS_EVENTS = 256
+
+    def __init__(self, stream, log_handle, store: JobStore, job_id: str,
+                 *, run_id: str = "", trace_id: str = "", last_event_seq: int = 0):
         super().__init__(daemon=True)
         self.stream = stream
         self.log_handle = log_handle
         self.store = store
         self.job_id = job_id
+        self.run_id = str(run_id or "")
+        self.trace_id = str(trace_id or job_id)
+        self._next_event_seq = max(0, int(last_event_seq))
         self.snapshot = ProgressSnapshot()
-        self._lock = threading.Lock()
+        self._lock = threading.Condition()
         self.dirty = False
+        self.canonical_seen = False
+        self._pending_events: list[dict] = []
 
     def run(self) -> None:
-        for raw in iter(self.stream.readline, b""):
+        while True:
+            raw = self.stream.readline(8193)
+            if not raw:
+                break
+            if len(raw) > 8192:
+                while raw and not raw.endswith(b"\n"):
+                    raw = self.stream.readline(8193)
+                self.log_handle.write(
+                    f"{time.strftime('%H:%M:%S')} stdout line omitted (over limit)\n"
+                )
+                self.log_handle.flush()
+                continue
             line = raw.decode("utf-8", errors="replace").rstrip()
             masked = sanitize_diagnostic_text(line)
             timestamp = time.strftime("%H:%M:%S")
+            child_event = parse_progress_v1_line(masked)
+            if line.startswith(PROGRESS_V1_PREFIX):
+                if child_event is None:
+                    self.log_handle.write(f"{timestamp} progress.v1 event ignored (invalid)\n")
+                    self.log_handle.flush()
+                    continue
+                with self._lock:
+                    while len(self._pending_events) >= self.MAX_PENDING_PROGRESS_EVENTS:
+                        self._lock.wait(timeout=0.25)
+                    self.canonical_seen = True
+                    self._next_event_seq += 1
+                    self._pending_events.append({
+                        **child_event,
+                        "job_id": self.job_id,
+                        "run_id": self.run_id,
+                        "trace_id": self.trace_id,
+                        "event_id": uuid.uuid4().hex,
+                        "event_seq": self._next_event_seq,
+                        "emitted_at": time.time(),
+                    })
+                self.log_handle.write(
+                    f"{timestamp} progresso {child_event['stage_id']} "
+                    f"{child_event['stage_current']}/{child_event['stage_total']}\n"
+                )
+                self.log_handle.flush()
+                continue
             self.log_handle.write(f"{timestamp} {masked}\n")
             self.log_handle.flush()
             with self._lock:
+                if self.canonical_seen:
+                    continue
                 self.snapshot = parse_progress_line(masked, self.snapshot)
                 self.dirty = True
+
+    def drain_events(self) -> list[dict]:
+        with self._lock:
+            events, self._pending_events = self._pending_events, []
+            self._lock.notify_all()
+            return events
 
     def drain_progress(self) -> ProgressSnapshot | None:
         with self._lock:
             if not self.dirty:
                 return None
             self.dirty = False
+            if self.canonical_seen:
+                return None
             return ProgressSnapshot(**vars(self.snapshot))
+
+
+def _join_output_pump_and_drain(pump: _OutputPump, consume_events) -> None:
+    """Join a bounded pump without deadlocking when its queue fills before EOF."""
+    while pump.is_alive():
+        pump.join(timeout=0.05)
+        consume_events(pump.drain_events())
+    pump.join()
+    consume_events(pump.drain_events())
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -961,14 +1029,38 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                 return 2
             store.update_fields(job_id, runner_pid=os.getpid())
             _append_pipeline_trace(job, "PROCESS_CREATED", pid=proc.pid)
-            pump = _OutputPump(proc.stdout, handle, store, job_id)
+            progress_config = job.get("configuration") or {}
+            progress_trace_id = str(
+                progress_config.get("trace_id")
+                or progress_config.get("translation_request_id")
+                or job_id
+            )
+            pump = _OutputPump(
+                proc.stdout, handle, store, job_id,
+                run_id=str(job.get("run_id") or ""),
+                trace_id=progress_trace_id,
+                last_event_seq=int(job.get("progress_received_seq") or 0),
+            )
             pump.start()
+
+            def _consume_progress_events(events: list[dict]) -> None:
+                for event in events:
+                    try:
+                        store.apply_progress_event(event)
+                    except ProgressEventRejected as exc:
+                        handle.write(
+                            f"{time.strftime('%H:%M:%S')} progress.v1 event rejected "
+                            f"reason={str(exc)[:80]} sequence_consumed="
+                            f"{bool(exc.sequence_consumed)}\n"
+                        )
+                        handle.flush()
 
             cancelled = False
             interrupted = False
             progress_milestone = 0
             while proc.poll() is None:
                 time.sleep(min(HEARTBEAT_SECONDS, 1.0))
+                _consume_progress_events(pump.drain_events())
                 snap = pump.drain_progress()
                 if snap is not None:
                     store.update_progress(
@@ -1018,7 +1110,7 @@ def run_job(job_id: str, db_path: str, worker_id: str, log_path: str) -> int:
                     handle.flush()
                     _terminate(proc)
                     break
-            pump.join(timeout=2)
+            _join_output_pump_and_drain(pump, _consume_progress_events)
             return_code = proc.wait()
 
         result_code = _finalize(store, job_id, job, output_dir, return_code, cancelled,

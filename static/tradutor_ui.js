@@ -832,6 +832,11 @@
     source_not_ready: 'Não foi possível analisar a fonte.',
     source_analysis_failed: 'A análise da fonte falhou antes de reconhecer sua estrutura.',
     download_authorization_required: 'É necessária uma autorização de conteúdo antes de iniciar o download.',
+    workspace_policy_operation_denied: 'A política deste workspace não autoriza as operações solicitadas.',
+    workspace_policy_hash_mismatch: 'A política do workspace mudou. Revise as permissões e tente novamente.',
+    pipeline_intent_required: 'Confirme as operações desejadas antes de iniciar o processamento.',
+    invalid_requested_mode: 'O modo solicitado é inválido. Selecione um modo disponível.',
+    invalid_requested_scope: 'O escopo solicitado é inválido. Selecione um escopo disponível.',
     source_transport_failed: 'Não foi possível conectar à fonte após tentativas controladas.',
     source_unavailable: 'A página da fonte não está disponível.',
     source_redirect_blocked: 'A fonte tentou redirecionar para um endereço não permitido.',
@@ -9203,7 +9208,29 @@
 
   /* ---------- settings ---------- */
   function trueValue(value) { return String(value).toLowerCase() === 'true'; }
+  let remoteReadinessFetchedAt = 0;
+  async function refreshRemoteCleanReadiness(force = false) {
+    const status = $('#remoteCleanReadinessStatus');
+    const detail = $('#remoteCleanReadinessDetail');
+    if (!status || !detail || (!force && Date.now() - remoteReadinessFetchedAt < 30000)) return;
+    remoteReadinessFetchedAt = Date.now();
+    status.textContent = 'verificando…';
+    detail.textContent = 'A autenticação do Gemini não é inferida pela disponibilidade da interface.';
+    try {
+      const response = await fetch('/api/remote-clean/readiness', {cache: 'no-store'});
+      if (!response.ok) throw new Error('readiness unavailable');
+      const result = await response.json();
+      const ready = result?.ready_for_remote_dispatch === true;
+      status.textContent = ready ? 'API, fila, worker e schema disponíveis' : 'Remoto indisponível ou degradado';
+      const code = String(result?.remote_error_code || '');
+      detail.textContent = `Gemini: ${result?.gemini_ui_state || 'UNKNOWN'}; login/provedor não verificado${code ? ` · ${code}` : ''}.`;
+    } catch (_) {
+      status.textContent = 'Não foi possível verificar o remoto';
+      detail.textContent = 'A disponibilidade do navegador Gemini não comprova login nem prontidão para gerar.';
+    }
+  }
   function renderSettings(settings) {
+    refreshRemoteCleanReadiness();
     const apiReady = Boolean(settings.nvidia_configured);
     // Configuration is not connectivity. This used to paint the rail badge
     // "serviço conectado" straight from `nvidia_configured`, once, at bootstrap
@@ -9446,6 +9473,210 @@
       showToast(humanCommunityError(errorValue, 'Não foi possível restaurar configurações.'), 'error');
     }
   });
+
+  /* ---------- signed updater UI ---------- */
+  (function initUpdaterUI() {
+    const statusEl = $('#updaterStatus');
+    const installedEl = $('#updaterInstalledVersion');
+    const availableRow = $('#updaterAvailableRow');
+    const availableEl = $('#updaterAvailableVersion');
+    const releaseDateRow = $('#updaterReleaseDateRow');
+    const releaseDateEl = $('#updaterReleaseDate');
+    const notesEl = $('#updaterReleaseNotes');
+    const installBtn = $('#updaterInstallBtn');
+    const checkBtn = $('#updaterCheckBtn');
+    const cancelBtn = $('#updaterCancelBtn');
+    const errorEl = $('#updaterError');
+    const headerBadge = $('#updateAvailableBadge');
+    if (!statusEl || !checkBtn || !installBtn) return;
+
+    let downloadToken = '';
+    let handoffToken = '';
+    let pollTimer = 0;
+
+    function setUpdaterStatus(text, state = 'neutral') {
+      statusEl.textContent = text;
+      statusEl.className = `settings-status-pill updater-${state}`;
+    }
+
+    function stopPolling() {
+      if (pollTimer) window.clearTimeout(pollTimer);
+      pollTimer = 0;
+    }
+
+    function resetDownloadControls() {
+      stopPolling();
+      downloadToken = '';
+      handoffToken = '';
+      installBtn.disabled = false;
+      installBtn.textContent = 'Baixar atualização';
+      installBtn.hidden = true;
+      cancelBtn.hidden = true;
+    }
+
+    async function checkForUpdate() {
+      checkBtn.disabled = true;
+      if (errorEl) errorEl.hidden = true;
+      setUpdaterStatus('Verificando atualização assinada…');
+      try {
+        const data = await api('/api/update/manifest');
+        if (installedEl) installedEl.textContent = data.version || '—';
+        if (data.state === 'not_configured') {
+          resetDownloadControls();
+          if (availableRow) availableRow.hidden = true;
+          if (releaseDateRow) releaseDateRow.hidden = true;
+          if (notesEl) notesEl.hidden = true;
+          if (headerBadge) headerBadge.hidden = true;
+          setUpdaterStatus('Canal de atualização não configurado.');
+          return;
+        }
+        if (data.state === 'error') throw new Error('manifest_unavailable');
+        if (data.state === 'up_to_date') {
+          resetDownloadControls();
+          if (availableRow) availableRow.hidden = true;
+          if (releaseDateRow) releaseDateRow.hidden = true;
+          if (notesEl) notesEl.hidden = true;
+          if (headerBadge) headerBadge.hidden = true;
+          setUpdaterStatus('Você está na versão mais recente.', 'ok');
+          return;
+        }
+        if (!['update_available', 'mandatory'].includes(data.state)) {
+          throw new Error('manifest_state_invalid');
+        }
+        if (availableEl) availableEl.textContent = data.available_version || '—';
+        if (availableRow) availableRow.hidden = false;
+        if (data.published_at && releaseDateEl) {
+          const date = new Date(data.published_at);
+          releaseDateEl.textContent = Number.isNaN(date.getTime())
+            ? String(data.published_at) : date.toLocaleDateString('pt-BR');
+          if (releaseDateRow) releaseDateRow.hidden = false;
+        } else if (releaseDateRow) releaseDateRow.hidden = true;
+        if (notesEl) {
+          notesEl.textContent = String(data.release_notes || '');
+          notesEl.hidden = !data.release_notes;
+        }
+        const mandatory = data.state === 'mandatory' || data.mandatory === true;
+        setUpdaterStatus(mandatory
+          ? `Atualização obrigatória disponível: ${data.available_version || ''}`
+          : `Atualização disponível: ${data.available_version || ''}`,
+        mandatory ? 'warn' : 'ok');
+        installBtn.hidden = data.can_install !== true;
+        installBtn.disabled = false;
+        installBtn.textContent = 'Baixar atualização';
+        if (headerBadge) headerBadge.hidden = false;
+      } catch (_) {
+        setUpdaterStatus('Não foi possível verificar atualizações.', 'warn');
+        if (errorEl) {
+          errorEl.textContent = 'Verifique sua conexão e tente novamente.';
+          errorEl.hidden = false;
+        }
+      } finally {
+        checkBtn.disabled = false;
+      }
+    }
+
+    async function pollDownload() {
+      if (!downloadToken) return;
+      try {
+        const data = await api(`/api/update/download/status?token=${encodeURIComponent(downloadToken)}`);
+        if (data.state === 'starting' || data.state === 'downloading' || data.state === 'cancelling') {
+          const expected = Number(data.expected || 0);
+          const received = Number(data.received || 0);
+          const percent = expected > 0 ? ` ${Math.min(100, Math.floor(received * 100 / expected))}%` : '';
+          setUpdaterStatus(`Baixando atualização${percent}…`);
+          pollTimer = window.setTimeout(pollDownload, 800);
+          return;
+        }
+        if (data.state === 'ready_to_install' && typeof data.handoff_token === 'string' && data.handoff_token) {
+          handoffToken = data.handoff_token;
+          downloadToken = '';
+          if (cancelBtn) cancelBtn.hidden = true;
+          installBtn.hidden = false;
+          installBtn.disabled = false;
+          installBtn.textContent = 'Instalar e reiniciar';
+          setUpdaterStatus('Atualização verificada e pronta para instalar.', 'ok');
+          return;
+        }
+        resetDownloadControls();
+        setUpdaterStatus(data.state === 'cancelled'
+          ? 'Download cancelado.' : 'Não foi possível preparar a atualização.', 'warn');
+        if (data.state !== 'cancelled' && errorEl) {
+          errorEl.textContent = 'Tente verificar e baixar novamente.';
+          errorEl.hidden = false;
+        }
+      } catch (_) {
+        resetDownloadControls();
+        setUpdaterStatus('Não foi possível consultar o download.', 'warn');
+        if (errorEl) {
+          errorEl.textContent = 'Verifique a conexão e tente novamente.';
+          errorEl.hidden = false;
+        }
+      }
+    }
+
+    async function startDownload() {
+      installBtn.disabled = true;
+      if (errorEl) errorEl.hidden = true;
+      setUpdaterStatus('Iniciando download verificado…');
+      try {
+        const data = await api('/api/update/download', {method: 'POST', body: JSON.stringify({})});
+        if (data.state !== 'downloading' || typeof data.download_token !== 'string' || !data.download_token) {
+          throw new Error('download_not_started');
+        }
+        downloadToken = data.download_token;
+        installBtn.hidden = true;
+        installBtn.disabled = false;
+        if (cancelBtn) cancelBtn.hidden = false;
+        setUpdaterStatus('Download iniciado.');
+        pollTimer = window.setTimeout(pollDownload, 500);
+      } catch (_) {
+        resetDownloadControls();
+        setUpdaterStatus('Não foi possível iniciar o download.', 'warn');
+        if (errorEl) {
+          errorEl.textContent = 'Confira se há uma atualização instalável e tente novamente.';
+          errorEl.hidden = false;
+        }
+      }
+    }
+
+    checkBtn.addEventListener('click', checkForUpdate);
+    if (headerBadge) headerBadge.addEventListener('click', () => {
+      activateTab('settings');
+      $('#updaterPanel')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    });
+    installBtn.addEventListener('click', async () => {
+      if (!handoffToken) return startDownload();
+      installBtn.disabled = true;
+      setUpdaterStatus('Iniciando instalador verificado…');
+      try {
+        await api('/api/update/install', {
+          method: 'POST', body: JSON.stringify({handoff_token: handoffToken}),
+        });
+        setUpdaterStatus('Instalador iniciado. O aplicativo será reiniciado.', 'ok');
+      } catch (_) {
+        installBtn.disabled = false;
+        setUpdaterStatus('Não foi possível iniciar o instalador.', 'warn');
+        if (errorEl) {
+          errorEl.textContent = 'O download permanece verificado. Tente instalar novamente.';
+          errorEl.hidden = false;
+        }
+      }
+    });
+    if (cancelBtn) cancelBtn.addEventListener('click', async () => {
+      if (!downloadToken) return;
+      cancelBtn.disabled = true;
+      try {
+        await api(`/api/update/download/cancel?token=${encodeURIComponent(downloadToken)}`, {method: 'POST'});
+        setUpdaterStatus('Cancelando download…');
+      } catch (_) {
+        setUpdaterStatus('Não foi possível cancelar o download.', 'warn');
+      } finally {
+        cancelBtn.disabled = false;
+      }
+    });
+
+    window.setTimeout(checkForUpdate, 3000);
+  })();
 
   /* ---------- copy ---------- */
   $('#copyRepo')?.addEventListener('click', async event => {

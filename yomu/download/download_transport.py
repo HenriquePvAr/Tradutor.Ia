@@ -27,10 +27,11 @@ import requests
 from yomu.download.sources.chapter_source import (
     ALLOWED_IMAGE_MIME, CHALLENGE_REQUIRED, INCOMPLETE_DOWNLOAD,
     INVALID_IMAGE_RESPONSE, SOURCE_ACCESS_DENIED, SOURCE_ANALYSIS_FAILED,
-    SOURCE_NAVIGATION_TIMEOUT, SOURCE_NOT_READY, SOURCE_RATE_LIMITED,
+    SOURCE_NAVIGATION_TIMEOUT, SOURCE_NOT_READY, SOURCE_RATE_LIMITED, UNSUPPORTED_SOURCE,
     SourceError, host_of, raw_host_of, looks_like_challenge,
 )
 from yomu.download.sources.chapter_source import ChallengeRequired
+from yomu.download.pinned_requests import PinnedRequestError, install_pinned_requests, pinned_request
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -246,6 +247,10 @@ class RequestsTransport:
         # must obey this adapter's URL and redirect validation rather than ambient config.
         if session is None and hasattr(self._session, "trust_env"):
             self._session.trust_env = False
+        try:
+            install_pinned_requests(self._session)
+        except PinnedRequestError as exc:
+            raise SourceError(SOURCE_NOT_READY, exc.reason) from None
         # Redirects are followed manually so each hop can be revalidated.
         self._session.max_redirects = self.limits.max_redirects
         self._comix_user_agent = ""
@@ -316,9 +321,13 @@ class RequestsTransport:
         current = url
         for _ in range(self.limits.max_redirects + 1):
             self._mark("request", before_request=False, request_started=True)
-            response = self._session.get(
-                current, headers=headers, timeout=self.limits.timeout,
-                stream=True, allow_redirects=False)
+            try:
+                with pinned_request(self._session, current):
+                    response = self._session.get(
+                        current, headers=headers, timeout=self.limits.timeout,
+                        stream=True, allow_redirects=False)
+            except PinnedRequestError as exc:
+                raise SourceError(UNSUPPORTED_SOURCE, exc.reason) from None
             self._mark(
                 "response", before_request=False, request_started=True,
                 response_received=True)

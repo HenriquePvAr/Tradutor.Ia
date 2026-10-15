@@ -921,6 +921,15 @@ class UiBridge:
             "progress_total": int(job.get("progress_total") or 0),
             "progress_message": sanitize_diagnostic_text(job.get("progress_message") or "")[:300],
             "progress_counter_stage": str(job.get("progress_counter_stage") or ""),
+            "progress_display_stage": str(job.get("progress_display_stage") or ""),
+            "progress_version": int(job.get("progress_version") or 0),
+            "progress_last_event_seq": int(job.get("progress_last_event_seq") or 0),
+            "progress_received_seq": int(job.get("progress_received_seq") or 0),
+            "progress_trace_id": str(job.get("progress_trace_id") or ""),
+            "progress_stage_counters": dict(job.get("progress_stage_counters") or {}),
+            "progress_completed_page_ids": list(job.get("progress_completed_page_ids") or []),
+            "progress_completed_page_count": int(job.get("progress_completed_page_count") or 0),
+            "progress_terminal": bool(job.get("progress_terminal") or False),
             "error_message": sanitize_diagnostic_text(job.get("error_message") or ""),
             "source_analysis": job.get("source_analysis") or {},
             "source_selection": job.get("source_selection") or {},
@@ -4838,6 +4847,24 @@ class UiBridge:
         latest_operational_job = self._latest_operational_job_for_owner(owner_id) if owner_id else self._latest_operational_job()
         latest_record = record or self._job_record(latest_operational_job or latest_result_job)
         latest_result_record = self._job_record(latest_result_job)
+        progress_record = present_job
+        if progress_record is None and not standalone_source_ready:
+            progress_record = latest_operational_job or latest_result_job
+            if progress_record is not None:
+                stage = str(progress_record.get("stage") or stage)
+                current = int(progress_record.get("progress_current") or 0)
+                total = int(progress_record.get("progress_total") or 0)
+                counter_stage = str(progress_record.get("progress_counter_stage") or "")
+        if progress_record is not None and int(progress_record.get("progress_version") or 0) >= 1:
+            stage_counters = progress_record.get("progress_stage_counters") or {}
+            if bool(progress_record.get("progress_terminal")) and isinstance(stage_counters, dict):
+                stage = str(progress_record.get("progress_display_stage") or stage)
+            canonical_counter = stage_counters.get(stage) if isinstance(stage_counters, dict) else None
+            if isinstance(canonical_counter, dict):
+                current = max(0, int(canonical_counter.get("current") or 0))
+                total = max(0, int(canonical_counter.get("total") or 0))
+                counter_stage = stage
+            stage_fraction = (current / total) if current and total else None
         # A historical review never belongs to an active/staging operation. Returning it
         # here made a new source analysis render beside another chapter's PDF and metrics.
         quality_review = (
@@ -4884,6 +4911,21 @@ class UiBridge:
                 "stale": stale_updates,
                 "stale_label": "Sem atualização recente" if stale_updates else "",
                 "live": live,
+                "version": int((progress_record or {}).get("progress_version") or 0),
+                "last_event_seq": int((progress_record or {}).get("progress_last_event_seq") or 0),
+                "received_seq": int((progress_record or {}).get("progress_received_seq") or 0),
+                "trace_id": str((progress_record or {}).get("progress_trace_id") or ""),
+                "phase": str((progress_record or {}).get("progress_phase") or ""),
+                "status": str((progress_record or {}).get("progress_status") or ""),
+                "completed_page_ids": list((progress_record or {}).get("progress_completed_page_ids") or []),
+                "completed_page_count": int((progress_record or {}).get("progress_completed_page_count") or 0),
+                "stage_counters": dict((progress_record or {}).get("progress_stage_counters") or {}),
+                "current_page": (progress_record or {}).get("progress_current_page"),
+                "operation": str((progress_record or {}).get("progress_operation") or ""),
+                "error_code": str((progress_record or {}).get("progress_error_code") or ""),
+                "retryable": bool((progress_record or {}).get("progress_retryable") or False),
+                "terminal": bool((progress_record or {}).get("progress_terminal") or False),
+                "emitted_at": (progress_record or {}).get("progress_emitted_at"),
             },
             "logs": logs["entries"],
             "log_cursor": logs["cursor"],

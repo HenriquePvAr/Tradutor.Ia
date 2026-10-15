@@ -98,6 +98,7 @@
     </div>
     <div class="mh-right">
       <span class="mh-version" id="appStatus" hidden>pronto</span>
+      <button type="button" class="mh-control-badge update-badge" id="updateAvailableBadge" hidden aria-label="Atualização disponível">↑ Atualizar</button>
       <span class="mh-control-badge" id="controlPlaneStatus" hidden>licença aguardando</span>
       <button type="button" class="mh-control-badge" id="controlPlaneWallet"><svg class="ui-key-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-4 4 2 2m-5 1 2 2"/></svg>0 YK</button>
       <button type="button" class="mh-control-badge" id="controlPlaneRank">Leitor Iniciante · 0 XP</button>
@@ -1105,6 +1106,7 @@
 
       <div class="settings-friendly-grid">
         <div class="panel setting-summary" id="settingServiceSummary" hidden><div class="setting-summary-icon"></div><div><span>Serviço de tradução</span><strong id="settingServiceFriendly">verificando…</strong></div></div>
+        <div class="panel setting-summary" id="remoteCleanReadiness" aria-live="polite"><div class="setting-summary-icon"></div><div><span>Worker remoto de limpeza</span><strong id="remoteCleanReadinessStatus">verificando…</strong><small id="remoteCleanReadinessDetail">A autenticação do Gemini não é inferida pela disponibilidade da interface.</small></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Modo padrão</span><strong id="settingModeFriendly">Qualidade</strong></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Leitura de texto</span><strong id="settingReadingFriendly">verificando…</strong></div></div>
         <div class="panel setting-summary"><div class="setting-summary-icon"></div><div><span>Processamento paralelo</span><strong id="settingParallelFriendly">verificando…</strong></div></div>
@@ -1183,6 +1185,20 @@
           <p class="settings-help" id="passiveAdsDescription">Exibe anúncios nas telas compatíveis e permite utilizar YK diários. YK permanentes continuam disponíveis mesmo com anúncios desativados.</p>
           <div class="settings-status-pill" id="passiveAdsStatus" aria-live="polite">Desativado</div>
           <div class="settings-help" id="passiveAdsBalance">YK utilizáveis agora: —</div>
+        </div>
+        <div class="panel settings-section" id="updaterPanel">
+          <div class="panel-label">Atualizações</div>
+          <div class="kv-row"><span class="kv-key">Versão instalada</span><span class="kv-val" id="updaterInstalledVersion">—</span></div>
+          <div class="kv-row" id="updaterAvailableRow" hidden><span class="kv-key">Versão disponível</span><span class="kv-val" id="updaterAvailableVersion">—</span></div>
+          <div class="kv-row" id="updaterReleaseDateRow" hidden><span class="kv-key">Publicada em</span><span class="kv-val" id="updaterReleaseDate">—</span></div>
+          <p class="settings-help" id="updaterReleaseNotes" hidden></p>
+          <div class="settings-status-pill" id="updaterStatus" aria-live="polite">Verificação manual disponível</div>
+          <div class="cta-row" style="margin-top:12px">
+            <button type="button" class="btn-ghost" id="updaterCheckBtn">Verificar atualizações</button>
+            <button type="button" class="btn-primary" id="updaterInstallBtn" hidden>Baixar atualização</button>
+            <button type="button" class="btn-ghost" id="updaterCancelBtn" hidden>Cancelar download</button>
+          </div>
+          <div class="publication-error" id="updaterError" hidden></div>
         </div>
         <div class="panel settings-section about-simple">
           <div class="panel-label" data-i18n="settings.about">Sobre</div>

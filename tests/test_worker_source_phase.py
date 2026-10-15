@@ -236,6 +236,59 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared["id"], job["id"])
 
+    def test_permanent_workspace_resolution_failure_terminalizes_ready_job(self):
+        job = self.queued_url_job()
+        worker = _Worker(self.store)
+
+        def mark_ready(*_args, **_kwargs):
+            self.store.transition(
+                job["id"], JobStatus.SOURCE_ANALYSIS_READY,
+                stage="source_analysis_ready")
+            return SourceAnalysisPhaseResult(
+                outcome="source_analysis_ready", job_id=job["id"],
+                status=JobStatus.SOURCE_ANALYSIS_READY)
+
+        with (
+            mock.patch("yomu.review.source_analysis_phase.apply_source_analysis",
+                       side_effect=mark_ready),
+            mock.patch.object(
+                SourceReadinessStore, "resolve_ready_pipeline",
+                return_value={"ok": False, "status": JobStatus.SOURCE_ANALYSIS_READY,
+                              "reason_code": "workspace_policy_operation_denied"}),
+        ):
+            self.assertIsNone(worker._apply_phase(job["id"])(FakeAnalysis(specific_outcome())))
+
+        row = self.store.get_job(job["id"])
+        self.assertEqual(row["status"], JobStatus.FAILED)
+        self.assertEqual(row["stage"], "source_analysis_ready")
+        self.assertEqual(row["reason_code"], "workspace_policy_operation_denied")
+        self.assertEqual(row["error_type"], "workspace_policy")
+
+    def test_transient_workspace_resolution_failure_remains_fail_closed_not_failed(self):
+        job = self.queued_url_job()
+        worker = _Worker(self.store)
+
+        def mark_ready(*_args, **_kwargs):
+            self.store.transition(
+                job["id"], JobStatus.SOURCE_ANALYSIS_READY,
+                stage="source_analysis_ready")
+            return SourceAnalysisPhaseResult(
+                outcome="source_analysis_ready", job_id=job["id"],
+                status=JobStatus.SOURCE_ANALYSIS_READY)
+
+        with (
+            mock.patch("yomu.review.source_analysis_phase.apply_source_analysis",
+                       side_effect=mark_ready),
+            mock.patch.object(
+                SourceReadinessStore, "resolve_ready_pipeline",
+                return_value={"ok": False, "status": JobStatus.SOURCE_ANALYSIS_READY,
+                              "reason_code": "source_analysis_not_ready"}),
+        ):
+            self.assertIsNone(worker._apply_phase(job["id"])(FakeAnalysis(specific_outcome())))
+
+        self.assertEqual(
+            self.store.get_job(job["id"])["status"], JobStatus.SOURCE_ANALYSIS_READY)
+
     def test_source_phase_is_visible_in_the_per_job_log_before_runner_spawn(self):
         class LoggingWorker(_Worker):
             def _analyze_source(self, url, *, cancel_check=None, on_progress=None):
@@ -258,7 +311,7 @@ class WorkerPhaseTests(unittest.TestCase):
         self.assertIn("[browser_loading]", text)
         self.assertNotIn(URL, text)
 
-    def test_automatic_selection_is_persisted_but_runner_waits_for_authorization(self):
+    def test_automatic_selection_is_persisted_but_fails_without_user_pipeline_intent(self):
         job = self.queued_url_job(
             configuration_json='{"job_type":"translation","mode":"fast","full":false,'
                                '"max_images":2,"force":true,"use_cache":false,'
@@ -271,7 +324,9 @@ class WorkerPhaseTests(unittest.TestCase):
 
         self.assertIsNone(prepared)
         row = self.store.get_job(job["id"])
-        self.assertEqual(row["status"], JobStatus.SOURCE_ANALYSIS_READY)
+        self.assertEqual(row["status"], JobStatus.FAILED)
+        self.assertEqual(row["reason_code"], "pipeline_intent_required")
+        self.assertEqual(worker.spawns, 0)
         self.assertEqual(row["configuration"]["max_images"], 2)
         self.assertEqual(len(row["source_selection"]["candidate_ids"]), 3)
         self.assertIn("--max-images", row["command"])

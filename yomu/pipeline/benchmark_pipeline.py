@@ -60,6 +60,7 @@ import yomu.ocr.ocr_line_provenance as ocr_line_provenance
 import yomu.translation.semantic_fidelity as semantic_fidelity
 import yomu.ocr.source_completeness as source_completeness
 import yomu.pipeline.pipeline_telemetry as pipeline_telemetry
+from yomu.runtime.progress_contract import emit_progress_v1
 from yomu.ocr.ocr_parallel import detect_ocr_jobs
 from yomu.export.page_manifest import to_image_entry
 from yomu.ocr.splitting.smart_split_incremental import IncrementalSmartSplitter
@@ -146,6 +147,7 @@ def process_pre_translation_pages(
     ocr_lang,
     fast_ocr_budget,
     errors_folder,
+    progress_callback=None,
 ):
     """Run page-local pre-translation work with a bounded executor.
 
@@ -179,10 +181,21 @@ def process_pre_translation_pages(
         return result
 
     if workers == 1:
-        return [run_one(state) for state in page_states]
+        results = []
+        for state in page_states:
+            result = run_one(state)
+            results.append(result)
+            if progress_callback is not None:
+                progress_callback(result)
+        return results
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pre-page") as executor:
         futures = [executor.submit(run_one, state) for state in page_states]
-        results = [future.result() for future in as_completed(futures)]
+        results = []
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
+            if progress_callback is not None:
+                progress_callback(result)
     return sorted(results, key=lambda result: result.page_index)
 
 
@@ -2598,6 +2611,10 @@ def run_benchmark(args):
         _write_progress(progress_path, run_signature, args, len(image_paths), page_states)
 
     resource_monitor.set_stage("ocr")
+    emit_progress_v1(
+        stage_id="ocr", phase="recognition", status="running",
+        stage_current=0, stage_total=len(ocr_jobs),
+    )
     print(
         f"OCR_STAGE_STARTED input_count={len(ocr_jobs)} engine={config.OCR_ENGINE}",
         flush=True,
@@ -2634,6 +2651,11 @@ def run_benchmark(args):
             )
         else:
             ocr_completed_positions.add(position)
+            emit_progress_v1(
+                stage_id="ocr", phase="recognition", status="running",
+                stage_current=len(ocr_completed_positions), stage_total=len(ocr_jobs),
+                current_page=index or None, operation="recognize_page",
+            )
             elapsed = float(item.get("elapsed_seconds", 0.0) or 0.0)
             metadata = item.get("ocr_metadata") or {}
             final_engine = metadata.get("final_engine") or engine_name
@@ -2679,6 +2701,10 @@ def run_benchmark(args):
         )
     if cancel_event.is_set():
         raise PipelineCancelled("user_cancelled")
+    emit_progress_v1(
+        stage_id="ocr", phase="recognition", status="completed",
+        stage_current=len(ocr_results), stage_total=len(ocr_jobs),
+    )
     stage_seconds["ocr"] = time.perf_counter() - ocr_wall_started
     _record_perf_event("ocr", "ocr", int((ocr_wall_started - started) * 1_000_000_000), int((time.perf_counter() - started) * 1_000_000_000))
     counters["ocr_runs"] = len(ocr_jobs)
@@ -2720,6 +2746,10 @@ def run_benchmark(args):
     analyzable_states = []
     pre_page_results = []
     resource_monitor.set_stage("classification")
+    emit_progress_v1(
+        stage_id="classification", phase="analysis", status="running",
+        stage_current=0, stage_total=len(page_states),
+    )
     run_recorder = ocr_line_provenance.active()
     run_profiler = get_active_profiler()
     page_state_by_index = {
@@ -2728,12 +2758,22 @@ def run_benchmark(args):
     }
     pre_translation_wall_started = time.perf_counter()
     configured_page_workers = _pipeline_page_workers()
+    classification_progress = {"current": 0}
+
+    def _emit_classification_progress(_result):
+        classification_progress["current"] += 1
+        emit_progress_v1(
+            stage_id="classification", phase="analysis", status="running",
+            stage_current=classification_progress["current"], stage_total=len(page_states),
+        )
+
     page_results = process_pre_translation_pages(
         page_states,
         image_paths=image_paths,
         ocr_lang=ocr_lang,
         fast_ocr_budget=fast_ocr_budget,
         errors_folder=errors_folder,
+        progress_callback=_emit_classification_progress,
     )
     pre_translation_wall_seconds = time.perf_counter() - pre_translation_wall_started
     stage_seconds["pre_translation"] = pre_translation_wall_seconds
@@ -2759,6 +2799,10 @@ def run_benchmark(args):
         if page_result.analyzable:
             translation_targets.extend(page_result.translation_items)
             analyzable_states.append(page_result.page_state)
+    emit_progress_v1(
+        stage_id="classification", phase="analysis", status="completed",
+        stage_current=len(page_results), stage_total=len(page_states),
+    )
     all_analyzed_groups = [
         group
         for state in analyzable_states
@@ -2805,6 +2849,11 @@ def run_benchmark(args):
         )
 
     resource_monitor.set_stage("translation")
+    if translation_enabled:
+        emit_progress_v1(
+            stage_id="translation", phase="translation", status="running",
+            stage_current=0, stage_total=len(translation_targets),
+        )
     _emit_pipeline_event("GLOBAL_TRANSLATION_BARRIER_ENTER", page_count=len(page_states))
     # Stage identity is provider-neutral: which provider actually ran is recorded
     # in provenance, not baked into a label the UI mirrors.
@@ -2963,6 +3012,11 @@ def run_benchmark(args):
         settlement = commit_translation()
         translator_stats["wallet_commit_state"] = str(settlement.get("state") or "unknown")
         translator_stats["wallet_commit_net_yk"] = int(settlement.get("net_yk") or 0)
+    if translation_enabled:
+        emit_progress_v1(
+            stage_id="translation", phase="translation", status="completed",
+            stage_current=len(translations or []), stage_total=len(translation_targets),
+        )
 
     # Output-plan gates. Empty for legacy/automatic/professional jobs -> full pipeline,
     # identical behaviour. Only a plan-driven job (clean-only, translate+clean, ...) narrows
@@ -3040,6 +3094,15 @@ def run_benchmark(args):
             pages_done=payload["completed_pages"],
             pages_total=payload["total_pages"],
         ),
+    )
+    rendered_page_ids = {
+        int(state["index"]) for state in page_states
+        if state.get("status") == "completed"
+        and _reconstructed_page_is_valid(state.get("output_path"), state.get("image_path", ""))
+    }
+    emit_progress_v1(
+        stage_id="rendering", phase="render", status="running",
+        stage_current=len(rendered_page_ids), stage_total=len(image_paths),
     )
     post_parallel_results = None
     if _pipeline_page_workers() == 2:
@@ -3231,6 +3294,15 @@ def run_benchmark(args):
             ),),
                 terminal=False,
             )
+            if _reconstructed_page_is_valid(state.get("output_path"), state.get("image_path", "")):
+                page_index = int(state["index"])
+                rendered_page_ids.add(page_index)
+                emit_progress_v1(
+                    stage_id="rendering", phase="render", status="running",
+                    stage_current=len(rendered_page_ids), stage_total=len(image_paths),
+                    completed_page_ids=[f"page:{page_index}"],
+                    current_page=page_index, operation="render_page",
+                )
             print(
                 f"Pagina {state['index']}/{len(image_paths)}: concluida",
                 flush=True,
@@ -3263,6 +3335,15 @@ def run_benchmark(args):
                 total_units=1,
                 code="page_completed_with_error",
             ),), terminal=False)
+            if _reconstructed_page_is_valid(state.get("output_path"), state.get("image_path", "")):
+                page_index = int(state["index"])
+                rendered_page_ids.add(page_index)
+                emit_progress_v1(
+                    stage_id="rendering", phase="render", status="running",
+                    stage_current=len(rendered_page_ids), stage_total=len(image_paths),
+                    completed_page_ids=[f"page:{page_index}"],
+                    current_page=page_index, operation="render_page",
+                )
         finally:
             state.pop("original_bgr", None)
             state.pop("candidates", None)
@@ -3291,6 +3372,13 @@ def run_benchmark(args):
                 if isinstance(elapsed, (int, float)):
                     stage_seconds[name] += float(elapsed)
             render_progress.consume((PageProgressEvent(page_index=result.page_index, stage="rendering", completed_units=1, total_units=1, code="page_completed"),), terminal=False)
+            rendered_page_ids.add(int(result.page_index))
+            emit_progress_v1(
+                stage_id="rendering", phase="render", status="running",
+                stage_current=len(rendered_page_ids), stage_total=len(image_paths),
+                completed_page_ids=[f"page:{int(result.page_index)}"],
+                current_page=int(result.page_index), operation="render_page",
+            )
 
     # Rendering still operates on the page-local dictionaries.  Publish their
     # final page results back to the aggregate list before PDF aggregation.
@@ -3309,6 +3397,10 @@ def run_benchmark(args):
     ]
     if not completed_states:
         raise RuntimeError("Nenhuma pagina valida foi produzida.")
+    emit_progress_v1(
+        stage_id="rendering", phase="render", status="completed",
+        stage_current=len(rendered_page_ids), stage_total=len(image_paths),
+    )
 
     output_profile = _resolve_output_profile(args)
     artifact_export = _persist_canonical_artifacts(

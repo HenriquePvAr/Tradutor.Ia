@@ -65,10 +65,11 @@ class _Response:
         self.closed = True
 
 
-class _Session:
+class _Session(requests.Session):
     """Records requests and replays scripted responses."""
 
     def __init__(self, responses):
+        super().__init__()
         self._responses = list(responses)
         self.requests: list[str] = []
         self.cookies = mock.MagicMock()
@@ -79,7 +80,7 @@ class _Session:
         return self._responses.pop(0)
 
     def close(self):
-        pass
+        super().close()
 
 
 def adapter():
