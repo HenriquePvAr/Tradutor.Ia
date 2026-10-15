@@ -5,6 +5,23 @@
     integratedThrough: "candidate includes progress.v1, pinned Requests transport, remote readiness, PSD compatibility, strict auth-envelope validation, owner-scoped source-analysis traces and Comix child heartbeat/hash/sanitized diagnostics; certificate persistence and visual-recovery client/server remain deferred",
     asOf: "2026-10-15",
     latestVerification: "2026-10-15 tested runtime snapshot 9e8bdfa, documentation closeout HEAD 62f9cca: Python 6011 passed, 141 skipped, 2 xfailed, 736 subtests; Node 48/48; focused branch comparisons 201 passed + 15 subtests. Onedir build 90DB867E5A5E90BA3CF6AF03165997B0D1F0CB4B2EC5D63A3C7FE6AA13281438 archive-inspected; internal RapidOCR selftest exit 0. Physical UI, child, provider, VPS, Discord and Clean remain unproven. No push/merge.",
+    objectives: {
+      "ARCH-01": "Maintain one canonical runtime and reconcile proven implementations without duplicating pipelines.",
+      "JOB-01": "Keep persisted job state authoritative and progress accurate across worker and UI.",
+      "SRC-01": "Fetch supported chapter sources safely and reuse materialized source manifests.",
+      "SRC-02": "Scope source-analysis progress and cancellation to the authenticated owner and task.",
+      "SRC-03": "Supervise Comix child work with verifiable results and durable sanitized diagnostics.",
+      "CLN-01": "Apply Clean only through fail-closed ownership, certificate, and artifact-verification gates.",
+      "AUTH-01": "Use Supabase as the fail-closed authority for session, license, and device state.",
+      "GEM-01": "Dispatch supported SAFE CLEAN requests only when remote readiness and contracts pass.",
+      "GEM-02": "Keep visual recovery deferred until compatible client/server contracts are independently proven.",
+      "DIS-01": "Correlate observability events and distinguish accepted, delivered, and acknowledged states.",
+      "PKG-01": "Start the frozen desktop with its public runtime config and required assets, without admin secrets.",
+      "NET-01": "Pin outbound requests to validated destinations while preserving host and TLS identity.",
+      "PSD-01": "Export dimensionally valid PSDs with supported layer APIs and preserved names.",
+      "EXP-01": "Keep research and multi-slot experiments isolated from default production behavior.",
+      "REL-01": "Keep beta/release blocked until reconciliation, package, and external acceptance gates pass."
+    },
     cards: [
       {id:"ARCH-01", domain:"Runtime architecture", status:"INTEGRATED", priority:"P1", paths:"yomu/; root compatibility entrypoints", contract:"One canonical runtime implementation; no duplicate providers/pipelines.", tests:"Python regression 6011 passed, 141 skipped, 2 xfailed, 736 subtests; Node 48/48. Branch delta comparison 201 passed + 15 subtests.", evidence:"Tested code snapshot b5639236 recorded by local commits 9e8bdfa/d28fde5/38328c3 and documentation through HEAD 972b3e3. 109 worktrees/391 bundled refs/66 non-ancestor tips. Eight dirty source worktrees unchanged and snapshotted at C:\\Users\\henri\\YomuMainReconciliationBackups\\source-overlays-final-20261015; 4,848 file hashes verified.", dependencies:"None", nextAction:"Disposition remaining branch tips and dirty overlays before main update.", origin:"Gemini SAFE CLEAN integration ancestry; reconciliation follow-ups.", docs:"docs/PROJECT_STRUCTURE.md; docs/README.md; docs/consolidation/YOMU_CURRENT_PRODUCT_STATE.md; docs/consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md", blocker:"66 non-ancestor branch tips and their source overlays are not fully dispositioned; physical product gates remain open."},
       {id:"JOB-01", domain:"JobStore and progress", status:"INTEGRATED", priority:"P1", paths:"yomu/runtime/; yomu/ui/; worker_service.py", contract:"Persisted JobStore state is progress/terminal authority; progress.v1 is bound and monotonic from subprocess through UI bridge.", tests:"Candidate after progress.v1: Python 6002 passed, 141 skipped, 2 xfailed, 736 subtests; focused 220 passed + 40 subtests; Node 47/47 + wallet 1/1.", evidence:"Local tests plus isolated frozen HTTP/UI/bridge bootstrap; hidden selftest did not prove terminal window close and auth remained unauthenticated.", dependencies:"Owner-visible frozen lifecycle/auth smoke and remaining reconciliation decisions.", nextAction:"Repeat lifecycle closure in a visible, isolated smoke; keep auth/product acceptance separate.", origin:"Local main plus integrated product history and candidate progress.v1 follow-up.", docs:"docs/WORKER_QUEUE.md; docs/consolidation/YOMU_CURRENT_PRODUCT_STATE.md", blocker:"Full physical UI lifecycle/auth acceptance unproven; 66 non-ancestor tips/dirty-overlay review remain."},
@@ -36,7 +53,7 @@
     badge.className = `status status-${card.status.toLowerCase()}`;
     badge.textContent = card.status;
     const dl = document.createElement("dl");
-    for (const [label, value] of [["Status / priority",`${card.status} / ${card.priority}`],["Paths",card.paths],["Contract",card.contract],["Tests",card.tests],["Evidence",card.evidence],["Dependencies",card.dependencies],["Origin",card.origin],["Documentation",card.docs],["Next action",card.nextAction],["Blocker / next gate",card.blocker]]) {
+    for (const [label, value] of [["Feature",card.domain],["Objective",snapshot.objectives[card.id] || "Reconcile this feature against the canonical runtime."],["Status / priority",`${card.status} / ${card.priority}`],["Domain",card.domain],["Paths",card.paths],["Contract",card.contract],["Tests",card.tests],["Evidence",card.evidence],["Dependencies",card.dependencies],["Origin",card.origin],["Documentation",card.docs],["Next action",card.nextAction],["Pending",card.blocker]]) {
       const dt = document.createElement("dt"); dt.textContent = label;
       const dd = document.createElement("dd"); dd.textContent = value;
       dl.append(dt, dd);
