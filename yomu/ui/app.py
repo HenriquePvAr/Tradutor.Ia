@@ -1214,16 +1214,24 @@ async def api_source_analyze(
     from yomu.download.sources.chapter_source import SourceError, supported_hosts
     import yomu.review.source_analysis_progress as source_analysis_progress
 
+    principal = _ui_principal(request, mutate=True)
+    owner_id = str(getattr(principal, "owner_id", "") or "").strip()
+    if not owner_id:
+        raise HTTPException(status_code=401, detail="source_trace_owner_required")
     trace_id = _source_trace_id(payload)
-    source_analysis_progress.start(trace_id)
-    _append_diagnostic_log("routes_current.jsonl", "START_ROUTE_ENTER", trace_id=trace_id, route="/api/ui/source/analyze", method="POST")
-    _append_diagnostic_log("app_current.jsonl", "SOURCE_ACTION_BEGIN", trace_id=trace_id, action="source_analyze")
-    _append_diagnostic_log(
-        "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
-        boundary="request_parse", entered="YES", result="PASS")
+    try:
+        task = source_analysis_progress.start(owner_id, trace_id)
+    except source_analysis_progress.DuplicateSourceAnalysisTrace as exc:
+        raise HTTPException(status_code=409, detail="source_analysis_trace_conflict") from exc
+    except source_analysis_progress.SourceAnalysisRegistryFull as exc:
+        raise HTTPException(status_code=503, detail="source_analysis_registry_full") from exc
 
     try:
-        principal = _ui_principal(request, mutate=True)
+        _append_diagnostic_log("routes_current.jsonl", "START_ROUTE_ENTER", trace_id=trace_id, route="/api/ui/source/analyze", method="POST")
+        _append_diagnostic_log("app_current.jsonl", "SOURCE_ACTION_BEGIN", trace_id=trace_id, action="source_analyze")
+        _append_diagnostic_log(
+            "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
+            boundary="request_parse", entered="YES", result="PASS")
         _append_diagnostic_log(
             "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
             boundary="authentication_principal", entered="YES", result="PASS")
@@ -1233,19 +1241,19 @@ async def api_source_analyze(
         _append_diagnostic_log(
             "app_current.jsonl", "SOURCE_ANALYSIS_INPUT", trace_id=trace_id,
             **_source_analysis_observability(payload))
+        # Every progress callback carries the immutable server-owned task generation.
         def _source_diagnostic(event: str, **fields: Any) -> None:
             _append_diagnostic_log("app_current.jsonl", event, trace_id=trace_id, **fields)
             # Mirror coarse discovery events into the live progress registry so the UI
             # can poll them while this request is still in flight (never blocks/alters).
             try:
-                source_analysis_progress.record(trace_id, event, **fields)
+                source_analysis_progress.record(task, event, **fields)
             except Exception:  # progress is best-effort observability only
                 pass
 
         result = await BRIDGE.analyze_source_candidate(
             payload, principal=principal, diagnostic_callback=_source_diagnostic,
-            cancel_check=lambda: source_analysis_progress.is_cancelled(trace_id))
-        source_analysis_progress.finish(trace_id)
+            cancel_check=lambda: source_analysis_progress.is_cancelled(task))
         _append_diagnostic_log(
             "app_current.jsonl", "SOURCE_ANALYSIS_BOUNDARY", trace_id=trace_id,
             boundary="analysis_response_serialization", entered="YES", result="PASS")
@@ -1341,7 +1349,7 @@ async def api_source_analyze(
             "action": "Verifique sua conexão e tente novamente.",
         }) from exc
     finally:
-        source_analysis_progress.finish(trace_id)
+        source_analysis_progress.finish(task)
 
 
 @app.get("/api/ui/source/analyze/progress/{trace_id}")
@@ -1352,10 +1360,13 @@ def api_source_analyze_progress(request: Request, trace_id: str) -> dict[str, An
     ``waiting`` snapshot when nothing is recorded yet. Requires a request principal
     like the other UI routes, but exposes no source URL or path.
     """
-    _ui_principal(request, mutate=False)
+    principal = _ui_principal(request, mutate=False)
+    owner_id = str(getattr(principal, "owner_id", "") or "").strip()
+    if not owner_id:
+        raise HTTPException(status_code=401, detail="source_trace_owner_required")
     import yomu.review.source_analysis_progress as source_analysis_progress
 
-    snap = source_analysis_progress.snapshot(trace_id)
+    snap = source_analysis_progress.snapshot(owner_id, trace_id)
     if snap is None:
         return {"stage": "waiting", "message": "Analisando a fonte…",
                 "candidates_found": None, "elapsed_ms": 0, "done": False}
@@ -1369,10 +1380,13 @@ def api_source_analyze_cancel(request: Request, trace_id: str) -> dict[str, Any]
     The discovery honors the flag at its next cancel checkpoint; the analyze request then
     fails closed with a cancelled SourceError rather than running to the 180s timeout.
     """
-    _ui_principal(request, mutate=True)
+    principal = _ui_principal(request, mutate=True)
+    owner_id = str(getattr(principal, "owner_id", "") or "").strip()
+    if not owner_id:
+        raise HTTPException(status_code=401, detail="source_trace_owner_required")
     import yomu.review.source_analysis_progress as source_analysis_progress
 
-    known = source_analysis_progress.request_cancel(trace_id)
+    known = source_analysis_progress.request_cancel(owner_id, trace_id)
     return {"ok": True, "cancel_requested": True, "known": bool(known)}
 
 

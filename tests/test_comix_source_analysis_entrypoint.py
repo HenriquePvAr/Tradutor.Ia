@@ -9,12 +9,22 @@ from unittest import mock
 import pytest
 import yomu.ui.app as app_ui
 import yomu.download.down as down
+import yomu.review.source_analysis_progress as source_analysis_progress
 from yomu.download.sources.chapter_source import SourceError
 from yomu.download.sources.universal_chapter_adapter import SourceAnalysis, SUPPORTED_SPECIFIC_ADAPTER
 from yomu.ui.ui_bridge import UiBridge
 
 
 URL = "https://comix.to/title/k72ge-home/1536897-chapter-1"
+
+
+@pytest.fixture(autouse=True)
+def isolate_source_analysis_registry():
+    with source_analysis_progress._LOCK:
+        source_analysis_progress._TRACES.clear()
+    yield
+    with source_analysis_progress._LOCK:
+        source_analysis_progress._TRACES.clear()
 
 
 @pytest.mark.parametrize("code,detail,status", [

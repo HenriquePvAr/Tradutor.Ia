@@ -5,6 +5,14 @@
 **HEAD de referência no início do delta original:** `f5265134b9f527a9e244da40539466deb0c7a463` (`fix(psd): guard layer API and image dimensions`); veja o snapshot vivo atualizado abaixo.
 **Não é uma release nem prova de aceitação física.**
 
+## Delta de reconciliação — source-analysis owner scope (2026-10-15)
+
+- Replay dos testes do overlay SAFE CLEAN contra a candidata isolou um defeito real: `api_source_analyze` reservava o `trace_id` antes de autenticar, e o registry antigo compartilhava traces/cancelamento entre usuários. Isso permitia mutação de estado por chamada não autenticada e colisão entre owners.
+- Corrigido na candidata com identidade `(owner_id, trace_id)`, token de geração de callback, cancelamento somente de tarefa ativa do owner, retenção limitada/expiração e autenticação+CSRF antes de reservar o trace. Callbacks atrasados de geração anterior não alteram o estado atual. O contrato aplica-se às rotas existentes, sem endpoint paralelo.
+- Verificação após o patch: testes de rota/ownership do overlay executados contra o código da candidata `6 passed`; testes locais de progress/entrypoint `13 passed`; total combinado `19 passed`. Regressão Python completa: `6.002 passed, 142 skipped, 2 xfailed, 736 subtests, 0 failed` em 571,59 s. Warnings: depreciação Starlette/httpx e Pillow `Image.getdata`; nenhuma chamada externa.
+- Outros gaps do replay permanecem deliberadamente abertos: a suíte de certificado Clean exige APIs de emissão/persistência que não existem na candidata; child supervisor overlay exige heartbeat/status/diagnóstico além do supervisor atual; visual recovery cliente+VPS continua acoplado e ausente. Nenhum desses gaps foi tratado como resolvido por este patch.
+- `py_compile`, `git diff --check`, `node --check docs/status/board/board.js` e frontend Node `48/48` passaram após o patch. O full suite não substitui o fechamento dos 66 tips, overlays pendentes nem gates físicos/externos. Estado permanece `PARTIAL`, não `READY_FOR_MAIN_UPDATE`. Worktrees originais permanecem intactos; sem chamada Gemini/DeepL/YK, sem build, push, merge remoto ou deploy nesta delta.
+
 ## Atualização de fechamento — 2026-10-15 (revisão de autenticação)
 
 No snapshot atual foram integradas seletivamente a defesa de destino HTTP com pinning DNS e a compatibilidade de API `psd-tools`; o writer PSD também rejeita incompatibilidade de dimensões sem redimensionar silenciosamente. A dependência beta permanece em `psd-tools==1.10.9`.
