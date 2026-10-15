@@ -5,6 +5,14 @@
 **HEAD de referência no início do delta original:** `f5265134b9f527a9e244da40539466deb0c7a463` (`fix(psd): guard layer API and image dimensions`); veja o snapshot vivo atualizado abaixo.
 **Não é uma release nem prova de aceitação física.**
 
+## Snapshot após integração de owner-scoped source analysis — 2026-10-15
+
+- Branch `integration/yomu-main-consolidation-v1`, HEAD `99277813feb9b020d388e6eecf134b5ce98b6a05`; `origin/main` conferida via `git ls-remote` em `121d6285a487a3e2b1a43bc5b504f79e696a75ed`; candidato 108 commits à frente / 0 atrás. Working tree limpo após o commit local. Nenhum push/merge.
+- Commit `9927781 fix: scope source analysis progress by owner`. Python full regression `6.002 passed, 142 skipped, 2 xfailed, 736 subtests, 0 failed`; Node `48/48`; foco progress/entrypoint + replay de ownership do overlay `19 passed`; `py_compile`, `git diff --check`, board `node --check` passaram.
+- Bundle verificável atual: `C:\Users\henri\YomuMainReconciliationBackups\candidate-consolidated-20261015-124455\candidate.bundle`; SHA-256 `06830F50EF9632B3060E9D714CB032A0D45F2AA7799A89F00D4BCE6F7763A8A8`; `git bundle verify` passou. Preserva refs/histórico disponíveis nesta cópia.
+- A build anterior `ECA2C88E…` antecede este commit e **não** contém a alteração owner-scoped; nenhuma build nova ou frozen smoke foi feito nesta delta. O pacote anterior não prova execução deste código.
+- Reconciliation permanece `PARTIAL`: 66 branch tips não ancestrais, overlays ainda não dispostos arquivo a arquivo, integração visual recovery certificado/client-worker incompleta e gates de login/provider/clean físico abertos. Não é `READY_FOR_MAIN_UPDATE`.
+
 ## Delta de reconciliação — source-analysis owner scope (2026-10-15)
 
 - Replay dos testes do overlay SAFE CLEAN contra a candidata isolou um defeito real: `api_source_analyze` reservava o `trace_id` antes de autenticar, e o registry antigo compartilhava traces/cancelamento entre usuários. Isso permitia mutação de estado por chamada não autenticada e colisão entre owners.
