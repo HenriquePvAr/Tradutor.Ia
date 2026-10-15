@@ -557,6 +557,11 @@ disponível — isso é esperado e não é um erro do seu computador.
 
 Principais preferências disponíveis:
 
+> Na candidata local de consolidação, a seção Configurações também exibe a disponibilidade
+> técnica do worker remoto de limpeza (API, fila, consumidor, worker e schema). Esse indicador
+> não inicia um job nem comprova login/autenticação na interface Gemini; não é uma capacidade
+> publicada e pode estar ausente em builds anteriores.
+
 - **Geral** — idioma da interface (Português, English, Español, Français, 日本語, 한국어),
   tema, página inicial, abrir pasta ao terminar, notificações locais, confirmar ações
   destrutivas;

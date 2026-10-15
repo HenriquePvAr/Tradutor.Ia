@@ -4,7 +4,9 @@
 >
 > O comportamento de produção está sob **[Quality Freeze](QUALITY_FREEZE.md)**.
 
-> A branch de reconciliação é trabalho local, não release nem atualização remota. Veja [estado atual e limites de evidência](consolidation/YOMU_CURRENT_PRODUCT_STATE.md), [matriz de proveniência](consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md), [plano](consolidation/YOMU_CONSOLIDATION_PLAN.md) e [board por domínio](status/board/index.html).
+> A branch de reconciliação é trabalho local, não release nem atualização remota. O estado vigente, a matriz de proveniência e o plano estão em [estado atual](consolidation/YOMU_CURRENT_PRODUCT_STATE.md), [matriz](consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md) e [plano](consolidation/YOMU_CONSOLIDATION_PLAN.md); o [board por domínio](status/board/index.html) é um mapa operacional, não substitui os contratos técnicos.
+
+> Estados de evidência: `IMPLEMENTED` descreve código; `INTEGRATED` descreve composição no snapshot; `TESTED_OFFLINE` e `TESTED_FROZEN` identificam o tipo exato de validação; `PHYSICALLY_VERIFIED` exige artefato/operação física correlacionada; `EXTERNAL_GATE` depende de serviço, identidade ou autorização externa; `DEFERRED` não está habilitado como produto.
 
 Esta é a página inicial da documentação. Comece pelo documento certo para o seu papel.
 
@@ -45,7 +47,7 @@ Esta é a página inicial da documentação. Comece pelo documento certo para o 
 
 ### Arquitetura e execução
 
-- [Arquitetura](ARCHITECTURE.md) — módulos, fluxos, descoberta de fonte, OCR, tradução, entidades, reconstrução, render e artefatos
+- [Arquitetura histórica do layout raiz](ARCHITECTURE.md) — snapshot de 2026-09-29; para o pacote consolidado, consulte o [estado atual](consolidation/YOMU_CURRENT_PRODUCT_STATE.md) e a [matriz de reconciliação](consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md)
 - [Desenvolvimento](DEVELOPMENT.md) — setup, execução, testes, dependências externas, empacotamento e riscos conhecidos
 - [Estrutura do projeto](PROJECT_STRUCTURE.md) — localização do código, testes, ferramentas e pesquisa
 - [Fluxo de desenvolvimento](DEVELOPMENT_WORKFLOW.md) — comandos de validação após mudanças

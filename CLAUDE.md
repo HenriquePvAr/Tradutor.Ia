@@ -15,6 +15,15 @@ repositório.
 inglês para português do Brasil: download, OCR, tradução, reconstrução visual, PDF e gates
 de qualidade.
 
+## Fonte oficial e pacote canônico
+
+- A `main` local é a fonte oficial do código concluído; confira `origin/main` antes de preparar uma integração. Uma branch de consolidação não é release nem prova de publicação.
+- Mudanças de risco podem usar branch temporária baseada na `main`; depois de testar, documentar e atualizar o board, prepare integração normal e não mantenha uma linha paralela permanente.
+- Neste snapshot, `yomu/` é o runtime modular canônico onde callers e testes confirmarem a migração. Entry points e módulos da raiz permanecem como compatibilidade enquanto consumidores não forem auditados; não duplique pipeline, provider, máscara, worker ou contrato de artefatos.
+- Preserve branches, worktrees, arquivos não rastreados e alterações de outros agentes. Não use reset/clean/restore em massa para resolver divergências. Classifique mudanças não integradas na matriz de reconciliação.
+- Diferencie `IMPLEMENTED`, `INTEGRATED`, `TESTED_OFFLINE`, `TESTED_FROZEN`, `PHYSICALLY_VERIFIED`, `EXTERNAL_GATE` e `DEFERRED`; código ou mocks não autorizam status físico.
+- Supabase permanece autoridade de persistência/licença; nunca embuta credenciais administrativas. Não execute Gemini/DeepL pago, consuma YK ou altere produção sem autorização explícita.
+
 Leia antes de mudar qualquer coisa:
 
 - [`docs/technical/DOCUMENTACAO_TECNICA.md`](docs/technical/DOCUMENTACAO_TECNICA.md) — arquitetura, processos, estados, segurança, testes

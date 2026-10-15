@@ -2,6 +2,12 @@
 
 > **Base verificada:** `49eb66a` (branch `main`) · **Revisado em:** 2026-09-29
 
+> **Nota de reconciliação (2026-10-14):** o corpo abaixo descreve o runtime do layout raiz
+> daquele snapshot e não deve ser usado como mapa do pacote consolidado `yomu/`. Para o
+> estado desta candidata local, consulte [estado atual](consolidation/YOMU_CURRENT_PRODUCT_STATE.md),
+> [matriz de reconciliação](consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md) e
+> [plano](consolidation/YOMU_CONSOLIDATION_PLAN.md). A candidata não é release.
+
 Este documento descreve a arquitetura implementada no repositório. Ideias futuras aparecem somente quando identificadas como roadmap.
 
 > [Voltar ao README](../README.md) · [Desenvolvimento](DEVELOPMENT.md) · [Qualidade e validação](QUALITY_AND_VALIDATION.md)
