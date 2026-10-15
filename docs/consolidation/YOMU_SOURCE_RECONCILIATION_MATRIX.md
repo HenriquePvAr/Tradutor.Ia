@@ -242,3 +242,5 @@ The following branch-specific checks were performed against the current candidat
 | Experimental Gemini/VPS worker — `research/gemini-vps-web-worker-v1` | Browser/worker/server schema and two-slot research. | Candidate/source test replay exposed API/interface incompatibilities already recorded above; no compatible versioned deploy or live VPS proof. | `PRESERVE_FOR_LATER`; client and server must be reconciled as one contract. |
 
 Focused candidate comparison after this delta: `tests/test_review_rerun.py`, OCR order/policy, login responsive, loading/processing UI, desktop startup, output-plan/selective and translation-only suites: **201 passed, 15 subtests passed**. This closes only these offline branch comparisons; it does not close the full non-ancestor inventory or dirty-overlay file review.
+
+The validated integration delta was committed locally as `9e8bdfa` (runtime/tests), followed by `d28fde5` (documentation/board). The commits do not change the remaining `PRESERVE_FOR_LATER`, `DEFERRED`, or physical/external gates. No push or merge was performed.

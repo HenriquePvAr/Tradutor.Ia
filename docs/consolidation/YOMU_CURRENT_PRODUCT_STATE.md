@@ -165,3 +165,10 @@ Estado corrente verificado: candidato `b563923646980db42ee4681ebd4c305f2851dcf3`
 Esta continuação revisou resultados concretos de M20 Option B, arquitetura/independent-blind Clean, fresh holdout, Gemini hard-clean e Gemini fallback v2; os motivos e decisões estão na matriz. M20 continua PARTIAL (PNG/PSD FAIL e uma falha de preservação do original); o holdout foi BLOCKED por falta de dados/GT independentes; Gemini fallback v2 está READY_FOR_REVIEW (7/10 offline), não ativado. Foram comparados também review-rerun, OCR order, login responsivo, loading/processing UI e output plans; testes focados: 201 passed e 15 subtests.
 
 O estado da árvore do candidato contém 12 modificações rastreadas e dois testes novos, além de `.basinfy/agent-context.json` não rastreado, que foi preservado e incluído somente no backup, não no produto. Full regression Python `6,011 passed, 141 skipped, 2 xfailed, 736 subtests`; Node `48/48`; build onedir `90DB867E5A5E90BA3CF6AF03165997B0D1F0CB4B2EC5D63A3C7FE6AA13281438`, archive-inspected e RapidOCR selftest 0. Nenhuma execução UI/licença/child congelado, provider, VPS, Discord ou limpeza física foi comprovada. Resultado permanece `PARTIAL`; não pronto para main update.
+
+### Commits locais de reconciliação (2026-10-15)
+
+- `9e8bdfa` — `fix: unify parallel clean and supervise Comix child` (código e regressões; deriva do snapshot testado `b563923`).
+- `d28fde5` — `docs: reconcile current Yomu refs and validation` (estado, matriz, plano, índice e board).
+
+Ambos são commits locais na branch de integração, sem push/merge. Os testes completos e build correspondem ao conteúdo de código de `9e8bdfa`; o segundo commit altera somente documentação/board. A cópia `.basinfy/agent-context.json` permanece fora do Git.
