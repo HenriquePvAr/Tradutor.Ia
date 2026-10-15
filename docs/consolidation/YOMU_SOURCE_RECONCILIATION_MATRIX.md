@@ -106,7 +106,7 @@ The candidate diff against the current published base has ten deletions; the exa
 | `test_secure_auth_context.py`, `test_source_analysis_progress.py` | Relocated to `tests/test_secure_auth_context.py` and `tests/test_source_analysis_progress.py`; current tests remain in the candidate. | `INTEGRATE` / test-path migration. |
 | `test_profile_media_backoff.py` | Removed with the intentionally decommissioned `profile-media` Edge Function; absence is guarded by `tests/test_profile_media_local_absence.py` and related route tests. | `SUPERSEDED` / intentional decommission. |
 
-No deleted path above represents an unreviewed source-overlay loss. This does not close the separate unmerged branch-tip or dirty-worktree review.
+At this interim checkpoint, no deleted path above represented an unreviewed source-overlay loss; branch-tip and overlay disposition was still in progress. The final exact-tip and dirty-overlay decisions are recorded in the later closeout sections below.
 
 ## Delta decisions recorded on 2026-10-14
 
