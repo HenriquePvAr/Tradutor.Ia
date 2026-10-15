@@ -174,6 +174,14 @@ O estado da árvore do candidato contém 12 modificações rastreadas e dois tes
 
 São commits locais na branch de integração, sem push/merge. Os testes completos e build correspondem ao conteúdo de código de `9e8bdfa`; os dois commits seguintes alteram somente documentação/board. A cópia `.basinfy/agent-context.json` permanece fora do Git.
 
+### Estado final da reconciliação principal — 2026-10-15
+
+Este adendo supersede os HEADs e contagens de commits dos snapshots históricos abaixo. Branch `integration/yomu-main-consolidation-v1`, HEAD `972b3e3b974cdf890d3a73270130182f3f70b57c` (114 commits à frente de `origin/main` `121d6285a487a3e2b1a43bc5b504f79e696a75ed`, 0 atrás; 89 à frente de `main` local `6ff0b87158d18c75108ce4bdfa827ef452961e97`, 0 atrás). Commits locais: `9e8bdfa` (runtime/testes), `d28fde5`, `38328c3`, `972b3e3` (docs/board). Árvore rastreada limpa; `.basinfy/agent-context.json` permanece não rastreado, preservado e fora do produto.
+
+Os oito worktrees sujos de origem foram preservados sem edição. Snapshot externo `C:\Users\henri\YomuMainReconciliationBackups\source-overlays-final-20261015`: 4.848 arquivos / 896.084.557 bytes, todos os hashes revalidados; manifesto SHA-256 `831A73BC6B8CD83F504D4F28A9C96E678518BC26808119EBCEDB039448C2E09B`. Bundle completo de refs: `C:\Users\henri\YomuMainReconciliationBackups\candidate-reconciliation-final-20261015\all-refs.bundle`, SHA-256 `55C8C8E12904E4042CDC2AABC58D0C72FBFB1DE32EEF68195D8D7E679EB14B0B`.
+
+Validações do snapshot de código testado: Python `6,011 passed, 141 skipped, 2 xfailed, 736 subtests`; Node `48/48`; focused delta `201 passed, 15 subtests`. Build onedir `C:\Users\henri\YomuExperimental\yomu-main-clean-boundary-20261015\dist\YomuSekai\YomuSekai.exe`, SHA-256 `90DB867E5A5E90BA3CF6AF03165997B0D1F0CB4B2EC5D63A3C7FE6AA13281438`; archive inspection e selftest interno RapidOCR passaram. UI/licença frozen, child Comix frozen, VPS/provider, limpeza física e delivery individual Discord continuam sem prova. `PARTIAL`, não `READY_FOR_MAIN_UPDATE`; nenhum push/merge/release.
+
 ### Preservação atual dos worktrees sujos — 2026-10-15
 
 Revarredura read-only encontrou 8 worktrees de origem sujos, além do candidato (somente `.basinfy/agent-context.json` untracked): checkout original `C:\Projetos\Tradutor.Ia` (6 tracked changes/29 untracked paths), full-ui-community (2 untracked), glyph-segmenter (1 untracked com 2 arquivos de checkpoint), history-bulk-delete (5 tracked/2 untracked), SAFE CLEAN evidence (11 tracked/3 untracked), SAFE CLEAN validated integration (123 tracked/57 untracked), Gemini VPS worker (7 tracked/3 untracked) e main-candidate-comix-ui (2 tracked). Nenhum desses worktrees foi editado por esta missão.
