@@ -1,12 +1,12 @@
 # Documentação do Tradutor IA
 
-> **Base publicada observada:** `121d6285` (`origin/main`) · **Snapshot de reconciliação local:** `integration/yomu-main-consolidation-v1` · **Revisado em:** 2026-10-15
+> **Base publicada revalidada:** `121d6285a487a3e2b1a43bc5b504f79e696a75ed` (`origin/main`) · **Código consolidado testado:** `9e8bdfa` · **Revisado em:** 2026-10-15
 >
 > O comportamento de produção está sob **[Quality Freeze](QUALITY_FREEZE.md)**.
 
 > A branch de reconciliação é trabalho local, não release nem atualização remota. O estado vigente, a matriz de proveniência e o plano estão em [estado atual](consolidation/YOMU_CURRENT_PRODUCT_STATE.md), [matriz](consolidation/YOMU_SOURCE_RECONCILIATION_MATRIX.md) e [plano](consolidation/YOMU_CONSOLIDATION_PLAN.md); o [board por domínio](status/board/index.html) é um mapa operacional, não substitui os contratos técnicos.
 
-> Último snapshot de validação: 6.011 testes Python e 48 testes frontend passaram; build frozen isolada inspecionada. Clean físico/provider, frozen child real e reconciliação de refs/worktrees continuam pendentes — consulte o estado atual para hashes, escopo e limites.
+> O código validado no snapshot `9e8bdfa` passou em 6.011 testes Python e 48 frontend; build onedir inspecionada e selftest interno RapidOCR passou. A branch local não é release nem atualização remota. O estado atual registra a distância contra `origin/main`, as disposições seletivas e os gates físicos ainda sem prova.
 
 > Estados de evidência: `IMPLEMENTED` descreve código; `INTEGRATED` descreve composição no snapshot; `TESTED_OFFLINE` e `TESTED_FROZEN` identificam o tipo exato de validação; `PHYSICALLY_VERIFIED` exige artefato/operação física correlacionada; `EXTERNAL_GATE` depende de serviço, identidade ou autorização externa; `DEFERRED` não está habilitado como produto.
 
