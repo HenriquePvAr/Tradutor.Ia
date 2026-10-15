@@ -18,7 +18,9 @@ concurrency:
 jobs:
   tests:
     runs-on: windows-latest
-    timeout-minutes: 30
+    # The complete hermetic suite takes about 26 minutes on hosted Windows,
+    # after dependency installation and collection. Keep time for diagnostics.
+    timeout-minutes: 60
     defaults:
       run:
         shell: pwsh
@@ -71,7 +73,19 @@ jobs:
         run: python -m pytest --collect-only -q
 
       - name: Run hermetic tests
-        run: python -m pytest -q
+        timeout-minutes: 50
+        run: |
+          $junitPath = Join-Path $env:RUNNER_TEMP "pytest-results.xml"
+          python -m pytest -v --tb=short --durations=25 --junitxml="$junitPath"
+
+      - name: Upload pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermetic-pytest-results-${{ github.run_id }}
+          path: ${{ runner.temp }}/pytest-results.xml
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Check JavaScript syntax
         run: |
