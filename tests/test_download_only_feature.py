@@ -38,7 +38,11 @@ class DownloadOnlyFeatureTests(unittest.TestCase):
             self.assertTrue(output.is_dir())
             self.assertTrue((output / "input" / "001.webp").is_file())
             self.assertEqual(result["result_type"], "directory")
-            self.assertEqual(result["result_path"], str(output))
+            result_path = Path(result["result_path"])
+            self.assertTrue(
+                result_path.samefile(output),
+                f"result path must name the output directory: {result_path!s} != {output!s}",
+            )
             self.assertTrue(downloader.call_args.kwargs["preserve_original"])
             self.assertFalse(list(Path(tmp).glob(".*yomu-download-tmp-*")))
 

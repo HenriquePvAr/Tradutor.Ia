@@ -45,14 +45,14 @@ class RuntimeRootResolutionTests(unittest.TestCase):
         s = self._scn()
         root = resolve_runtime_root_for_job(
             str(s.db), str(s.output_dir), env={"TRADUTOR_RUNTIME_ROOT": str(s.iso)})
-        self.assertEqual(root, s.iso)
+        self.assertTrue(Path(root).samefile(s.iso), f"{root!s} != {s.iso!s}")
         self.assertNotIn("TradutorIA", root.parts)
 
     # --- item 8: no env — DB parent wins over output ---
     def test_db_parent_wins_over_output_when_no_env(self):
         s = self._scn()
         root = resolve_runtime_root_for_job(str(s.db), str(s.output_dir), env={})
-        self.assertEqual(root, s.iso)
+        self.assertTrue(Path(root).samefile(s.iso), f"{root!s} != {s.iso!s}")
 
     # --- item 2: output can NEVER override a known runtime root ---
     def test_output_never_overrides_explicit_env(self):
@@ -60,24 +60,27 @@ class RuntimeRootResolutionTests(unittest.TestCase):
         # even a bogus, non-existent output on another root cannot move it
         root = resolve_runtime_root_for_job(
             str(s.db), r"Z:\Elsewhere\output\x", env={"TRADUTOR_RUNTIME_ROOT": str(s.iso)})
-        self.assertEqual(root, s.iso)
+        self.assertTrue(Path(root).samefile(s.iso), f"{root!s} != {s.iso!s}")
 
     def test_output_never_overrides_db_parent(self):
         s = self._scn()
         root = resolve_runtime_root_for_job(str(s.db), str(s.output_dir), env={})
-        self.assertEqual(root, s.iso)
+        self.assertTrue(Path(root).samefile(s.iso), f"{root!s} != {s.iso!s}")
 
     # --- item 9: legacy fallback ONLY when neither env nor db is usable ---
     def test_legacy_output_lineage_is_last_resort(self):
         s = self._scn()
         root = resolve_runtime_root_for_job("", str(s.output_dir), env={})
-        self.assertEqual(root, s.default)  # <root>/output/... → <root> = TradutorIA
+        self.assertTrue(
+            Path(root).samefile(s.default),
+            f"{root!s} != {s.default!s}",
+        )  # <root>/output/... → <root> = TradutorIA
 
     def test_invalid_explicit_env_falls_through_to_db_parent(self):
         s = self._scn()
         root = resolve_runtime_root_for_job(
             str(s.db), str(s.output_dir), env={"TRADUTOR_RUNTIME_ROOT": r"Z:\does\not\exist"})
-        self.assertEqual(root, s.iso)
+        self.assertTrue(Path(root).samefile(s.iso), f"{root!s} != {s.iso!s}")
 
     # --- legacy contract preserved: DB one level ABOVE runtime, output UNDER it ---
     def test_db_above_runtime_with_same_tree_output_uses_output_lineage(self):
@@ -88,7 +91,7 @@ class RuntimeRootResolutionTests(unittest.TestCase):
             out = runtime / "output" / "chapter"; out.mkdir(parents=True)
             # no explicit env: the <runtime>/output lineage (a subdir of db.parent) wins
             root = resolve_runtime_root_for_job(str(db), str(out), env={})
-            self.assertEqual(root, runtime)  # NOT base (db.parent)
+            self.assertTrue(Path(root).samefile(runtime), f"{root!s} != {runtime!s}")  # NOT base (db.parent)
 
     def test_foreign_root_output_never_wins_over_db_parent(self):
         # The bug: output on a completely different tree must not relocate the runtime.
@@ -97,7 +100,7 @@ class RuntimeRootResolutionTests(unittest.TestCase):
             db = iso / "jobs.sqlite3"; db.write_text("x", encoding="utf-8")
             foreign_out = Path(b) / "TradutorIA" / "output" / "job"; foreign_out.mkdir(parents=True)
             root = resolve_runtime_root_for_job(str(db), str(foreign_out), env={})
-            self.assertEqual(root, iso)  # db.parent, not the foreign TradutorIA
+            self.assertTrue(Path(root).samefile(iso), f"{root!s} != {iso!s}")  # db.parent, not the foreign TradutorIA
 
     # --- item 13: default runtime still works (no isolation, no divergence) ---
     def test_default_runtime_consistent_layout(self):
@@ -108,7 +111,7 @@ class RuntimeRootResolutionTests(unittest.TestCase):
             out = base / "output" / "chapter"; out.mkdir(parents=True)
             # no env: db.parent == base, output lineage == base → both agree
             root = resolve_runtime_root_for_job(str(db), str(out), env={})
-            self.assertEqual(root, base)
+            self.assertTrue(Path(root).samefile(base), f"{root!s} != {base!s}")
 
 
 class CrossProcessAuthAfterFixTests(unittest.TestCase):

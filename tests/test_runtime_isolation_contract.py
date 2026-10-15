@@ -44,6 +44,17 @@ from yomu.runtime.runtime_paths import default_user_data_root
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _is_within_resolved_path(path: str | Path, root: str | Path) -> bool:
+    """Compare physical path ancestry after resolving aliases and junctions."""
+    resolved_path = Path(path).expanduser().resolve(strict=False)
+    resolved_root = Path(root).expanduser().resolve(strict=False)
+    try:
+        resolved_path.relative_to(resolved_root)
+    except (ValueError, OSError, RuntimeError):
+        return False
+    return True
+
+
 class RealRuntimePathTripwireTests(unittest.TestCase):
     """The real runtime root is FORBIDDEN for every filesystem verb the suite can use."""
 
@@ -303,7 +314,38 @@ class IsolatedRuntimeVisibilityTests(unittest.TestCase):
                              runtime_paths.output_root, runtime_paths.temp_input_root,
                              runtime_paths.temp_output_root):
                 resolved = resolver().resolve()
-                self.assertTrue(resolved == self._bridge_root() or self._bridge_root() in resolved.parents)
+                root = self._bridge_root()
+                self.assertTrue(
+                    _is_within_resolved_path(resolved, root),
+                    f"{resolver.__name__} escaped isolated root: raw={resolver()!s}; "
+                    f"resolved={resolved!s}; root={root!s}; "
+                    f"canonical_resolved={resolved.resolve(strict=False)!s}; "
+                    f"canonical_root={root.resolve(strict=False)!s}",
+                )
+
+    def test_containment_rejects_sibling_and_parent_paths(self):
+        with tempfile.TemporaryDirectory(prefix="tradutor-contained-") as folder:
+            parent = Path(folder)
+            root = parent / "runtime"
+            sibling = parent / "runtime-sibling"
+            nested = root / "nested"
+            nested.mkdir(parents=True)
+            sibling.mkdir()
+            self.assertTrue(_is_within_resolved_path(nested, root))
+            self.assertFalse(_is_within_resolved_path(sibling, root))
+            self.assertFalse(_is_within_resolved_path(parent, root))
+
+    @unittest.skipUnless(os.name == "nt", "8.3 aliases are a Windows filesystem feature")
+    def test_containment_accepts_an_available_8dot3_alias(self):
+        import ctypes
+
+        root = self._bridge_root().resolve()
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetShortPathNameW(str(root), buffer, len(buffer))
+        if not length or length >= len(buffer) or "~" not in buffer.value:
+            self.skipTest("the isolated runtime path has no available 8.3 alias")
+        self.assertTrue(_is_within_resolved_path(buffer.value, root))
+        self.assertTrue(_is_within_resolved_path(root, buffer.value))
 
     def test_installed_beta_runtime_and_output_are_guarded(self):
         root = hermetic_runtime.REAL_BETA_USER_ROOT
@@ -424,6 +466,11 @@ class EntryPointHermeticityTests(unittest.TestCase):
         ):
             environment.pop(key, None)
         environment["PYTHONPATH"] = str(REPO_ROOT)
+        # Public synthetic client configuration is sufficient for import-time wiring.
+        # sitecustomize detects this unittest child and installs the offline socket guard;
+        # no production credential or provider call is involved.
+        environment["SUPABASE_URL"] = "https://offline-test.supabase.invalid"
+        environment["SUPABASE_PUBLISHABLE_KEY"] = "sb_publishable_test"
         completed = subprocess.run(
             [
                 sys.executable, "-m", "unittest",
