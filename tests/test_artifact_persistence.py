@@ -197,7 +197,7 @@ class ArtifactPersistenceTests(unittest.TestCase):
         self.assertEqual(rep["provenance"][1]["source"], text_page["image_path"])
         self.assertTrue(rep["provenance"][1]["translated"])
 
-    def test_clean_verification_never_promotes_source_fallback(self):
+    def test_clean_verification_requires_certificate_and_never_promotes_source_fallback(self):
         locally_verified = self._state(1, cleaned=True)
         locally_verified["clean_verified"] = True
         locally_verified["debug_data"] = {"items": [{
@@ -209,7 +209,11 @@ class ArtifactPersistenceTests(unittest.TestCase):
         preserved_source = self._state(2, cleaned=False)
         rep = bp._persist_canonical_artifacts(
             self.root, [locally_verified, preserved_source], 2, ac.OutputProfile.PROFESSIONAL_QC)
-        self.assertTrue(rep["provenance"][1]["clean_verified"])
+        self.assertFalse(rep["provenance"][1]["clean_verified"])
+        self.assertIn(
+            "REVIEW_CERTIFICATE:clean_certificate_missing",
+            rep["provenance"][1]["review_reasons"],
+        )
         self.assertFalse(rep["provenance"][2]["clean_verified"])
         self.assertEqual(rep["provenance"][2]["clean_source"], "source_fallback")
         self.assertEqual(rep["provenance"][2]["residual_validation"]["status"], "NOT_RUN")

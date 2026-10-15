@@ -18,6 +18,7 @@ import subprocess
 import struct
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -51,6 +52,8 @@ MAX_CANONICAL_ATTEMPTS = 3
 # remaining budget so a stuck browser operation raises into Scrapling's cleanup path.
 DYNAMIC_RESOLVER_DEADLINE_SECONDS = 180.0
 DYNAMIC_RESOLVER_CLEANUP_RESERVE_SECONDS = 3.0
+CHILD_PROGRESS_STALL_SECONDS = 150.0
+CHILD_OUTPUT_TAIL_CHARS = 32_768
 # Comix clearance is an operator-owned browser artifact. It is stored outside the repository
 # and replayed only when a human obtained it in the dedicated Chrome profile. Automatic solver
 # and fingerprint-spoofing paths are intentionally not enabled here.
@@ -102,6 +105,18 @@ def _expected_page_indices(control_count: int) -> list[int]:
 def _target_page_indices(control_count: int, requested_count: int | None = None) -> list[int]:
     expected = _expected_page_indices(control_count)
     return expected if requested_count is None else expected[:max(0, int(requested_count))]
+
+
+def _materialization_progress_counts(
+    candidates: list[dict[str, Any]], fallback_candidates: list[dict[str, Any]],
+    page_targets: list[int],
+) -> tuple[int, int]:
+    materialized = {
+        int(item.get("logical_page_index") or 0)
+        for item in [*candidates, *fallback_candidates]
+        if item.get("logical_page_index") is not None
+    }
+    return len(page_targets), len(materialized)
 
 
 def _missing_chapter_budget_seconds(unresolved_count: int) -> float:
@@ -1288,7 +1303,8 @@ def _scroll_normal_reader(page: Any, selector: str, initial: list[dict[str, Any]
 def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None = None,
                     timeout: float = 30.0,
                     deadline_seconds: float | None = None,
-                    max_pages: int | None = None) -> Any:
+                    max_pages: int | None = None,
+                    progress_callback: Callable[..., None] | None = None) -> Any:
     """Run the selected reader in the disposable resolver child process."""
     if not supports_url(url):
         raise DynamicReaderError("site_not_selected")
@@ -1322,6 +1338,7 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
     body_candidate_indices: set[int] = set()
     page_stage_metrics: dict[int, dict[str, float | None]] = {}
     reader_image_hosts: set[str] = set()
+    fallback_candidates: list[dict[str, Any]] = []
     result_holder: dict[str, Any] = {}
     started = time.monotonic()
     effective_deadline = (
@@ -1342,6 +1359,8 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
 
     def stage_start(stage: str) -> float:
         remaining = remaining_seconds(stage)
+        if progress_callback:
+            progress_callback(stage)
         _append_telemetry(
             "dynamic_fetch_stage_start", status="started", stage=stage,
             elapsed_ms=round((time.monotonic() - started) * 1000, 1),
@@ -1350,6 +1369,8 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
         return time.monotonic()
 
     def stage_end(stage: str, stage_started: float) -> None:
+        if progress_callback:
+            progress_callback(stage)
         _append_telemetry(
             "dynamic_fetch_stage_end", status="completed", stage=stage,
             elapsed_ms=round((time.monotonic() - stage_started) * 1000, 1),
@@ -1585,15 +1606,20 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
             "normalized_page_count": len(candidates),
         })
         control_count = int(scroll_diagnostics.get("page_control_count") or 0)
+        page_targets = _target_page_indices(control_count, requested_count)
         candidates, missing = _merge_materialized_attempts(
             preserved_candidates, candidates, control_count, requested_count)
+        if progress_callback:
+            controls, materialized = _materialization_progress_counts(
+                candidates, fallback_candidates, page_targets)
+            progress_callback("materializing", controls_found=controls,
+                              materialized_count=materialized)
         logical_indices = sorted({
             int(item["logical_page_index"])
             for item in candidates if item.get("logical_page_index") is not None
         })
         scroll_diagnostics["logical_page_indices"] = logical_indices
         scroll_diagnostics["missing_page_indices"] = missing
-        fallback_candidates: list[dict[str, Any]] = []
         fallback_attempts: dict[int, list[str]] = {}
         fallback_attempt_diagnostics: dict[str, dict[str, Any]] = {}
         per_page_budget = MISSING_PAGE_BUDGET_SECONDS
@@ -1842,6 +1868,11 @@ def _resolve_inline(url: str, *, adapter: Any, cancel_check: Callable[[], bool] 
                             page_index,
                         ) or {}
                         fallback_candidates.append(candidate)
+                        if progress_callback:
+                            controls, materialized = _materialization_progress_counts(
+                                candidates, fallback_candidates, page_targets)
+                            progress_callback("materializing", controls_found=controls,
+                                              materialized_count=materialized)
                         page_metrics["canvas_capture_ms"] = round(
                             float(page_metrics["canvas_capture_ms"] or 0)
                             + (time.monotonic() - capture_started) * 1000, 1)
@@ -2358,39 +2389,219 @@ def _close_job(job: Any) -> None:
         kernel32.CloseHandle(handle)
 
 
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _atomic_write_text(path: Path, value: str) -> None:
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _write_supervisor_status(path: Path, *, reason_code: str, stage: str) -> None:
+    _atomic_write_json(path, {
+        "state": "fail", "reason_code": reason_code[:80],
+        "stage": stage[:48], "writer": "parent_supervisor",
+    })
+
+
+def _safe_child_diagnostic_text(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"https?://\S+", "<url-redacted>", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"(?i)(cookie|authorization|token|password|secret|api[_-]?key|cf_clearance)\s*[:=]\s*[^\s,;]+",
+        r"\1=<redacted>", text,
+    )
+    text = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer <redacted>", text)
+    return text[-CHILD_OUTPUT_TAIL_CHARS:]
+
+
+def _child_diagnostic_root() -> Path:
+    from yomu.runtime.runtime_paths import runtime_root
+    return runtime_root() / "diagnostics" / "dynamic_resolver_child"
+
+
+def _persist_child_failure(request_id: str, *, status: dict[str, Any],
+                           outcome: dict[str, Any], command: list[str],
+                           started: float, temp_root: Path) -> Path:
+    """Keep sanitized failure evidence outside the temporary child directory."""
+    target = _child_diagnostic_root() / request_id
+    target.mkdir(parents=True, exist_ok=True)
+    clean_status = {
+        "state": str(status.get("state") or "fail")[:16],
+        "reason_code": str(status.get("reason_code") or "child_failed")[:80],
+        "safe_error_code": str(status.get("safe_error_code") or status.get("reason_code")
+                                or "child_failed")[:80],
+        "exception_type": str(status.get("exception_type") or "")[:80],
+        "safe_message": _safe_child_diagnostic_text(status.get("safe_message")),
+        "stage": str(status.get("stage") or "unknown")[:48],
+        "elapsed_ms": int(status.get("elapsed_ms") or (time.monotonic() - started) * 1000),
+        "exit_code": outcome.get("returncode"),
+        "result_exists": (temp_root / "result.pkl").is_file(),
+        "status_exists": (temp_root / "status.json").is_file(),
+    }
+    safe_command = [
+        Path(part).name if os.path.isabs(part) else ("<flag>" if part.startswith("-") else "<arg>")
+        for part in command
+    ]
+    payloads = {
+        "child_status.json": json.dumps(clean_status, sort_keys=True, indent=2),
+        "launch_context.json": json.dumps({
+            "request_id": request_id,
+            "cwd": Path.cwd().name,
+            "entrypoint": next((command[i + 1] for i, part in enumerate(command[:-1])
+                                 if part == "-m"), Path(command[1]).name if len(command) > 1 else "unknown"),
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "python_executable": Path(sys.executable).name,
+            "argv_shape": safe_command,
+            "temp_paths": {name: (temp_root / name).exists()
+                           for name in ("request.json", "result.pkl", "status.json", "progress.json")},
+        }, sort_keys=True, indent=2),
+        "child_stderr.txt": _safe_child_diagnostic_text(outcome.get("stderr")),
+        "child_stdout_tail.txt": _safe_child_diagnostic_text(outcome.get("stdout")),
+        "failure.json": json.dumps({
+            "exception_type": clean_status["exception_type"],
+            "safe_error_code": clean_status["reason_code"],
+            "safe_message": clean_status["safe_message"],
+            "exit_code": clean_status["exit_code"],
+            "child_stage": clean_status["stage"],
+            "elapsed_ms": clean_status["elapsed_ms"],
+        }, sort_keys=True, indent=2),
+    }
+    for name, value in payloads.items():
+        _atomic_write_text(target / name, value)
+    return target
+
+
+def _build_child_launch(request_path: Path, result_path: Path, status_path: Path,
+                        progress_path: Path, *, frozen: bool | None = None
+                        ) -> tuple[list[str], dict[str, str] | None]:
+    is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+    if is_frozen:
+        return ([sys.executable, "--internal-child", "dynamic-resolver", str(request_path),
+                 str(result_path), str(status_path), str(progress_path)], None)
+    source_root = Path(__file__).resolve().parents[3]
+    command = [sys.executable, "-u", "-m", "yomu.download.readers.dynamic_resolver_process",
+               str(request_path), str(result_path), str(status_path), str(progress_path)]
+    child_env = os.environ.copy()
+    entries = [entry for entry in child_env.get("PYTHONPATH", "").split(os.pathsep) if entry]
+    if not any(os.path.normcase(os.path.abspath(entry)) == os.path.normcase(str(source_root))
+               for entry in entries):
+        entries.insert(0, str(source_root))
+    child_env["PYTHONPATH"] = os.pathsep.join(entries)
+    return command, child_env
+
+
 def _run_child_command(command: list[str], *, deadline: float,
-                       cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
+                       cancel_check: Callable[[], bool] | None = None,
+                       progress_path: Path | None = None,
+                       status_path: Path | None = None,
+                       stall_timeout: float = CHILD_PROGRESS_STALL_SECONDS,
+                       env: dict[str, str] | None = None) -> dict[str, Any]:
     """Start behind a gate, place the process tree in a kill-on-close job, reap it."""
     job = _create_kill_job()
     process = None
     terminated = False
+    stalled = False
     cleanup_killed_descendants = False
+    last_progress_at = time.monotonic()
+    last_progress_signature = None
+    output_tails: dict[str, list[str]] = {"stdout": [""], "stderr": [""]}
+    output_lock = threading.Lock()
+    readers: list[threading.Thread] = []
+
+    def drain_output(stream: Any, name: str) -> None:
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    return
+                with output_lock:
+                    output_tails[name][0] = (output_tails[name][0] + chunk)[-CHILD_OUTPUT_TAIL_CHARS:]
+        except (OSError, ValueError):
+            return
+
+    def finish_output_capture() -> dict[str, str]:
+        for reader in readers:
+            reader.join(timeout=1.0)
+        return {key: value[0] for key, value in output_tails.items()}
+
     try:
         process = subprocess.Popen(
             command,
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, text=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            bufsize=1, env=env,
             creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
                            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
             start_new_session=(os.name != "nt"),
         )
+        for name in ("stdout", "stderr"):
+            stream = getattr(process, name, None)
+            if stream is not None:
+                reader = threading.Thread(target=drain_output, args=(stream, name), daemon=True)
+                reader.start()
+                readers.append(reader)
         _assign_child_to_job(job, process)
         assert process.stdin is not None
         process.stdin.write("go\n")
         process.stdin.flush()
         process.stdin.close()
         while process.poll() is None:
+            if progress_path is not None:
+                try:
+                    progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
+                    signature = json.dumps(progress_data, sort_keys=True)
+                    if signature != last_progress_signature:
+                        last_progress_signature = signature
+                        last_progress_at = time.monotonic()
+                except (OSError, ValueError, TypeError):
+                    pass
             if cancel_check and cancel_check():
                 terminated = True
                 _terminate_child(process, job)
                 return {"returncode": process.returncode, "terminated": True,
-                        "reaped": process.poll() is not None, "active_processes": _job_active_processes(job)}
+                        "stalled": False, "reaped": process.poll() is not None,
+                        "active_processes": _job_active_processes(job), **finish_output_capture()}
+            if progress_path is not None and time.monotonic() - last_progress_at >= stall_timeout:
+                terminated = True
+                stalled = True
+                _terminate_child(process, job)
+                if status_path is not None:
+                    _write_supervisor_status(status_path,
+                                             reason_code="dynamic_resolver_child_stalled",
+                                             stage="progress_watchdog")
+                return {"returncode": process.returncode, "terminated": True,
+                        "stalled": True, "reaped": process.poll() is not None,
+                        "active_processes": _job_active_processes(job), **finish_output_capture()}
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 terminated = True
                 _terminate_child(process, job)
                 return {"returncode": process.returncode, "terminated": True,
-                        "reaped": process.poll() is not None, "active_processes": _job_active_processes(job)}
+                        "stalled": False, "reaped": process.poll() is not None,
+                        "active_processes": _job_active_processes(job), **finish_output_capture()}
             time.sleep(min(0.05, remaining))
         process.wait()
         # A normal child may still have a stray browser descendant. Kill anything left
@@ -2404,9 +2615,10 @@ def _run_child_command(command: list[str], *, deadline: float,
         while active and time.monotonic() < end:
             time.sleep(0.02)
             active = _job_active_processes(job)
-        return {"returncode": process.returncode, "terminated": terminated,
+        return {"returncode": process.returncode, "terminated": terminated, "stalled": stalled,
                 "cleanup_killed_descendants": cleanup_killed_descendants,
-                "reaped": process.poll() is not None, "active_processes": active}
+                "reaped": process.poll() is not None, "active_processes": active,
+                **finish_output_capture()}
     finally:
         if process is not None and process.poll() is None:
             _terminate_child(process, job)
@@ -2419,12 +2631,14 @@ def _resolve_in_child_process(url: str, *, cancel_check: Callable[[], bool] | No
     from yomu.download.sources.chapter_source import select_adapter
 
     started = time.monotonic()
+    request_id = uuid.uuid4().hex
     deadline = started + DYNAMIC_RESOLVER_DEADLINE_SECONDS
     with tempfile.TemporaryDirectory(prefix="yomu-dynamic-resolver-") as temp_dir:
         root = Path(temp_dir)
         request_path = root / "request.json"
         result_path = root / "result.pkl"
         status_path = root / "status.json"
+        progress_path = root / "progress.json"
         request_path.write_text(json.dumps({
             "url": url,
             "timeout": float(timeout),
@@ -2434,16 +2648,26 @@ def _resolve_in_child_process(url: str, *, cancel_check: Callable[[], bool] | No
             ),
             "max_pages": max_pages,
         }), encoding="utf-8")
-        if bool(getattr(sys, "frozen", False)):
-            command = [sys.executable, "--internal-child", "dynamic-resolver",
-                       str(request_path), str(result_path), str(status_path)]
-        else:
-            worker_script = Path(__file__).with_name("dynamic_resolver_process.py")
-            command = [sys.executable, "-u", str(worker_script),
-                       str(request_path), str(result_path), str(status_path)]
+        command, child_env = _build_child_launch(
+            request_path, result_path, status_path, progress_path,
+        )
         try:
-            outcome = _run_child_command(command, deadline=deadline, cancel_check=cancel_check)
+            outcome = _run_child_command(
+                command, deadline=deadline, cancel_check=cancel_check,
+                progress_path=progress_path, status_path=status_path, env=child_env,
+            )
         except Exception as exc:
+            status = {"state": "fail", "reason_code": "dynamic_resolver_isolation_unavailable",
+                      "exception_type": type(exc).__name__,
+                      "safe_message": _safe_child_diagnostic_text(exc), "stage": "launch"}
+            try:
+                _persist_child_failure(
+                    request_id, status=status,
+                    outcome={"returncode": None, "stderr": "", "stdout": ""},
+                    command=command, started=started, temp_root=root,
+                )
+            except OSError:
+                pass
             _append_telemetry(
                 "dynamic_resolution_failed",
                 status="isolation_unavailable",
@@ -2453,25 +2677,122 @@ def _resolve_in_child_process(url: str, *, cancel_check: Callable[[], bool] | No
             )
             raise DynamicReaderError("dynamic_resolver_isolation_unavailable") from exc
         if not outcome["reaped"] or outcome["active_processes"]:
+            try:
+                _persist_child_failure(
+                    request_id,
+                    status={"state": "fail", "reason_code": "dynamic_resolver_child_cleanup_failed",
+                            "stage": "cleanup"},
+                    outcome=outcome, command=command, started=started, temp_root=root,
+                )
+            except OSError:
+                pass
             raise DynamicReaderError("dynamic_resolver_child_cleanup_failed")
         if outcome["terminated"]:
-            code = "cancelled" if cancel_check and cancel_check() else "dynamic_resolver_deadline_exceeded"
+            code = ("cancelled" if cancel_check and cancel_check() else
+                    "dynamic_resolver_child_stalled" if outcome.get("stalled") else
+                    "dynamic_resolver_deadline_exceeded")
+            try:
+                _write_supervisor_status(
+                    status_path, reason_code=code,
+                    stage="progress_watchdog" if outcome.get("stalled") else "supervisor_termination",
+                )
+            except OSError:
+                pass
+            try:
+                progress_state = json.loads(progress_path.read_text(encoding="utf-8"))
+                progress_state = {key: progress_state[key] for key in
+                                  ("stage", "elapsed_ms", "controls_found", "materialized_count")
+                                  if key in progress_state}
+            except (OSError, ValueError, TypeError):
+                progress_state = {}
             _append_telemetry(
                 "dynamic_resolution_failed", status="timeout" if code != "cancelled" else "cancelled",
                 error_code=code, stage="child_process",
                 elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                child_progress=progress_state,
             )
+            try:
+                _persist_child_failure(
+                    request_id,
+                    status={"state": "fail", "reason_code": code, "safe_error_code": code,
+                            "stage": "supervisor_termination", **progress_state},
+                    outcome=outcome, command=command, started=started, temp_root=root,
+                )
+            except OSError:
+                pass
             raise DynamicReaderError(code)
         if not status_path.is_file():
+            try:
+                _write_supervisor_status(status_path,
+                                         reason_code="dynamic_resolver_child_status_missing",
+                                         stage="child_exit_without_status")
+            except OSError:
+                pass
+            try:
+                _persist_child_failure(
+                    request_id,
+                    status={"state": "fail", "reason_code": "dynamic_resolver_child_status_missing",
+                            "stage": "child_exit_without_status"},
+                    outcome=outcome, command=command, started=started, temp_root=root,
+                )
+            except OSError:
+                pass
             raise DynamicReaderError("dynamic_resolver_child_failed")
-        status = json.loads(status_path.read_text(encoding="utf-8"))
-        if status.get("status") != "pass":
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if not isinstance(status, dict):
+                raise ValueError("child_status_not_object")
+        except (OSError, ValueError, TypeError) as exc:
+            reason = "dynamic_resolver_child_status_invalid"
+            try:
+                _persist_child_failure(
+                    request_id,
+                    status={"state": "fail", "reason_code": reason,
+                            "exception_type": type(exc).__name__,
+                            "safe_message": _safe_child_diagnostic_text(exc),
+                            "stage": "status_parse"},
+                    outcome=outcome, command=command, started=started, temp_root=root,
+                )
+            except OSError:
+                pass
+            raise DynamicReaderError(reason) from exc
+        state = status.get("state") or status.get("status")
+        _append_telemetry(
+            "dynamic_resolver_child_handoff", status=str(state or "unknown"),
+            stage=str(status.get("stage") or "unknown")[:48],
+            elapsed_ms=int(status.get("elapsed_ms") or 0),
+            error_code=str(status.get("reason_code") or "")[:80],
+            exception_type=str(status.get("exception_type") or "")[:80],
+            result_bytes=int(status.get("result_bytes") or 0),
+            controls_found=int(status.get("controls_found") or 0),
+            materialized_count=int(status.get("materialized_count") or 0),
+            child_exit_code=outcome.get("returncode"),
+        )
+        if state != "pass":
             reason = str(status.get("reason_code") or "dynamic_resolver_child_failed")[:80]
+            try:
+                _persist_child_failure(request_id, status=status, outcome=outcome,
+                                       command=command, started=started, temp_root=root)
+            except OSError:
+                pass
             raise DynamicReaderError(reason)
         if not result_path.is_file() or result_path.stat().st_size > 256 * 1024 * 1024:
             raise DynamicReaderError("dynamic_resolver_child_result_invalid")
-        with result_path.open("rb") as stream:
-            return pickle.load(stream)
+        result_bytes = result_path.read_bytes()
+        expected_hash = str(status.get("result_sha256") or "")
+        if (len(result_bytes) != int(status.get("result_bytes") or -1) or not expected_hash
+                or hashlib.sha256(result_bytes).hexdigest() != expected_hash):
+            try:
+                _persist_child_failure(
+                    request_id,
+                    status={"state": "fail", "reason_code": "dynamic_resolver_child_result_integrity_failed",
+                            "stage": "result_validation"},
+                    outcome=outcome, command=command, started=started, temp_root=root,
+                )
+            except OSError:
+                pass
+            raise DynamicReaderError("dynamic_resolver_child_result_integrity_failed")
+        return pickle.loads(result_bytes)
 
 
 def resolve(url: str, *, adapter: Any, cancel_check: Callable[[], bool] | None = None,

@@ -415,6 +415,333 @@ def _gemini_safe_clean_page(state, *, job_id: str = ""):
     ], "remote_provider": "gemini_web_vps"}
 
 
+_PAGE_CLEAN_BOUNDARY_LOCK = threading.Lock()
+
+
+def _clean_revision_id(state: dict) -> str:
+    return str(state.get("qc_revision_id") or state.get("page_revision_id")
+               or state.get("run_id") or "").strip()
+
+
+def _clean_target_snapshot(state: dict) -> list[dict]:
+    targets = []
+    page = state.get("original_bgr")
+    page_height, page_width = page.shape[:2] if isinstance(page, np.ndarray) and page.ndim >= 2 else (0, 0)
+    for group in state.get("groups", []) or []:
+        geometry = None
+        try:
+            values = [float(value) for value in list(getattr(group, "box", None))]
+            if len(values) == 4 and all(math.isfinite(value) and value.is_integer() for value in values):
+                x, y, width, height = (int(value) for value in values)
+                if (page_width > 0 and page_height > 0 and x >= 0 and y >= 0
+                        and width > 0 and height > 0 and x + width <= page_width
+                        and y + height <= page_height):
+                    geometry = [x, y, width, height]
+        except (TypeError, ValueError):
+            pass
+        source_text = str(getattr(group, "canonical_source_text", "")
+                          or getattr(group, "text", "") or "").strip()
+        targets.append({
+            "group_id": str(getattr(group, "group_id", "") or ""),
+            "region_id": str(getattr(group, "region_id", "") or ""),
+            "classification": str(getattr(group, "classification", "") or ""),
+            "geometry": geometry,
+            "source_text_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            if source_text else "",
+            "disposition": str(getattr(group, "clean_disposition", "") or ""),
+            "remote_candidate": bool(getattr(group, "clean_remote_candidate", False)),
+            "remote_eligible": bool(getattr(group, "clean_remote_eligible", False)),
+            "remote_attempted": bool(getattr(group, "clean_remote_attempted", False)),
+            "remote_result": str(getattr(group, "clean_remote_result", "") or ""),
+            "local_attempted": bool(getattr(group, "clean_local_attempted", False)),
+            "local_validation_passed": bool(
+                isinstance(getattr(group, "clean_artifact_validation", None), dict)
+                and getattr(group, "clean_artifact_validation", {}).get("clean_validation_passed") is True
+            ),
+            "review_required": bool(getattr(group, "manual_review_required", False)),
+        })
+    return sorted(targets, key=lambda item: (item["group_id"], item["region_id"]))
+
+
+def _make_clean_certificate(state: dict, job_id: str) -> dict:
+    """Bind verified Clean pixels to source, target ownership, and current QC revision."""
+    source_path = Path(str(state.get("image_path") or ""))
+    clean_path = Path(str(state.get("cleaned_path") or ""))
+    source_hash = clean_hash = ""
+    source_pixels_match = clean_readback_ok = False
+    try:
+        source_hash = file_sha256(source_path)
+        source_pixels = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
+        original = state.get("original_bgr")
+        source_pixels_match = bool(
+            source_pixels is not None and isinstance(original, np.ndarray)
+            and source_pixels.shape == original.shape and np.array_equal(source_pixels, original)
+        )
+    except (OSError, TypeError, ValueError):
+        source_pixels = None
+    try:
+        clean_hash = file_sha256(clean_path)
+        clean_pixels = cv2.imread(str(clean_path), cv2.IMREAD_COLOR)
+        original = state.get("original_bgr")
+        clean_readback_ok = bool(
+            clean_pixels is not None and clean_pixels.size and isinstance(original, np.ndarray)
+            and clean_pixels.shape == original.shape
+        )
+    except (OSError, TypeError, ValueError):
+        clean_pixels = None
+
+    metadata = state.get("ocr_metadata") if isinstance(state.get("ocr_metadata"), dict) else {}
+    ocr_sufficiency = str(metadata.get("ocr_sufficiency") or "")
+    targets = _clean_target_snapshot(state)
+    remote_targets = [item for item in targets if item["disposition"] == "REMOTE_SAFE"]
+    targets_complete = all(
+        item["group_id"] and item["region_id"] and item["geometry"] and item["source_text_sha256"]
+        and item["remote_candidate"] and item["remote_eligible"] and item["remote_attempted"]
+        and item["remote_result"] == "PASS"
+        for item in remote_targets
+    )
+    certified_targets = [item for item in targets if item["disposition"] in {"REMOTE_SAFE", "LOCAL_SAFE"}]
+    targets_complete = bool(certified_targets) and targets_complete and all(
+        item["group_id"] and item["region_id"] and item["geometry"] and item["source_text_sha256"]
+        and (item["disposition"] != "LOCAL_SAFE"
+             or (item["local_attempted"] and item["local_validation_passed"] and not item["review_required"]))
+        for item in certified_targets
+    )
+    strategy = state.get("clean_result") if isinstance(state.get("clean_result"), dict) else {}
+    outside = strategy.get("outside_mask_changed_pixels")
+    outside_ok = isinstance(outside, int) and not isinstance(outside, bool) and outside == 0
+    unresolved = any(
+        item["review_required"] or item["disposition"] in {
+            "LOCAL_HARD", "REVIEW_UNOWNED", "REVIEW_OCR", "REVIEW_SEMANTIC",
+            "REVIEW_REQUIRED", "REMOTE_REJECTED",
+        } for item in targets
+    )
+    verified = bool(
+        state.get("clean_verified") is True and strategy.get("status") == "COMPLETED"
+        and ocr_sufficiency == "OCR_SUFFICIENT" and not state.get("clean_page_review")
+        and not unresolved and targets_complete and source_hash and clean_hash
+        and source_pixels_match and clean_readback_ok and _clean_revision_id(state) and outside_ok
+    )
+    reason = "verified" if verified else (
+        "source_completeness_unproven" if ocr_sufficiency != "OCR_SUFFICIENT"
+        else "target_or_ownership_incomplete" if not targets_complete or unresolved
+        else "source_or_clean_artifact_binding_failed" if not source_pixels_match or not clean_readback_ok
+        else "qc_revision_or_outside_mask_evidence_missing" if not _clean_revision_id(state) or not outside_ok
+        else "clean_validation_not_passed"
+    )
+    return {
+        "schema_version": "yomu.clean-certificate.v1", "status": "PASS" if verified else "REVIEW_REQUIRED",
+        "reason": reason, "job_id": str(job_id or ""), "run_id": str(state.get("run_id") or ""),
+        "page_id": str(state.get("index") or ""), "qc_revision_id": _clean_revision_id(state),
+        "source_sha256": source_hash, "clean_sha256": clean_hash,
+        "target_snapshot_sha256": stable_hash(targets), "target_count": len(targets),
+        "source_pixels_match": source_pixels_match, "clean_readback_ok": clean_readback_ok,
+        "ocr_sufficiency": ocr_sufficiency,
+        "outside_mask_changed_pixels": outside if outside_ok else None,
+    }
+
+
+def _validate_clean_certificate(state: dict, clean_path: Path) -> tuple[bool, str]:
+    certificate = state.get("clean_certificate")
+    if not isinstance(certificate, dict):
+        return False, "clean_certificate_missing"
+    if certificate.get("schema_version") != "yomu.clean-certificate.v1" or certificate.get("status") != "PASS":
+        return False, "clean_certificate_not_pass"
+    if (str(certificate.get("page_id") or "") != str(state.get("index") or "")
+            or str(certificate.get("run_id") or "") != str(state.get("run_id") or "")
+            or str(certificate.get("qc_revision_id") or "") != _clean_revision_id(state)):
+        return False, "clean_certificate_revision_mismatch"
+    if (certificate.get("target_snapshot_sha256") != stable_hash(_clean_target_snapshot(state))
+            or certificate.get("outside_mask_changed_pixels") != 0
+            or certificate.get("source_pixels_match") is not True
+            or certificate.get("clean_readback_ok") is not True
+            or certificate.get("ocr_sufficiency") != "OCR_SUFFICIENT"):
+        return False, "clean_certificate_evidence_mismatch"
+    try:
+        source_hash = file_sha256(str(state.get("image_path") or ""))
+        clean_hash = file_sha256(clean_path)
+    except (OSError, TypeError, ValueError):
+        return False, "clean_certificate_artifact_unavailable"
+    if source_hash != certificate.get("source_sha256"):
+        return False, "clean_certificate_source_hash_mismatch"
+    if clean_hash != certificate.get("clean_sha256"):
+        return False, "clean_certificate_clean_hash_mismatch"
+    return True, "verified"
+
+
+def _clean_page_certificate_valid(state):
+    clean_path = Path(str(state.get("cleaned_path") or ""))
+    valid, reason = _validate_clean_certificate(state, clean_path)
+    if not valid:
+        return False, reason
+    group_ids = {str(getattr(group, "group_id", "") or "") for group in (state.get("groups") or [])}
+    story_ids = {
+        str(item.get("id") or "")
+        for item in (state.get("debug_data") or {}).get("items", [])
+        if isinstance(item, dict) and _story_translation_required(item)
+    }
+    if "" in story_ids or not story_ids.issubset(group_ids):
+        return False, "clean_certificate_target_inventory_mismatch"
+    return True, "verified"
+
+
+def _clean_output_accounting(states):
+    """Count verified Clean pages separately from merely written image files."""
+    pages = len(states)
+    certified = no_text_proven = 0
+    failures = []
+    for state in states:
+        page = int(state.get("index") or 0)
+        if state.get("status") != "completed" or state.get("ocr_error"):
+            failures.append({"page": page, "reason": "page_not_completed"})
+            continue
+        groups = state.get("groups") or []
+        items = (state.get("debug_data") or {}).get("items", [])
+        if not groups and not items:
+            ocr = state.get("ocr_metadata") if isinstance(state.get("ocr_metadata"), dict) else {}
+            if ((state.get("precheck") or {}).get("skip") is True
+                    or ocr.get("ocr_sufficiency") == "OCR_SUFFICIENT"):
+                no_text_proven += 1
+            else:
+                failures.append({"page": page, "reason": "source_text_evidence_missing"})
+            continue
+        valid, reason = _clean_page_certificate_valid(state)
+        if valid:
+            certified += 1
+        else:
+            failures.append({"page": page, "reason": reason})
+    passed = bool(pages) and not failures and certified + no_text_proven == pages
+    return {
+        "applicable": True, "passed": passed, "pages_expected": pages,
+        "pages_certified": certified, "pages_no_text_proven": no_text_proven,
+        "pages_failed": len(failures), "failures": failures[:100],
+    }
+
+
+def _sync_clean_decisions_to_debug_data(debug_data: object, groups: list) -> None:
+    if not isinstance(debug_data, dict) or not isinstance(debug_data.get("items"), list):
+        return
+    groups_by_id = {str(getattr(group, "group_id", "")): group for group in groups}
+    fields = (
+        "clean_disposition", "clean_disposition_reason", "clean_local_attempted",
+        "clean_artifact_validation", "clean_remote_candidate", "clean_remote_eligible",
+        "clean_remote_attempted", "clean_remote_mode", "clean_remote_result",
+        "clean_remote_text_observations", "manual_review_required",
+    )
+    for item in debug_data["items"]:
+        if not isinstance(item, dict):
+            continue
+        group = groups_by_id.get(str(item.get("id") or ""))
+        if group is None:
+            continue
+        for key in fields:
+            value = getattr(group, key, None)
+            if key == "clean_disposition" and not value:
+                continue
+            if key == "clean_artifact_validation":
+                value = dict(value or {})
+            elif key == "clean_remote_text_observations":
+                value = list(value or [])[:20]
+            elif key in {"clean_disposition_reason", "clean_remote_mode", "clean_remote_result"}:
+                value = str(value or "")
+            elif key in {"clean_local_attempted", "clean_remote_candidate", "clean_remote_eligible",
+                         "clean_remote_attempted", "manual_review_required"}:
+                value = bool(value)
+            item[key] = value
+
+
+def _complete_page_clean(state, cleaned_capture, debug_data, *, job_id: str = ""):
+    """Run the same fail-closed Clean boundary for serial and parallel page workers."""
+    if not _plan_pipeline_flags()["want_clean"]:
+        return None
+    local_image = cleaned_capture.get("cleaned_bgr")
+    if local_image is None:
+        local_image = state.get("original_bgr")
+    state["clean_local_base"] = local_image
+    with _PAGE_CLEAN_BOUNDARY_LOCK:
+        remote_strategy = _gemini_safe_clean_page(state, job_id=job_id)
+
+    ocr_state = str((state.get("ocr_metadata") or {}).get("ocr_sufficiency") or "")
+    if ocr_state != "OCR_SUFFICIENT":
+        state["clean_page_review"] = {
+            "OCR_INSUFFICIENT": "page_ocr_insufficient_for_clean_verification",
+            "OCR_REVIEW": "page_ocr_review_required_for_clean_verification",
+        }.get(ocr_state, "page_ocr_completeness_unknown_for_clean_verification")
+    from yomu.clean.orchestrator import CleanRequest, LOCAL_SAFE, run_clean_strategy
+    if isinstance(remote_strategy, dict) and remote_strategy.get("status") == "COMPLETED":
+        remote_image = remote_strategy.get("image")
+        if isinstance(remote_image, np.ndarray):
+            local_image = remote_image
+        strategy = remote_strategy
+    else:
+        unresolved = [group for group in state.get("groups", []) if str(
+            getattr(group, "clean_disposition", "") or "") in {
+                "LOCAL_HARD", "REVIEW_UNOWNED", "REVIEW_OCR", "REVIEW_SEMANTIC", "REMOTE_REJECTED",
+            }]
+        if remote_strategy is None and unresolved:
+            for group in unresolved:
+                if group.clean_disposition == "LOCAL_HARD":
+                    group.clean_disposition_reason = "remote_fallback_disabled_or_not_configured"
+                group.manual_review_required = True
+            strategy = {
+                "status": "REVIEW_REQUIRED", "strategy_requested": "clean",
+                "strategy_used": "local_with_unresolved_regions", "fallback_invoked": False,
+                "fallback_reason": "unresolved_clean_regions", "review_required": True, "image": local_image,
+            }
+        elif isinstance(remote_strategy, dict) and remote_strategy.get("status") == "REVIEW_REQUIRED":
+            strategy = {**remote_strategy, "image": remote_strategy.get("image", local_image)}
+        else:
+            strategy = run_clean_strategy(
+                CleanRequest(original=state["original_bgr"], job_id=job_id, page_id=str(state["index"])),
+                {"status": LOCAL_SAFE, "image": local_image},
+            )
+    if state.get("clean_page_review"):
+        strategy = {**strategy, "status": "REVIEW_REQUIRED", "review_required": True,
+                    "page_review_reason": state["clean_page_review"]}
+    clean_image = strategy.get("image") if isinstance(strategy, dict) else None
+    clean_path = Path(state["output_path"]).with_name(Path(state["output_path"]).stem + "_cleaned.png")
+    if isinstance(clean_image, np.ndarray):
+        if not cv2.imwrite(str(clean_path), clean_image):
+            raise RuntimeError("clean_image_write_failed")
+        persisted = cv2.imread(str(clean_path), cv2.IMREAD_COLOR)
+        if persisted is None or persisted.shape != clean_image.shape or not np.array_equal(persisted, clean_image):
+            raise RuntimeError("clean_image_persisted_readback_mismatch")
+        state["cleaned_path"] = str(clean_path)
+    persisted = cv2.imread(str(clean_path), cv2.IMREAD_COLOR)
+    clean_persisted = bool(persisted is not None and persisted.size
+                           and persisted.shape == state["original_bgr"].shape)
+    if clean_persisted:
+        state["cleaned_path"] = str(clean_path)
+    for group in state.get("groups", []):
+        if not getattr(group, "clean_disposition", ""):
+            from yomu.clean.disposition import classify_group_disposition
+            group.clean_disposition, group.clean_disposition_reason = map(str, classify_group_disposition(group))
+    state["clean_verified"] = bool(
+        strategy.get("status") == "COMPLETED" and clean_persisted and not state.get("clean_page_review")
+        and not any(getattr(group, "manual_review_required", False)
+                    or str(getattr(group, "clean_disposition", "")) in {
+                        "LOCAL_HARD", "REVIEW_UNOWNED", "REVIEW_OCR", "REVIEW_SEMANTIC", "REMOTE_REJECTED",
+                    } for group in state.get("groups", []))
+    )
+    state["clean_result"] = {key: value for key, value in strategy.items()
+                              if key not in {"image", "raw_image", "safe_clean_image"}}
+    state["clean_result"].update({
+        "clean_produced": clean_persisted, "clean_verified": state["clean_verified"],
+        "clean_source": "remote" if any(getattr(g, "clean_disposition", "") == "REMOTE_SAFE"
+                                          for g in state.get("groups", []))
+        else "local" if state["clean_verified"] else "preserved_review",
+    })
+    state["clean_certificate"] = _make_clean_certificate(state, job_id)
+    state["clean_verified"] = state["clean_certificate"]["status"] == "PASS"
+    state["clean_result"].update({
+        "clean_verified": state["clean_verified"],
+        "clean_certificate_schema": state["clean_certificate"]["schema_version"],
+        "clean_certificate_status": state["clean_certificate"]["status"],
+    })
+    _sync_clean_decisions_to_debug_data(debug_data, state.get("groups", []))
+    return strategy
+
+
 def _emit_gemini_observability(*, job_id: str, run_id: str, page: str, region: str,
                                request_id: str, slot_id: str, generation_seq: object,
                                duration_seconds: float, status: str,
@@ -616,9 +943,21 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
                 str(item.get("disposition")) + ":" + str(item.get("reason") or "")
                 for item in region_dispositions if item.get("review_required")
             })
+            certificate_required = (
+                clean_from == "cleaned_buffer" or state.get("clean_verified") is True
+                or isinstance(state.get("clean_certificate"), dict)
+            )
+            certificate_valid, certificate_reason = (
+                _validate_clean_certificate(state, cdst)
+                if certificate_required and cn is not None
+                else (False, "clean_certificate_missing")
+            )
+            if certificate_required and not certificate_valid:
+                review_codes.append("REVIEW_CERTIFICATE:" + certificate_reason)
+                review_codes.sort()
             clean_verified = bool(
                 cn is not None and state.get("clean_verified") is True
-                and clean_from == "cleaned_buffer" and not review_codes
+                and clean_from == "cleaned_buffer" and certificate_valid and not review_codes
             )
             if clean_from == "source_fallback":
                 clean_source = "source_fallback"
@@ -637,6 +976,12 @@ def _persist_canonical_artifacts(output_root, completed_states, total_pages, pro
                 "region_dispositions": region_dispositions,
                 "residual_validation": {"status": "NOT_RUN", "reason": "post_clean_target_ocr_not_yet_implemented"},
                 "review_reasons": review_codes,
+                "clean_certificate": (dict(state.get("clean_certificate"))
+                                      if isinstance(state.get("clean_certificate"), dict) else None),
+                "clean_certificate_validation": {
+                    "status": "PASS" if certificate_valid else "REVIEW_REQUIRED",
+                    "reason": certificate_reason,
+                },
             })
         provenance[idx] = chain
     io_seconds = time.perf_counter() - started
@@ -813,7 +1158,7 @@ def _export_editable_psds(output_root, completed_states, total_pages, clean_page
 
 def process_post_translation_page(state, *, diagnostic_folder=None, targeted_regression=False,
                                   translator=None, translation_retry_records=None,
-                                  force=False, retry_lock=None):
+                                  force=False, retry_lock=None, job_id: str = ""):
     """Render and save one page, returning only page-owned state."""
     local = dict(state)
     timings = {}
@@ -878,6 +1223,7 @@ def process_post_translation_page(state, *, diagnostic_folder=None, targeted_reg
                 Path(local["output_path"]).stem + "_cleaned.png")
             if cv2.imwrite(str(cleaned_path), cleaned_bgr):
                 local["cleaned_path"] = str(cleaned_path)
+        _complete_page_clean(local, cleaned_capture, debug_data, job_id=job_id)
         local["timings"] = dict(timings)
         local["status"] = "completed"
         local["cache_source"] = "fresh"
@@ -901,14 +1247,14 @@ def process_post_translation_page(state, *, diagnostic_folder=None, targeted_reg
 
 def process_post_translation_pages(page_states, *, diagnostic_folder=None, targeted_regression=False,
                                    translator=None, translation_retry_records=None,
-                                   force=False, retry_lock=None):
+                                   force=False, retry_lock=None, job_id: str = ""):
     workers = _pipeline_page_workers()
     if workers == 1:
         return [process_post_translation_page(state, diagnostic_folder=diagnostic_folder,
                                                targeted_regression=targeted_regression,
                                                translator=translator,
                                                translation_retry_records=translation_retry_records,
-                                               force=force, retry_lock=retry_lock)
+                                                force=force, retry_lock=retry_lock, job_id=job_id)
                 for state in page_states]
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="post-page") as executor:
         futures = [executor.submit(process_post_translation_page, state,
@@ -916,7 +1262,7 @@ def process_post_translation_pages(page_states, *, diagnostic_folder=None, targe
                                    targeted_regression=targeted_regression,
                                    translator=translator,
                                    translation_retry_records=translation_retry_records,
-                                   force=force, retry_lock=retry_lock)
+                                    force=force, retry_lock=retry_lock, job_id=job_id)
                    for state in page_states]
         return sorted((future.result() for future in as_completed(futures)), key=lambda result: result.page_index)
 from yomu.export.output_manifest import (
@@ -3117,6 +3463,7 @@ def run_benchmark(args):
             translation_retry_records=translation_retry_records,
             force=args.force,
             retry_lock=overflow_retry_lock,
+            job_id=str(getattr(args, "job_id", "") or ""),
         )
         analyzable_states = []
     for state in analyzable_states:
@@ -3174,93 +3521,9 @@ def run_benchmark(args):
                 if cv2.imwrite(str(cleaned_path), cleaned_bgr):
                     state["cleaned_path"] = str(cleaned_path)
             if _pipeline_flags["want_clean"]:
-                # The historical Gemini SAFE fallback is now connected at the
-                # production CLEAN boundary, but remains opt-in. Local CLEAN is
-                # still the default; only a typed hard reconstruction case can
-                # cross the remote boundary.
-                remote_strategy = _gemini_safe_clean_page(
-                    state,
+                _complete_page_clean(
+                    state, cleaned_capture, debug_data,
                     job_id=str(getattr(args, "job_id", "") or ""),
-                )
-                from yomu.clean.orchestrator import CleanRequest, LOCAL_SAFE, run_clean_strategy
-                local_image = cleaned_capture.get("cleaned_bgr")
-                if local_image is None:
-                    local_image = state.get("original_bgr")
-                state["clean_local_base"] = local_image
-                if isinstance(remote_strategy, dict) and remote_strategy.get("status") == "COMPLETED":
-                    remote_image = remote_strategy.get("image")
-                    if isinstance(remote_image, np.ndarray):
-                        local_image = remote_image
-                    remote_clean_path = Path(state["output_path"]).with_name(
-                        Path(state["output_path"]).stem + "_cleaned.png")
-                    if isinstance(local_image, np.ndarray) and cv2.imwrite(str(remote_clean_path), local_image):
-                        state["cleaned_path"] = str(remote_clean_path)
-                    strategy = remote_strategy
-                else:
-                    unresolved = [
-                        group for group in state.get("groups", [])
-                        if str(getattr(group, "clean_disposition", "") or "") in {
-                            "LOCAL_HARD", "REVIEW_UNOWNED", "REVIEW_OCR", "REVIEW_SEMANTIC",
-                            "REMOTE_REJECTED",
-                        }
-                    ]
-                    page_ocr_state = str((state.get("ocr_metadata") or {}).get("ocr_sufficiency") or "")
-                    if page_ocr_state in {"OCR_INSUFFICIENT", "OCR_REVIEW"}:
-                        state["clean_page_review"] = "page_ocr_not_sufficient_for_clean_verification"
-                    if remote_strategy is None and unresolved:
-                        for group in unresolved:
-                            if group.clean_disposition == "LOCAL_HARD":
-                                group.clean_disposition_reason = "remote_fallback_disabled_or_not_configured"
-                            group.manual_review_required = True
-                        strategy = {
-                            "status": "REVIEW_REQUIRED",
-                            "strategy_requested": "clean",
-                            "strategy_used": "local_with_unresolved_regions",
-                            "fallback_invoked": False,
-                            "fallback_reason": "unresolved_clean_regions",
-                            "review_required": True,
-                            "image": local_image,
-                        }
-                    elif isinstance(remote_strategy, dict) and remote_strategy.get("status") == "REVIEW_REQUIRED":
-                        strategy = {**remote_strategy, "image": remote_strategy.get("image", local_image)}
-                    else:
-                        strategy = run_clean_strategy(
-                            CleanRequest(original=state["original_bgr"], job_id=str(getattr(args, "job_id", "") or ""),
-                                         page_id=str(state["index"])),
-                            {"status": LOCAL_SAFE, "image": local_image},
-                        )
-                    if state.get("clean_page_review"):
-                        strategy = {**strategy, "status": "REVIEW_REQUIRED", "review_required": True,
-                                    "page_review_reason": state["clean_page_review"]}
-                if isinstance(strategy.get("image"), np.ndarray):
-                    clean_result_path = Path(state["output_path"]).with_name(
-                        Path(state["output_path"]).stem + "_cleaned.png")
-                    if cv2.imwrite(str(clean_result_path), strategy["image"]):
-                        state["cleaned_path"] = str(clean_result_path)
-                for group in state.get("groups", []):
-                    if not getattr(group, "clean_disposition", ""):
-                        from yomu.clean.disposition import classify_group_disposition
-                        group.clean_disposition, group.clean_disposition_reason = map(
-                            str, classify_group_disposition(group)
-                        )
-                state["clean_verified"] = bool(
-                    strategy.get("status") == "COMPLETED"
-                    and not state.get("clean_page_review")
-                    and not any(getattr(group, "manual_review_required", False)
-                                or str(getattr(group, "clean_disposition", "")) in {
-                                    "LOCAL_HARD", "REVIEW_UNOWNED", "REVIEW_OCR",
-                                    "REVIEW_SEMANTIC", "REMOTE_REJECTED",
-                                } for group in state.get("groups", []))
-                )
-                state["clean_result"] = {
-                    key: value for key, value in strategy.items()
-                    if key not in {"image", "raw_image", "safe_clean_image"}
-                }
-                state["clean_result"]["clean_produced"] = bool(state.get("cleaned_path"))
-                state["clean_result"]["clean_verified"] = state["clean_verified"]
-                state["clean_result"]["clean_source"] = (
-                    "remote" if any(getattr(g, "clean_disposition", "") == "REMOTE_SAFE" for g in state.get("groups", []))
-                    else "local" if state["clean_verified"] else "preserved_review"
                 )
             save_elapsed = time.perf_counter() - save_started
             state["timings"]["image_save"] = save_elapsed
@@ -3536,6 +3799,7 @@ def run_benchmark(args):
     _create_preview_compare_sheet(selected_states, compare_sheet_path)
     preview_seconds = time.perf_counter() - preview_started
 
+    translation_applicable = bool(_pipeline_flags.get("want_translate", True))
     quality = _validate_quality(
         completed_states,
         pdf_path,
@@ -3556,12 +3820,17 @@ def run_benchmark(args):
     )
     summary = _aggregate_debug_data(completed_states)
     translation_accounting = _translation_quality_accounting(completed_states)
-    physical_accounting = _physical_residual_accounting(completed_states)
+    clean_accounting = _clean_output_accounting(completed_states)
+    physical_accounting = _physical_residual_accounting(
+        completed_states, translation_applicable=translation_applicable,
+    )
     # Reconciled over every source page the run set out to process, not over the
     # states that survived: a page whose analysis threw produces no regions, and
     # region accounting alone cannot see it at all.
     page_accounting = _source_page_accounting(page_states, len(image_paths))
     quality["translation_accounting"] = translation_accounting
+    quality["translation_quality_applicable"] = translation_applicable
+    quality["clean_quality"] = clean_accounting
     quality["physical_quality"] = physical_accounting
     quality["source_page_accounting"] = page_accounting
     quality["source_pages_unverified"] = page_accounting["source_pages_unverified"]
@@ -3597,7 +3866,8 @@ def run_benchmark(args):
         quality["source_completeness"] = physical_accounting["source_completeness"]
     quality["passed"] = bool(
         quality.get("passed")
-        and translation_accounting["quality_passed"]
+        and (not translation_applicable or translation_accounting["quality_passed"])
+        and (translation_applicable or clean_accounting["passed"])
         and physical_accounting["physical_gate_passed"]
         and page_accounting["page_gate_passed"]
     )
@@ -5250,12 +5520,13 @@ def _render_plan_accounting(states):
     return result
 
 
-def _physical_residual_accounting(states):
+def _physical_residual_accounting(states, *, translation_applicable=True):
     """Account final-render source retention separately from logical quality."""
 
     result = {
         "physical_regions_expected": 0,
         "physical_regions_translated": 0,
+        "physical_regions_clean_verified": 0,
         "physical_regions_preserved": 0,
         "physical_regions_review_source_retained": 0,
         "physical_regions_rendered_with_review": 0,
@@ -5289,6 +5560,12 @@ def _physical_residual_accounting(states):
     ordinary_story_residual_ids = []
     residual_class_counts = {name: 0 for name in PHYSICAL_RESIDUAL_CLASSES}
     residual_class_ids = {name: [] for name in PHYSICAL_RESIDUAL_CLASSES}
+    clean_certified_pages = set()
+    if not translation_applicable:
+        for state in states:
+            valid, _reason = _clean_page_certificate_valid(state)
+            if valid:
+                clean_certified_pages.add(int(state.get("index") or 0))
 
     def record_residual(region_id, item):
         """File one retained source region under its class, once."""
@@ -5347,6 +5624,10 @@ def _physical_residual_accounting(states):
                 result["physical_regions_review_source_retained"] += 1
                 residual_ids.append(region_id)
                 record_residual(region_id, item)
+                continue
+
+            if not translation_applicable and page in clean_certified_pages:
+                result["physical_regions_clean_verified"] += 1
                 continue
 
             if final_state == "translated" and translated and valid and redrawn:
@@ -5436,6 +5717,7 @@ def _physical_residual_accounting(states):
     regions_accounted = (
         result["physical_regions_expected"]
         == result["physical_regions_translated"]
+        + result["physical_regions_clean_verified"]
         + result["physical_regions_preserved"]
         + result["physical_regions_rendered_with_review"]
         + non_story_residuals
@@ -5567,8 +5849,12 @@ def _user_visible_output_accounting(states):
 
 def _build_quality_report(report, states, translation_retry_records):
     pages = []
+    translation_applicable = bool(_plan_pipeline_flags().get("want_translate", True))
     translation_accounting = _translation_quality_accounting(states)
-    physical_accounting = _physical_residual_accounting(states)
+    clean_accounting = _clean_output_accounting(states)
+    physical_accounting = _physical_residual_accounting(
+        states, translation_applicable=translation_applicable,
+    )
     render_plan_accounting = _render_plan_accounting(states)
     totals = {
         "groups_detected": 0,
@@ -5606,10 +5892,13 @@ def _build_quality_report(report, states, translation_retry_records):
         "rectangular_line_mask_rejections": 0,
         "background_type_counts": {},
         "translation_accounting": translation_accounting,
+        "clean_quality": clean_accounting,
+        "translation_quality_applicable": translation_applicable,
         "render_plan_accounting": render_plan_accounting,
         "physical_quality": physical_accounting,
         "physical_regions_expected": physical_accounting["physical_regions_expected"],
         "physical_regions_translated": physical_accounting["physical_regions_translated"],
+        "physical_regions_clean_verified": physical_accounting["physical_regions_clean_verified"],
         "physical_regions_preserved": physical_accounting["physical_regions_preserved"],
         "physical_regions_review_source_retained": physical_accounting[
             "physical_regions_review_source_retained"

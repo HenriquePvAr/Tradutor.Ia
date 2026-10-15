@@ -191,6 +191,7 @@ def sanitize_provider_provenance(value: Mapping[str, Any] | None) -> dict[str, A
 _PHYSICAL_QUALITY_INT_FIELDS = (
     "physical_regions_expected",
     "physical_regions_translated",
+    "physical_regions_clean_verified",
     "physical_regions_preserved",
     "physical_regions_review_source_retained",
     "physical_regions_rendered_with_review",

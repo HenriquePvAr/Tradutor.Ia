@@ -274,6 +274,7 @@ class PhysicalManifestPersistenceTests(unittest.TestCase):
         accounting = {
             "physical_regions_expected": 96,
             "physical_regions_translated": 91,
+            "physical_regions_clean_verified": 0,
             "physical_regions_preserved": 0,
             "physical_regions_review_source_retained": 5,
             "physical_regions_rendered_with_review": 0,
@@ -296,6 +297,7 @@ class PhysicalManifestPersistenceTests(unittest.TestCase):
         accounting = {
             "physical_regions_expected": 96,
             "physical_regions_translated": 96,
+            "physical_regions_clean_verified": 0,
             "physical_regions_preserved": 0,
             "physical_regions_review_source_retained": 0,
             "physical_regions_rendered_with_review": 0,
